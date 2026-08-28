@@ -1,0 +1,1 @@
+"""Code métier du prédicteur MLB Les Pronos de Fredo."""

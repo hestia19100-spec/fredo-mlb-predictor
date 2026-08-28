@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Clés et paramètres secrets
+.env
+.streamlit/secrets.toml
+
+# Bases de données locales
+data/*.db
+data/*.sqlite
+data/*.sqlite3
+*.db-shm
+*.db-wal
+*.sqlite-shm
+*.sqlite-wal
+
+# Modèles et journaux générés
+models/*.joblib
+models/*.pkl
+logs/*.log
+
+# Fichiers du système
+.DS_Store
+Thumbs.db

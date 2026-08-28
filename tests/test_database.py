@@ -32,6 +32,7 @@ class DatabaseTests(unittest.TestCase):
         required_tables = {
             "app_metadata",
             "games",
+            "ingestion_runs",
             "pitchers",
             "schema_migrations",
             "teams",
@@ -68,27 +69,42 @@ class DatabaseTests(unittest.TestCase):
             ),
         )
 
-    def test_baseline_migration_is_recorded(self) -> None:
-        """La migration de référence doit être enregistrée une fois."""
+    def test_migrations_are_recorded_once(self) -> None:
+        """Les migrations doivent être enregistrées sans doublon."""
         initialize_database(self.database_path)
         initialize_database(self.database_path)
 
         migrations = list_applied_migrations(self.database_path)
 
-        self.assertEqual(migrations, [3])
+        self.assertEqual(migrations, [3, 4])
 
         with get_connection(self.database_path) as connection:
-            row = connection.execute(
+            rows = connection.execute(
                 """
-                SELECT name, checksum
+                SELECT version, name, checksum
                 FROM schema_migrations
-                WHERE version = 3
+                ORDER BY version
                 """
-            ).fetchone()
+            ).fetchall()
 
-        self.assertIsNotNone(row)
-        self.assertEqual(row["name"], "baseline_pitchers")
-        self.assertEqual(len(str(row["checksum"])), 64)
+        migration_details = [
+            (
+                int(row["version"]),
+                str(row["name"]),
+            )
+            for row in rows
+        ]
+
+        self.assertEqual(
+            migration_details,
+            [
+                (3, "baseline_pitchers"),
+                (4, "add_ingestion_runs"),
+            ],
+        )
+
+        for row in rows:
+            self.assertEqual(len(str(row["checksum"])), 64)
 
 
 if __name__ == "__main__":

@@ -1,5 +1,6 @@
-"""Connexion, initialisation et suivi de la base SQLite."""
+"""Connexion, initialisation et migrations de la base SQLite."""
 
+from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
 import sqlite3
@@ -9,7 +10,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = PROJECT_ROOT / "data"
 DATABASE_PATH = DATA_DIR / "fredo_mlb.db"
 
-SCHEMA_VERSION = 3
+BASELINE_MIGRATION_VERSION = 3
 BASELINE_MIGRATION_NAME = "baseline_pitchers"
 BASELINE_SCHEMA_SIGNATURE = (
     "v3|app_metadata|teams|pitchers|games|"
@@ -23,6 +24,105 @@ BASELINE_MIGRATION_CHECKSUM = sha256(
 
 class DatabaseMigrationError(RuntimeError):
     """Signale une incohérence dans l’historique des migrations."""
+
+
+@dataclass(frozen=True, slots=True)
+class Migration:
+    """Décrit une migration SQLite immuable."""
+
+    version: int
+    name: str
+    statements: tuple[str, ...]
+
+    @property
+    def checksum(self) -> str:
+        """Calcule l’empreinte stable de la migration."""
+        content = "\n".join(
+            (
+                str(self.version),
+                self.name,
+                *self.statements,
+            )
+        )
+        return sha256(content.encode("utf-8")).hexdigest()
+
+
+INGESTION_RUNS_MIGRATION = Migration(
+    version=4,
+    name="add_ingestion_runs",
+    statements=(
+        """
+        CREATE TABLE ingestion_runs (
+            run_id INTEGER PRIMARY KEY,
+            source TEXT NOT NULL,
+            requested_start_date TEXT NOT NULL,
+            requested_end_date TEXT NOT NULL,
+            game_types TEXT NOT NULL DEFAULT 'R',
+            request_parameters_json TEXT NOT NULL DEFAULT '{}',
+            started_at_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            completed_at_utc TEXT,
+            status TEXT NOT NULL DEFAULT 'started'
+                CHECK (
+                    status IN ('started', 'success', 'error')
+                ),
+            records_received INTEGER NOT NULL DEFAULT 0
+                CHECK (records_received >= 0),
+            records_saved INTEGER NOT NULL DEFAULT 0
+                CHECK (
+                    records_saved >= 0
+                    AND records_saved <= records_received
+                ),
+            raw_response_path TEXT,
+            response_sha256 TEXT,
+            code_version TEXT,
+            error_message TEXT,
+
+            CHECK (
+                requested_end_date >= requested_start_date
+            ),
+
+            CHECK (
+                response_sha256 IS NULL
+                OR length(response_sha256) = 64
+            ),
+
+            CHECK (
+                (
+                    status = 'started'
+                    AND completed_at_utc IS NULL
+                )
+                OR
+                (
+                    status IN ('success', 'error')
+                    AND completed_at_utc IS NOT NULL
+                )
+            ),
+
+            CHECK (
+                status <> 'error'
+                OR error_message IS NOT NULL
+            )
+        )
+        """,
+        """
+        CREATE INDEX idx_ingestion_runs_period
+        ON ingestion_runs (
+            requested_start_date,
+            requested_end_date
+        )
+        """,
+        """
+        CREATE INDEX idx_ingestion_runs_status
+        ON ingestion_runs (status, started_at_utc)
+        """,
+    ),
+)
+
+MIGRATIONS = (
+    INGESTION_RUNS_MIGRATION,
+)
+
+CURRENT_SCHEMA_VERSION = MIGRATIONS[-1].version
 
 
 def get_connection(
@@ -76,7 +176,7 @@ def _register_baseline_migration(
         FROM schema_migrations
         WHERE version = ?
         """,
-        (SCHEMA_VERSION,),
+        (BASELINE_MIGRATION_VERSION,),
     ).fetchone()
 
     if existing_row is None:
@@ -90,7 +190,7 @@ def _register_baseline_migration(
             VALUES (?, ?, ?)
             """,
             (
-                SCHEMA_VERSION,
+                BASELINE_MIGRATION_VERSION,
                 BASELINE_MIGRATION_NAME,
                 BASELINE_MIGRATION_CHECKSUM,
             ),
@@ -107,6 +207,74 @@ def _register_baseline_migration(
         raise DatabaseMigrationError(
             "La migration de référence SQLite a été modifiée."
         )
+
+
+def _apply_migration(
+    connection: sqlite3.Connection,
+    migration: Migration,
+) -> None:
+    """Applique une migration une seule fois dans une transaction."""
+    existing_row = connection.execute(
+        """
+        SELECT name, checksum
+        FROM schema_migrations
+        WHERE version = ?
+        """,
+        (migration.version,),
+    ).fetchone()
+
+    if existing_row is not None:
+        existing_name = str(existing_row["name"])
+        existing_checksum = str(existing_row["checksum"])
+
+        if (
+            existing_name != migration.name
+            or existing_checksum != migration.checksum
+        ):
+            raise DatabaseMigrationError(
+                f"La migration {migration.version} a été modifiée."
+            )
+
+        return
+
+    savepoint_name = f"migration_{migration.version}"
+    connection.execute(f"SAVEPOINT {savepoint_name}")
+
+    try:
+        for statement in migration.statements:
+            connection.execute(statement)
+
+        connection.execute(
+            """
+            INSERT INTO schema_migrations (
+                version,
+                name,
+                checksum
+            )
+            VALUES (?, ?, ?)
+            """,
+            (
+                migration.version,
+                migration.name,
+                migration.checksum,
+            ),
+        )
+    except Exception:
+        connection.execute(
+            f"ROLLBACK TO SAVEPOINT {savepoint_name}"
+        )
+        connection.execute(f"RELEASE SAVEPOINT {savepoint_name}")
+        raise
+    else:
+        connection.execute(f"RELEASE SAVEPOINT {savepoint_name}")
+
+
+def _apply_pending_migrations(
+    connection: sqlite3.Connection,
+) -> None:
+    """Applique toutes les migrations encore absentes."""
+    for migration in MIGRATIONS:
+        _apply_migration(connection, migration)
 
 
 def initialize_database(
@@ -205,6 +373,7 @@ def initialize_database(
         )
 
         _register_baseline_migration(connection)
+        _apply_pending_migrations(connection)
 
         connection.execute(
             """
@@ -214,7 +383,7 @@ def initialize_database(
                 value = excluded.value,
                 updated_at = CURRENT_TIMESTAMP
             """,
-            (str(SCHEMA_VERSION),),
+            (str(CURRENT_SCHEMA_VERSION),),
         )
 
     return database_path

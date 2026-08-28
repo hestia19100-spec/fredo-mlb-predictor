@@ -18,6 +18,8 @@ class StoredGame:
     game_datetime_utc: str
     away_team_name: str
     home_team_name: str
+    away_probable_pitcher_name: str | None
+    home_probable_pitcher_name: str | None
     away_score: int | None
     home_score: int | None
     status_detail: str
@@ -37,6 +39,10 @@ def load_games_for_date(target_date: date) -> list[StoredGame]:
                 games.game_datetime_utc,
                 away_team.name AS away_team_name,
                 home_team.name AS home_team_name,
+                away_pitcher.full_name
+                    AS away_probable_pitcher_name,
+                home_pitcher.full_name
+                    AS home_probable_pitcher_name,
                 games.away_score,
                 games.home_score,
                 games.status_detail,
@@ -46,6 +52,12 @@ def load_games_for_date(target_date: date) -> list[StoredGame]:
                 ON away_team.team_id = games.away_team_id
             INNER JOIN teams AS home_team
                 ON home_team.team_id = games.home_team_id
+            LEFT JOIN pitchers AS away_pitcher
+                ON away_pitcher.pitcher_id =
+                    games.away_probable_pitcher_id
+            LEFT JOIN pitchers AS home_pitcher
+                ON home_pitcher.pitcher_id =
+                    games.home_probable_pitcher_id
             WHERE games.official_date = ?
             ORDER BY games.game_datetime_utc, games.game_id
             """,
@@ -59,6 +71,16 @@ def load_games_for_date(target_date: date) -> list[StoredGame]:
             game_datetime_utc=str(row["game_datetime_utc"]),
             away_team_name=str(row["away_team_name"]),
             home_team_name=str(row["home_team_name"]),
+            away_probable_pitcher_name=(
+                str(row["away_probable_pitcher_name"])
+                if row["away_probable_pitcher_name"] is not None
+                else None
+            ),
+            home_probable_pitcher_name=(
+                str(row["home_probable_pitcher_name"])
+                if row["home_probable_pitcher_name"] is not None
+                else None
+            ),
             away_score=(
                 int(row["away_score"])
                 if row["away_score"] is not None
@@ -98,6 +120,11 @@ def _format_score(game: StoredGame) -> str:
     return f"{game.away_score} - {game.home_score}"
 
 
+def _format_pitcher(pitcher_name: str | None) -> str:
+    """Prépare un nom de lanceur lisible."""
+    return pitcher_name or "non annoncé"
+
+
 def main() -> None:
     """Teste la lecture des matchs depuis SQLite."""
     parser = argparse.ArgumentParser(
@@ -118,8 +145,16 @@ def main() -> None:
     print(f"Matchs lus depuis SQLite : {len(games)}")
 
     for game in games:
+        away_pitcher = _format_pitcher(
+            game.away_probable_pitcher_name
+        )
+        home_pitcher = _format_pitcher(
+            game.home_probable_pitcher_name
+        )
+
         print(
-            f"- {game.away_team_name} @ {game.home_team_name}"
+            f"- {game.away_team_name} ({away_pitcher})"
+            f" @ {game.home_team_name} ({home_pitcher})"
             f" | {game.status_detail}"
             f" | {_format_score(game)}"
         )

@@ -38,13 +38,21 @@ class MLBAPITests(unittest.TestCase):
                                     "team": {
                                         "id": 100,
                                         "name": "Away Team",
-                                    }
+                                    },
+                                    "probablePitcher": {
+                                        "id": 400,
+                                        "fullName": "Away Pitcher",
+                                    },
                                 },
                                 "home": {
                                     "team": {
                                         "id": 200,
                                         "name": "Home Team",
-                                    }
+                                    },
+                                    "probablePitcher": {
+                                        "id": 500,
+                                        "fullName": "Home Pitcher",
+                                    },
                                 },
                             },
                             "venue": {
@@ -77,10 +85,25 @@ class MLBAPITests(unittest.TestCase):
         self.assertIsNone(game.away_score)
         self.assertIsNone(game.home_score)
 
+        self.assertEqual(game.away_probable_pitcher_id, 400)
+        self.assertEqual(
+            game.away_probable_pitcher_name,
+            "Away Pitcher",
+        )
+        self.assertEqual(game.home_probable_pitcher_id, 500)
+        self.assertEqual(
+            game.home_probable_pitcher_name,
+            "Home Pitcher",
+        )
+
         request_parameters = mocked_get.call_args.kwargs["params"]
 
         self.assertEqual(request_parameters["sportId"], 1)
         self.assertEqual(request_parameters["date"], "2026-08-28")
+        self.assertEqual(
+            request_parameters["hydrate"],
+            "probablePitcher",
+        )
         mocked_response.raise_for_status.assert_called_once_with()
 
 

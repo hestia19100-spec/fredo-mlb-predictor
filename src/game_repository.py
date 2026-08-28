@@ -29,9 +29,38 @@ def _upsert_team(
     )
 
 
+def _upsert_pitcher(
+    connection: sqlite3.Connection,
+    pitcher_id: int | None,
+    pitcher_name: str | None,
+) -> int | None:
+    """Ajoute un lanceur annoncé ou retourne None s’il manque."""
+    if pitcher_id is None or pitcher_name is None:
+        return None
+
+    clean_name = pitcher_name.strip()
+    if not clean_name:
+        return None
+
+    connection.execute(
+        """
+        INSERT INTO pitchers (pitcher_id, full_name)
+        VALUES (?, ?)
+        ON CONFLICT(pitcher_id) DO UPDATE SET
+            full_name = excluded.full_name,
+            updated_at = CURRENT_TIMESTAMP
+        """,
+        (pitcher_id, clean_name),
+    )
+
+    return pitcher_id
+
+
 def _upsert_game(
     connection: sqlite3.Connection,
     game: ScheduledGame,
+    away_probable_pitcher_id: int | None,
+    home_probable_pitcher_id: int | None,
 ) -> None:
     """Ajoute un match ou actualise ses informations."""
     connection.execute(
@@ -51,9 +80,11 @@ def _upsert_game(
             venue_id,
             venue_name,
             doubleheader,
-            game_number
+            game_number,
+            away_probable_pitcher_id,
+            home_probable_pitcher_id
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(game_id) DO UPDATE SET
             season = excluded.season,
             official_date = excluded.official_date,
@@ -69,6 +100,10 @@ def _upsert_game(
             venue_name = excluded.venue_name,
             doubleheader = excluded.doubleheader,
             game_number = excluded.game_number,
+            away_probable_pitcher_id =
+                excluded.away_probable_pitcher_id,
+            home_probable_pitcher_id =
+                excluded.home_probable_pitcher_id,
             updated_at = CURRENT_TIMESTAMP
         """,
         (
@@ -87,6 +122,8 @@ def _upsert_game(
             game.venue_name,
             game.doubleheader,
             game.game_number,
+            away_probable_pitcher_id,
+            home_probable_pitcher_id,
         ),
     )
 
@@ -108,7 +145,24 @@ def save_schedule(games: Iterable[ScheduledGame]) -> int:
                 game.home_team_id,
                 game.home_team_name,
             )
-            _upsert_game(connection, game)
+
+            away_pitcher_id = _upsert_pitcher(
+                connection,
+                game.away_probable_pitcher_id,
+                game.away_probable_pitcher_name,
+            )
+            home_pitcher_id = _upsert_pitcher(
+                connection,
+                game.home_probable_pitcher_id,
+                game.home_probable_pitcher_name,
+            )
+
+            _upsert_game(
+                connection,
+                game,
+                away_pitcher_id,
+                home_pitcher_id,
+            )
 
     return len(game_list)
 
@@ -135,6 +189,19 @@ def count_teams() -> int:
             """
             SELECT COUNT(*) AS total
             FROM teams
+            """
+        ).fetchone()
+
+    return int(row["total"])
+
+
+def count_pitchers() -> int:
+    """Compte les lanceurs enregistrés."""
+    with get_connection() as connection:
+        row = connection.execute(
+            """
+            SELECT COUNT(*) AS total
+            FROM pitchers
             """
         ).fetchone()
 
@@ -170,6 +237,7 @@ def main() -> None:
         saved_games = save_schedule(games)
         database_games = count_games_for_date(arguments.target_date)
         database_teams = count_teams()
+        database_pitchers = count_pitchers()
     except (MLBAPIError, sqlite3.Error) as error:
         raise SystemExit(f"Erreur pendant l’enregistrement : {error}") from error
 
@@ -177,6 +245,7 @@ def main() -> None:
     print(f"Matchs enregistrés ou actualisés : {saved_games}")
     print(f"Matchs présents en base pour cette date : {database_games}")
     print(f"Équipes présentes en base : {database_teams}")
+    print(f"Lanceurs présents en base : {database_pitchers}")
 
 
 if __name__ == "__main__":

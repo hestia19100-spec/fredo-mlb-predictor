@@ -40,6 +40,10 @@ class ScheduledGame:
     venue_name: str | None
     doubleheader: str | None
     game_number: int | None
+    away_probable_pitcher_id: int | None
+    away_probable_pitcher_name: str | None
+    home_probable_pitcher_id: int | None
+    home_probable_pitcher_name: str | None
 
 
 def _optional_int(value: Any) -> int | None:
@@ -48,6 +52,25 @@ def _optional_int(value: Any) -> int | None:
         return None
 
     return int(value)
+
+
+def _parse_probable_pitcher(
+    team_data: dict[str, Any],
+) -> tuple[int | None, str | None]:
+    """Extrait le lanceur probable lorsqu’il est annoncé."""
+    probable_pitcher = team_data.get("probablePitcher")
+
+    if not isinstance(probable_pitcher, dict):
+        return None, None
+
+    pitcher_id = _optional_int(probable_pitcher.get("id"))
+    pitcher_name = (
+        str(probable_pitcher["fullName"])
+        if probable_pitcher.get("fullName") is not None
+        else None
+    )
+
+    return pitcher_id, pitcher_name
 
 
 def _parse_game(raw_game: dict[str, Any]) -> ScheduledGame:
@@ -59,6 +82,16 @@ def _parse_game(raw_game: dict[str, Any]) -> ScheduledGame:
         home_team = home_data["team"]
         status = raw_game["status"]
         venue = raw_game.get("venue") or {}
+
+        (
+            away_probable_pitcher_id,
+            away_probable_pitcher_name,
+        ) = _parse_probable_pitcher(away_data)
+
+        (
+            home_probable_pitcher_id,
+            home_probable_pitcher_name,
+        ) = _parse_probable_pitcher(home_data)
 
         return ScheduledGame(
             game_id=int(raw_game["gamePk"]),
@@ -90,6 +123,10 @@ def _parse_game(raw_game: dict[str, Any]) -> ScheduledGame:
                 else None
             ),
             game_number=_optional_int(raw_game.get("gameNumber")),
+            away_probable_pitcher_id=away_probable_pitcher_id,
+            away_probable_pitcher_name=away_probable_pitcher_name,
+            home_probable_pitcher_id=home_probable_pitcher_id,
+            home_probable_pitcher_name=home_probable_pitcher_name,
         )
     except (KeyError, TypeError, ValueError) as error:
         game_reference = raw_game.get("gamePk", "inconnu")
@@ -103,6 +140,7 @@ def fetch_schedule(target_date: date) -> list[ScheduledGame]:
     parameters = {
         "sportId": MLB_SPORT_ID,
         "date": target_date.isoformat(),
+        "hydrate": "probablePitcher",
     }
     headers = {
         "User-Agent": "fredo-mlb-predictor/0.1",
@@ -162,6 +200,11 @@ def _parse_date(value: str) -> date:
         ) from error
 
 
+def _pitcher_label(pitcher_name: str | None) -> str:
+    """Prépare un nom de lanceur lisible."""
+    return pitcher_name or "non annoncé"
+
+
 def main() -> None:
     """Teste la récupération du calendrier depuis le terminal."""
     parser = argparse.ArgumentParser(
@@ -189,8 +232,16 @@ def main() -> None:
         return
 
     for game in games:
+        away_pitcher = _pitcher_label(
+            game.away_probable_pitcher_name
+        )
+        home_pitcher = _pitcher_label(
+            game.home_probable_pitcher_name
+        )
+
         print(
-            f"- {game.away_team_name} @ {game.home_team_name}"
+            f"- {game.away_team_name} ({away_pitcher})"
+            f" @ {game.home_team_name} ({home_pitcher})"
             f" | {game.status_detail}"
         )
 

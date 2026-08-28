@@ -50,6 +50,20 @@ def format_score(game: StoredGame) -> str:
     return f"{game.away_score} - {game.home_score}"
 
 
+def pitcher_name_or_missing(pitcher_name: str | None) -> str:
+    """Affiche clairement un lanceur encore inconnu."""
+    return pitcher_name or "Non annoncé"
+
+
+def count_announced_pitchers(games: list[StoredGame]) -> int:
+    """Compte les lanceurs probables disponibles."""
+    return sum(
+        int(game.away_probable_pitcher_name is not None)
+        + int(game.home_probable_pitcher_name is not None)
+        for game in games
+    )
+
+
 def build_table_rows(games: list[StoredGame]) -> list[dict[str, str]]:
     """Prépare les lignes du tableau Streamlit."""
     return [
@@ -57,6 +71,12 @@ def build_table_rows(games: list[StoredGame]) -> list[dict[str, str]]:
             "Heure de Paris": format_game_time(game.game_datetime_utc),
             "Match": (
                 f"{game.away_team_name} @ {game.home_team_name}"
+            ),
+            "Lanceur extérieur": pitcher_name_or_missing(
+                game.away_probable_pitcher_name
+            ),
+            "Lanceur domicile": pitcher_name_or_missing(
+                game.home_probable_pitcher_name
             ),
             "Statut": game.status_detail,
             "Score": format_score(game),
@@ -123,8 +143,19 @@ if st.button(
                 )
 
 stored_games = load_games_for_date(selected_date)
+announced_pitchers = count_announced_pitchers(stored_games)
+possible_pitchers = len(stored_games) * 2
 
-st.metric("Nombre de matchs en base", len(stored_games))
+games_column, pitchers_column = st.columns(2)
+
+games_column.metric(
+    "Nombre de matchs en base",
+    len(stored_games),
+)
+pitchers_column.metric(
+    "Lanceurs probables annoncés",
+    f"{announced_pitchers} / {possible_pitchers}",
+)
 
 if stored_games:
     st.dataframe(
@@ -133,8 +164,8 @@ if stored_games:
         hide_index=True,
     )
     st.caption(
-        "Une nouvelle récupération actualise les statuts et les scores "
-        "sans créer de doublons."
+        "Une nouvelle récupération actualise les statuts, les scores "
+        "et les lanceurs probables sans créer de doublons."
     )
 else:
     st.warning(

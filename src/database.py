@@ -1,5 +1,6 @@
-"""Connexion et initialisation de la base de données SQLite."""
+"""Connexion, initialisation et suivi de la base SQLite."""
 
+from hashlib import sha256
 from pathlib import Path
 import sqlite3
 
@@ -7,7 +8,21 @@ import sqlite3
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = PROJECT_ROOT / "data"
 DATABASE_PATH = DATA_DIR / "fredo_mlb.db"
-SCHEMA_VERSION = "3"
+
+SCHEMA_VERSION = 3
+BASELINE_MIGRATION_NAME = "baseline_pitchers"
+BASELINE_SCHEMA_SIGNATURE = (
+    "v3|app_metadata|teams|pitchers|games|"
+    "games.away_probable_pitcher_id|"
+    "games.home_probable_pitcher_id"
+)
+BASELINE_MIGRATION_CHECKSUM = sha256(
+    BASELINE_SCHEMA_SIGNATURE.encode("utf-8")
+).hexdigest()
+
+
+class DatabaseMigrationError(RuntimeError):
+    """Signale une incohérence dans l’historique des migrations."""
 
 
 def get_connection(
@@ -51,6 +66,49 @@ def _add_pitcher_columns_if_needed(
         )
 
 
+def _register_baseline_migration(
+    connection: sqlite3.Connection,
+) -> None:
+    """Enregistre ou contrôle la structure de référence actuelle."""
+    existing_row = connection.execute(
+        """
+        SELECT name, checksum
+        FROM schema_migrations
+        WHERE version = ?
+        """,
+        (SCHEMA_VERSION,),
+    ).fetchone()
+
+    if existing_row is None:
+        connection.execute(
+            """
+            INSERT INTO schema_migrations (
+                version,
+                name,
+                checksum
+            )
+            VALUES (?, ?, ?)
+            """,
+            (
+                SCHEMA_VERSION,
+                BASELINE_MIGRATION_NAME,
+                BASELINE_MIGRATION_CHECKSUM,
+            ),
+        )
+        return
+
+    existing_name = str(existing_row["name"])
+    existing_checksum = str(existing_row["checksum"])
+
+    if (
+        existing_name != BASELINE_MIGRATION_NAME
+        or existing_checksum != BASELINE_MIGRATION_CHECKSUM
+    ):
+        raise DatabaseMigrationError(
+            "La migration de référence SQLite a été modifiée."
+        )
+
+
 def initialize_database(
     database_path: Path = DATABASE_PATH,
 ) -> Path:
@@ -58,6 +116,14 @@ def initialize_database(
     with get_connection(database_path) as connection:
         connection.executescript(
             """
+            CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY
+                    CHECK (version > 0),
+                name TEXT NOT NULL UNIQUE,
+                checksum TEXT NOT NULL,
+                applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
             CREATE TABLE IF NOT EXISTS app_metadata (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL,
@@ -138,6 +204,8 @@ def initialize_database(
             """
         )
 
+        _register_baseline_migration(connection)
+
         connection.execute(
             """
             INSERT INTO app_metadata (key, value)
@@ -146,7 +214,7 @@ def initialize_database(
                 value = excluded.value,
                 updated_at = CURRENT_TIMESTAMP
             """,
-            (SCHEMA_VERSION,),
+            (str(SCHEMA_VERSION),),
         )
 
     return database_path
@@ -169,13 +237,34 @@ def list_tables(
     return [str(row["name"]) for row in rows]
 
 
+def list_applied_migrations(
+    database_path: Path = DATABASE_PATH,
+) -> list[int]:
+    """Retourne les numéros des migrations enregistrées."""
+    with get_connection(database_path) as connection:
+        rows = connection.execute(
+            """
+            SELECT version
+            FROM schema_migrations
+            ORDER BY version
+            """
+        ).fetchall()
+
+    return [int(row["version"]) for row in rows]
+
+
 def main() -> None:
     """Lance un contrôle simple de la base principale."""
     database_path = initialize_database()
     tables = ", ".join(list_tables(database_path))
+    migrations = ", ".join(
+        str(version)
+        for version in list_applied_migrations(database_path)
+    )
 
     print(f"Base SQLite prête : {database_path}")
     print(f"Tables présentes : {tables}")
+    print(f"Migrations enregistrées : {migrations}")
 
 
 if __name__ == "__main__":

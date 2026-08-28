@@ -7,6 +7,7 @@ import unittest
 from src.database import (
     get_connection,
     initialize_database,
+    list_applied_migrations,
     list_tables,
 )
 
@@ -32,6 +33,7 @@ class DatabaseTests(unittest.TestCase):
             "app_metadata",
             "games",
             "pitchers",
+            "schema_migrations",
             "teams",
         }
 
@@ -65,6 +67,28 @@ class DatabaseTests(unittest.TestCase):
                 f"{sorted(required_columns - actual_columns)}"
             ),
         )
+
+    def test_baseline_migration_is_recorded(self) -> None:
+        """La migration de référence doit être enregistrée une fois."""
+        initialize_database(self.database_path)
+        initialize_database(self.database_path)
+
+        migrations = list_applied_migrations(self.database_path)
+
+        self.assertEqual(migrations, [3])
+
+        with get_connection(self.database_path) as connection:
+            row = connection.execute(
+                """
+                SELECT name, checksum
+                FROM schema_migrations
+                WHERE version = 3
+                """
+            ).fetchone()
+
+        self.assertIsNotNone(row)
+        self.assertEqual(row["name"], "baseline_pitchers")
+        self.assertEqual(len(str(row["checksum"])), 64)
 
 
 if __name__ == "__main__":

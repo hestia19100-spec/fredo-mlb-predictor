@@ -10,11 +10,13 @@ DATABASE_PATH = DATA_DIR / "fredo_mlb.db"
 SCHEMA_VERSION = "3"
 
 
-def get_connection() -> sqlite3.Connection:
-    """Ouvre une connexion SQLite configurée pour l’application."""
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
+def get_connection(
+    database_path: Path = DATABASE_PATH,
+) -> sqlite3.Connection:
+    """Ouvre une connexion vers la base SQLite demandée."""
+    database_path.parent.mkdir(parents=True, exist_ok=True)
 
-    connection = sqlite3.connect(DATABASE_PATH)
+    connection = sqlite3.connect(database_path)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
 
@@ -49,9 +51,11 @@ def _add_pitcher_columns_if_needed(
         )
 
 
-def initialize_database() -> Path:
-    """Crée ou met à niveau les premières tables du projet."""
-    with get_connection() as connection:
+def initialize_database(
+    database_path: Path = DATABASE_PATH,
+) -> Path:
+    """Crée ou met à niveau la base SQLite demandée."""
+    with get_connection(database_path) as connection:
         connection.executescript(
             """
             CREATE TABLE IF NOT EXISTS app_metadata (
@@ -145,12 +149,14 @@ def initialize_database() -> Path:
             (SCHEMA_VERSION,),
         )
 
-    return DATABASE_PATH
+    return database_path
 
 
-def list_tables() -> list[str]:
-    """Retourne la liste des tables présentes dans la base."""
-    with get_connection() as connection:
+def list_tables(
+    database_path: Path = DATABASE_PATH,
+) -> list[str]:
+    """Retourne les tables présentes dans la base demandée."""
+    with get_connection(database_path) as connection:
         rows = connection.execute(
             """
             SELECT name
@@ -160,13 +166,13 @@ def list_tables() -> list[str]:
             """
         ).fetchall()
 
-    return [row["name"] for row in rows]
+    return [str(row["name"]) for row in rows]
 
 
 def main() -> None:
-    """Lance un contrôle simple de SQLite."""
+    """Lance un contrôle simple de la base principale."""
     database_path = initialize_database()
-    tables = ", ".join(list_tables())
+    tables = ", ".join(list_tables(database_path))
 
     print(f"Base SQLite prête : {database_path}")
     print(f"Tables présentes : {tables}")

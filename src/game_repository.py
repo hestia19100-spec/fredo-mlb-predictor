@@ -4,10 +4,15 @@ from __future__ import annotations
 
 import argparse
 from datetime import date
+from pathlib import Path
 import sqlite3
 from typing import Iterable
 
-from src.database import get_connection, initialize_database
+from src.database import (
+    DATABASE_PATH,
+    get_connection,
+    initialize_database,
+)
 from src.mlb_api import MLBAPIError, ScheduledGame, fetch_schedule
 
 
@@ -128,12 +133,15 @@ def _upsert_game(
     )
 
 
-def save_schedule(games: Iterable[ScheduledGame]) -> int:
-    """Enregistre une liste de matchs sans créer de doublons."""
+def save_schedule(
+    games: Iterable[ScheduledGame],
+    database_path: Path = DATABASE_PATH,
+) -> int:
+    """Enregistre des matchs dans la base demandée."""
     game_list = list(games)
-    initialize_database()
+    initialize_database(database_path)
 
-    with get_connection() as connection:
+    with get_connection(database_path) as connection:
         for game in game_list:
             _upsert_team(
                 connection,
@@ -167,9 +175,14 @@ def save_schedule(games: Iterable[ScheduledGame]) -> int:
     return len(game_list)
 
 
-def count_games_for_date(target_date: date) -> int:
+def count_games_for_date(
+    target_date: date,
+    database_path: Path = DATABASE_PATH,
+) -> int:
     """Compte les matchs enregistrés pour une date."""
-    with get_connection() as connection:
+    initialize_database(database_path)
+
+    with get_connection(database_path) as connection:
         row = connection.execute(
             """
             SELECT COUNT(*) AS total
@@ -182,9 +195,13 @@ def count_games_for_date(target_date: date) -> int:
     return int(row["total"])
 
 
-def count_teams() -> int:
+def count_teams(
+    database_path: Path = DATABASE_PATH,
+) -> int:
     """Compte les équipes enregistrées."""
-    with get_connection() as connection:
+    initialize_database(database_path)
+
+    with get_connection(database_path) as connection:
         row = connection.execute(
             """
             SELECT COUNT(*) AS total
@@ -195,9 +212,13 @@ def count_teams() -> int:
     return int(row["total"])
 
 
-def count_pitchers() -> int:
+def count_pitchers(
+    database_path: Path = DATABASE_PATH,
+) -> int:
     """Compte les lanceurs enregistrés."""
-    with get_connection() as connection:
+    initialize_database(database_path)
+
+    with get_connection(database_path) as connection:
         row = connection.execute(
             """
             SELECT COUNT(*) AS total
@@ -219,7 +240,7 @@ def _parse_date(value: str) -> date:
 
 
 def main() -> None:
-    """Récupère puis enregistre une journée MLB."""
+    """Récupère puis enregistre une journée dans la base principale."""
     parser = argparse.ArgumentParser(
         description="Enregistre le calendrier MLB dans SQLite."
     )
@@ -239,7 +260,9 @@ def main() -> None:
         database_teams = count_teams()
         database_pitchers = count_pitchers()
     except (MLBAPIError, sqlite3.Error) as error:
-        raise SystemExit(f"Erreur pendant l’enregistrement : {error}") from error
+        raise SystemExit(
+            f"Erreur pendant l’enregistrement : {error}"
+        ) from error
 
     print(f"Date traitée : {arguments.target_date.isoformat()}")
     print(f"Matchs enregistrés ou actualisés : {saved_games}")

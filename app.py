@@ -6,8 +6,8 @@ import streamlit as st
 
 from src.dashboard_data import StoredGame, load_games_for_date
 from src.database import initialize_database, list_tables
-from src.game_repository import save_schedule
-from src.mlb_api import MLBAPIError, fetch_schedule
+from src.ingestion_service import run_schedule_ingestion
+from src.mlb_api import MLBAPIError
 
 
 PARIS_TIMEZONE = ZoneInfo("Europe/Paris")
@@ -123,24 +123,41 @@ if st.button(
     "Récupérer ou actualiser depuis MLB",
     type="primary",
 ):
-    with st.spinner("Récupération des matchs MLB en cours..."):
+    with st.spinner("Collecte auditée des matchs MLB en cours..."):
         try:
-            api_games = fetch_schedule(selected_date)
-            saved_games = save_schedule(api_games)
+            ingestion_result = run_schedule_ingestion(
+                start_date=selected_date,
+                end_date=selected_date,
+            )
         except MLBAPIError as error:
             st.error(f"Erreur de communication avec MLB : {error}")
         except sqlite3.Error as error:
             st.error(f"Erreur SQLite : {error}")
+        except (OSError, ValueError) as error:
+            st.error(f"Erreur pendant l’archivage : {error}")
         else:
-            if saved_games:
+            if ingestion_result.games_received:
                 st.success(
-                    f"{saved_games} matchs ont été enregistrés "
-                    "ou actualisés."
+                    f"Collecte auditée n° {ingestion_result.run_id} "
+                    f"terminée : {ingestion_result.games_received} "
+                    "matchs reçus et "
+                    f"{ingestion_result.games_saved} enregistrés."
                 )
             else:
                 st.warning(
-                    "L’API MLB n’a renvoyé aucun match pour cette date."
+                    f"Collecte auditée n° {ingestion_result.run_id} "
+                    "terminée : aucun match renvoyé par MLB."
                 )
+
+            displayed_code_version = (
+                ingestion_result.code_version or "inconnue"
+            )
+
+            st.caption(
+                f"Archive : `{ingestion_result.archive_relative_path}`  \n"
+                f"SHA-256 : `{ingestion_result.response_sha256}`  \n"
+                f"Version du code : `{displayed_code_version}`"
+            )
 
 stored_games = load_games_for_date(selected_date)
 announced_pitchers = count_announced_pitchers(stored_games)
@@ -164,8 +181,9 @@ if stored_games:
         hide_index=True,
     )
     st.caption(
-        "Une nouvelle récupération actualise les statuts, les scores "
-        "et les lanceurs probables sans créer de doublons."
+        "Chaque récupération actualise les données sans créer de "
+        "doublons. Elle est également journalisée et sa réponse brute "
+        "est conservée."
     )
 else:
     st.warning(

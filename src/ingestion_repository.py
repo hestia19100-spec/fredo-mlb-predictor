@@ -249,6 +249,58 @@ def mark_ingestion_error(
             )
 
 
+def find_successful_ingestion_run(
+    *,
+    source: str,
+    start_date: date,
+    end_date: date,
+    game_types: Iterable[str],
+    request_parameters: Mapping[str, object],
+    database_path: Path = DATABASE_PATH,
+) -> dict[str, object] | None:
+    """Recherche la dernière collecte réussie strictement identique."""
+    _validate_period(start_date, end_date)
+
+    normalized_source = source.strip()
+    if not normalized_source:
+        raise ValueError("La source de données est obligatoire.")
+
+    normalized_game_types = _normalize_game_types(game_types)
+    parameters_json = _serialize_parameters(request_parameters)
+
+    initialize_database(database_path)
+
+    with get_connection(database_path) as connection:
+        row = connection.execute(
+            """
+            SELECT *
+            FROM ingestion_runs
+            WHERE source = ?
+              AND requested_start_date = ?
+              AND requested_end_date = ?
+              AND game_types = ?
+              AND request_parameters_json = ?
+              AND status = 'success'
+              AND completed_at_utc IS NOT NULL
+              AND records_received IS NOT NULL
+              AND records_saved IS NOT NULL
+              AND raw_response_path IS NOT NULL
+              AND response_sha256 IS NOT NULL
+            ORDER BY run_id DESC
+            LIMIT 1
+            """,
+            (
+                normalized_source,
+                start_date.isoformat(),
+                end_date.isoformat(),
+                normalized_game_types,
+                parameters_json,
+            ),
+        ).fetchone()
+
+    return dict(row) if row is not None else None
+
+
 def get_ingestion_run(
     run_id: int,
     database_path: Path = DATABASE_PATH,

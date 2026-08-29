@@ -18,6 +18,10 @@ data/*.sqlite3
 *.sqlite-shm
 *.sqlite-wal
 
+# Données brutes et jeux de données générés
+data/raw/
+data/processed/
+
 # Modèles et journaux générés
 models/*.joblib
 models/*.pkl

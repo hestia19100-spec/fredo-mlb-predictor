@@ -26,7 +26,7 @@ from src.ingestion_service import (
     build_schedule_request_parameters,
     run_schedule_ingestion,
 )
-from src.mlb_api import MLBAPIError
+from src.mlb_api import MLBAPIRetryableError
 from src.raw_archive import (
     RawArchiveError,
     verify_raw_archive,
@@ -372,7 +372,7 @@ def execute_backfill(
                 data_directory=data_directory,
                 code_version=code_version,
             ),
-            retry_exceptions=(MLBAPIError,),
+            retry_exceptions=(MLBAPIRetryableError,),
             policy=retry_policy,
             sleep_function=sleep_function,
         )

@@ -1,3 +1,5 @@
+"""Tests d’intégration des reprises réseau du backfill MLB."""
+
 from datetime import date
 from pathlib import Path
 import sqlite3
@@ -7,7 +9,10 @@ from unittest.mock import patch
 
 from src.backfill_service import execute_backfill
 from src.ingestion_service import ScheduleIngestionResult
-from src.mlb_api import MLBAPIError
+from src.mlb_api import (
+    MLBAPIError,
+    MLBAPIRetryableError,
+)
 from src.retry_policy import RetryPolicy
 
 
@@ -55,8 +60,10 @@ class BackfillRetryIntegrationTests(unittest.TestCase):
             code_version="retry-integration-test",
         )
 
-    def test_mlb_errors_are_retried_until_success(self) -> None:
-        """Deux erreurs MLB doivent être suivies d’une réussite."""
+    def test_retryable_mlb_errors_are_retried_until_success(
+        self,
+    ) -> None:
+        """Deux erreurs temporaires doivent précéder la réussite."""
         calls = 0
         delays: list[float] = []
 
@@ -67,7 +74,7 @@ class BackfillRetryIntegrationTests(unittest.TestCase):
             calls += 1
 
             if calls < 3:
-                raise MLBAPIError(
+                raise MLBAPIRetryableError(
                     f"Erreur MLB temporaire n° {calls}"
                 )
 
@@ -98,8 +105,10 @@ class BackfillRetryIntegrationTests(unittest.TestCase):
         self.assertEqual(execution.total_attempts, 3)
         self.assertEqual(execution.retried_chunks, 1)
 
-    def test_exhausted_mlb_errors_are_raised(self) -> None:
-        """La troisième erreur MLB doit arrêter l’exécution."""
+    def test_exhausted_retryable_mlb_errors_are_raised(
+        self,
+    ) -> None:
+        """La troisième erreur temporaire doit arrêter l’exécution."""
         calls = 0
         delays: list[float] = []
 
@@ -108,15 +117,15 @@ class BackfillRetryIntegrationTests(unittest.TestCase):
         ) -> ScheduleIngestionResult:
             nonlocal calls
             calls += 1
-            raise MLBAPIError(
-                f"Erreur MLB persistante n° {calls}"
+            raise MLBAPIRetryableError(
+                f"Erreur MLB temporaire persistante n° {calls}"
             )
 
         with patch(
             "src.backfill_service.run_schedule_ingestion",
             side_effect=failing_ingestion,
         ):
-            with self.assertRaises(MLBAPIError):
+            with self.assertRaises(MLBAPIRetryableError):
                 execute_backfill(
                     start_date=date(2026, 8, 26),
                     end_date=date(2026, 8, 26),
@@ -133,6 +142,40 @@ class BackfillRetryIntegrationTests(unittest.TestCase):
 
         self.assertEqual(calls, 3)
         self.assertEqual(delays, [1.0, 2.0])
+
+    def test_non_retryable_mlb_error_is_not_retried(
+        self,
+    ) -> None:
+        """Une erreur de contenu doit remonter immédiatement."""
+        calls = 0
+        delays: list[float] = []
+
+        def failing_ingestion(
+            **arguments: object,
+        ) -> ScheduleIngestionResult:
+            nonlocal calls
+            calls += 1
+            raise MLBAPIError(
+                "Réponse MLB contradictoire simulée."
+            )
+
+        with patch(
+            "src.backfill_service.run_schedule_ingestion",
+            side_effect=failing_ingestion,
+        ):
+            with self.assertRaises(MLBAPIError):
+                execute_backfill(
+                    start_date=date(2026, 8, 26),
+                    end_date=date(2026, 8, 26),
+                    database_path=self.database_path,
+                    data_directory=self.data_directory,
+                    retry_policy=RetryPolicy(max_attempts=3),
+                    chunk_delay_seconds=0,
+                    sleep_function=delays.append,
+                )
+
+        self.assertEqual(calls, 1)
+        self.assertEqual(delays, [])
 
     def test_sqlite_error_is_not_retried(self) -> None:
         """Une erreur SQLite doit remonter dès le premier essai."""

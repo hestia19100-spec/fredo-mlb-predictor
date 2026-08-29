@@ -24,6 +24,10 @@ from src.ingestion_service import (
     build_schedule_request_parameters,
     run_schedule_ingestion,
 )
+from src.raw_archive import (
+    RawArchiveError,
+    verify_raw_archive,
+)
 
 
 ACTION_COLLECT = "collect"
@@ -37,6 +41,7 @@ class BackfillChunkPlan:
     chunk: DateChunk
     action: str
     successful_run_id: int | None
+    reason: str
 
     @property
     def should_collect(self) -> bool:
@@ -59,7 +64,7 @@ class BackfillPreview:
 
     @property
     def skipped_chunks(self) -> int:
-        """Compte les lots déjà réussis."""
+        """Compte les lots déjà réussis et vérifiés."""
         return sum(
             plan.action == ACTION_SKIP
             for plan in self.chunk_plans
@@ -125,15 +130,32 @@ def _validate_max_chunks(max_chunks: int) -> int:
     return max_chunks
 
 
+def _resolve_data_directory(
+    *,
+    database_path: Path,
+    data_directory: Path | None,
+) -> Path:
+    """Retrouve le dossier data associé à la base SQLite."""
+    if data_directory is not None:
+        return data_directory
+
+    return database_path.parent
+
+
 def build_backfill_preview(
     *,
     start_date: date,
     end_date: date,
     game_types: Iterable[str] = ("R",),
     database_path: Path = DATABASE_PATH,
+    data_directory: Path | None = None,
 ) -> BackfillPreview:
-    """Prépare les décisions de reprise sans appel réseau."""
+    """Prépare la reprise et vérifie chaque archive réutilisée."""
     selected_game_types = tuple(game_types)
+    effective_data_directory = _resolve_data_directory(
+        database_path=database_path,
+        data_directory=data_directory,
+    )
     chunks = build_date_chunks(start_date, end_date)
     chunk_plans: list[BackfillChunkPlan] = []
 
@@ -159,18 +181,67 @@ def build_backfill_preview(
                     chunk=chunk,
                     action=ACTION_COLLECT,
                     successful_run_id=None,
-                )
-            )
-        else:
-            chunk_plans.append(
-                BackfillChunkPlan(
-                    chunk=chunk,
-                    action=ACTION_SKIP,
-                    successful_run_id=int(
-                        successful_run["run_id"]
+                    reason=(
+                        "aucune réussite strictement identique"
                     ),
                 )
             )
+            continue
+
+        successful_run_id = int(successful_run["run_id"])
+        raw_response_path = successful_run[
+            "raw_response_path"
+        ]
+        response_sha256 = successful_run["response_sha256"]
+
+        if (
+            not isinstance(raw_response_path, str)
+            or not isinstance(response_sha256, str)
+        ):
+            chunk_plans.append(
+                BackfillChunkPlan(
+                    chunk=chunk,
+                    action=ACTION_COLLECT,
+                    successful_run_id=successful_run_id,
+                    reason=(
+                        f"collecte n° {successful_run_id} "
+                        "non réutilisable : journal incomplet"
+                    ),
+                )
+            )
+            continue
+
+        try:
+            verify_raw_archive(
+                relative_path=raw_response_path,
+                expected_sha256=response_sha256,
+                data_directory=effective_data_directory,
+            )
+        except RawArchiveError as error:
+            chunk_plans.append(
+                BackfillChunkPlan(
+                    chunk=chunk,
+                    action=ACTION_COLLECT,
+                    successful_run_id=successful_run_id,
+                    reason=(
+                        f"collecte n° {successful_run_id} "
+                        f"non réutilisable : {error}"
+                    ),
+                )
+            )
+            continue
+
+        chunk_plans.append(
+            BackfillChunkPlan(
+                chunk=chunk,
+                action=ACTION_SKIP,
+                successful_run_id=successful_run_id,
+                reason=(
+                    f"collecte réussie n° {successful_run_id}, "
+                    "archive vérifiée"
+                ),
+            )
+        )
 
     return BackfillPreview(
         start_date=start_date,
@@ -198,6 +269,7 @@ def execute_backfill(
         end_date=end_date,
         game_types=selected_game_types,
         database_path=database_path,
+        data_directory=data_directory,
     )
 
     pending_plans = tuple(
@@ -300,13 +372,11 @@ def print_preview(preview: BackfillPreview) -> None:
 
         if plan.action == ACTION_SKIP:
             print(
-                f"- IGNORER : {period} | "
-                f"collecte réussie n° {plan.successful_run_id}"
+                f"- IGNORER : {period} | {plan.reason}"
             )
         else:
             print(
-                f"- COLLECTER : {period} | "
-                "aucune réussite strictement identique"
+                f"- COLLECTER : {period} | {plan.reason}"
             )
 
 

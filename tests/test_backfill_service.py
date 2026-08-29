@@ -16,10 +16,12 @@ from src.ingestion_repository import (
     start_ingestion_run,
 )
 from src.ingestion_service import (
+    ARCHIVE_SOURCE,
     INGESTION_SOURCE,
     ScheduleIngestionResult,
     build_schedule_request_parameters,
 )
+from src.raw_archive import archive_raw_response
 
 
 class BackfillServiceTests(unittest.TestCase):
@@ -29,10 +31,10 @@ class BackfillServiceTests(unittest.TestCase):
         """Crée un environnement isolé pour chaque test."""
         self.temporary_directory = TemporaryDirectory()
         temporary_path = Path(self.temporary_directory.name)
-        self.database_path = (
-            temporary_path / "backfill_service_test.db"
-        )
         self.data_directory = temporary_path / "data"
+        self.database_path = (
+            self.data_directory / "backfill_service_test.db"
+        )
 
     def tearDown(self) -> None:
         """Supprime l’environnement temporaire."""
@@ -64,14 +66,26 @@ class BackfillServiceTests(unittest.TestCase):
         )
 
         if status == "success":
+            raw_content = (
+                f'{{"runId":{run_id},'
+                f'"startDate":"{start_date.isoformat()}",'
+                f'"endDate":"{end_date.isoformat()}"}}'
+            ).encode("utf-8")
+
+            archive = archive_raw_response(
+                raw_content=raw_content,
+                source_name=ARCHIVE_SOURCE,
+                start_date=start_date,
+                end_date=end_date,
+                data_directory=self.data_directory,
+            )
+
             mark_ingestion_success(
                 run_id=run_id,
                 records_received=10,
                 records_saved=10,
-                raw_response_path=(
-                    f"data/raw/mlb_schedule/test-{run_id}.json.gz"
-                ),
-                response_sha256="a" * 64,
+                raw_response_path=archive.relative_path,
+                response_sha256=archive.sha256,
                 database_path=self.database_path,
             )
         elif status == "error":

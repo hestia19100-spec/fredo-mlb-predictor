@@ -33,6 +33,10 @@ class MLBAPIError(RuntimeError):
     """Erreur compréhensible liée à l’API MLB."""
 
 
+class MLBAPIRetryableError(MLBAPIError):
+    """Erreur temporaire autorisant une nouvelle tentative."""
+
+
 @dataclass(frozen=True, slots=True)
 class ScheduledGame:
     """Représentation contrôlée d’un match reçu depuis MLB."""
@@ -301,9 +305,42 @@ def _request_schedule(
             timeout=REQUEST_TIMEOUT_SECONDS,
         )
         response.raise_for_status()
+    except (requests.Timeout, requests.ConnectionError) as error:
+        raise MLBAPIRetryableError(
+            f"Impossible de joindre l’API MLB : {error}"
+        ) from error
+    except requests.HTTPError as error:
+        status_code = (
+            error.response.status_code
+            if error.response is not None
+            else None
+        )
+
+        if status_code is None:
+            error_message = (
+                "L’API MLB a répondu avec une erreur HTTP."
+            )
+        else:
+            error_message = (
+                "L’API MLB a répondu avec une erreur HTTP "
+                f"{status_code}."
+            )
+
+        if (
+            status_code in {408, 429}
+            or (
+                status_code is not None
+                and 500 <= status_code <= 599
+            )
+        ):
+            raise MLBAPIRetryableError(
+                error_message
+            ) from error
+
+        raise MLBAPIError(error_message) from error
     except requests.RequestException as error:
         raise MLBAPIError(
-            f"Impossible de joindre l’API MLB : {error}"
+            f"Requête MLB invalide : {error}"
         ) from error
 
     raw_content = response.content

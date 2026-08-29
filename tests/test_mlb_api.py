@@ -7,8 +7,11 @@ from typing import Any
 import unittest
 from unittest.mock import Mock, patch
 
+import requests
+
 from src.mlb_api import (
     MLBAPIError,
+    MLBAPIRetryableError,
     fetch_schedule,
     fetch_schedule_range,
 )
@@ -291,6 +294,62 @@ class MLBAPITests(unittest.TestCase):
                 date(2021, 3, 4),
                 date(2021, 4, 3),
             )
+
+    @patch("src.mlb_api.requests.get")
+    def test_timeout_is_retryable(
+        self,
+        mocked_get: Mock,
+    ) -> None:
+        """Un délai réseau dépassé doit autoriser une reprise."""
+        mocked_get.side_effect = requests.Timeout(
+            "Délai dépassé."
+        )
+
+        with self.assertRaises(MLBAPIRetryableError):
+            fetch_schedule(date(2026, 8, 28))
+
+    @patch("src.mlb_api.requests.get")
+    def test_http_503_is_retryable(
+        self,
+        mocked_get: Mock,
+    ) -> None:
+        """Une erreur serveur MLB doit autoriser une reprise."""
+        mocked_response = Mock()
+        mocked_response.status_code = 503
+        mocked_response.raise_for_status.side_effect = (
+            requests.HTTPError(
+                "Service indisponible.",
+                response=mocked_response,
+            )
+        )
+        mocked_get.return_value = mocked_response
+
+        with self.assertRaises(MLBAPIRetryableError):
+            fetch_schedule(date(2026, 8, 28))
+
+    @patch("src.mlb_api.requests.get")
+    def test_http_404_is_not_retryable(
+        self,
+        mocked_get: Mock,
+    ) -> None:
+        """Une erreur permanente ne doit pas être retentée."""
+        mocked_response = Mock()
+        mocked_response.status_code = 404
+        mocked_response.raise_for_status.side_effect = (
+            requests.HTTPError(
+                "Ressource absente.",
+                response=mocked_response,
+            )
+        )
+        mocked_get.return_value = mocked_response
+
+        with self.assertRaises(MLBAPIError) as raised:
+            fetch_schedule(date(2026, 8, 28))
+
+        self.assertNotIsInstance(
+            raised.exception,
+            MLBAPIRetryableError,
+        )
 
     def test_fetch_schedule_range_rejects_more_than_31_days(
         self,

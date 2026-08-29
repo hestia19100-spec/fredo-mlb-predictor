@@ -1,17 +1,20 @@
 """Tests automatiques du lecteur de l’API MLB."""
 
+from copy import deepcopy
 from datetime import date
 import json
+from typing import Any
 import unittest
 from unittest.mock import Mock, patch
 
 from src.mlb_api import (
+    MLBAPIError,
     fetch_schedule,
     fetch_schedule_range,
 )
 
 
-def build_sample_payload() -> dict[str, object]:
+def build_sample_payload() -> dict[str, Any]:
     """Construit une réponse MLB minimale et stable."""
     return {
         "totalGames": 1,
@@ -64,11 +67,50 @@ def build_sample_payload() -> dict[str, object]:
     }
 
 
-def configure_mocked_response(
+def build_rescheduled_payload() -> dict[str, Any]:
+    """Construit un match reporté puis terminé le lendemain."""
+    sample_payload = build_sample_payload()
+    sample_game = sample_payload["dates"][0]["games"][0]
+
+    postponed_game = deepcopy(sample_game)
+    postponed_game["season"] = "2021"
+    postponed_game["officialDate"] = "2021-04-01"
+    postponed_game["gameDate"] = "2021-04-01T18:10:00Z"
+    postponed_game["status"] = {
+        "statusCode": "D",
+        "detailedState": "Postponed",
+    }
+
+    final_game = deepcopy(postponed_game)
+    final_game["officialDate"] = "2021-04-02"
+    final_game["gameDate"] = "2021-04-02T18:10:00Z"
+    final_game["status"] = {
+        "statusCode": "F",
+        "detailedState": "Final",
+    }
+    final_game["teams"]["away"]["score"] = 3
+    final_game["teams"]["home"]["score"] = 0
+
+    return {
+        "totalGames": 2,
+        "dates": [
+            {
+                "date": "2021-04-01",
+                "games": [postponed_game],
+            },
+            {
+                "date": "2021-04-02",
+                "games": [final_game],
+            },
+        ],
+    }
+
+
+def configure_mocked_payload(
     mocked_get: Mock,
+    payload: dict[str, Any],
 ) -> bytes:
-    """Configure une réponse HTTP simulée."""
-    payload = build_sample_payload()
+    """Configure une réponse HTTP simulée avec un contenu précis."""
     raw_content = json.dumps(
         payload,
         ensure_ascii=False,
@@ -81,6 +123,16 @@ def configure_mocked_response(
     mocked_get.return_value = mocked_response
 
     return raw_content
+
+
+def configure_mocked_response(
+    mocked_get: Mock,
+) -> bytes:
+    """Configure une réponse HTTP simulée."""
+    return configure_mocked_payload(
+        mocked_get,
+        build_sample_payload(),
+    )
 
 
 class MLBAPITests(unittest.TestCase):
@@ -158,6 +210,87 @@ class MLBAPITests(unittest.TestCase):
         self.assertEqual(parameters["startDate"], "2026-08-27")
         self.assertEqual(parameters["endDate"], "2026-08-28")
         self.assertEqual(parameters["gameTypes"], "R")
+
+    @patch("src.mlb_api.requests.get")
+    def test_rescheduled_game_uses_final_occurrence(
+        self,
+        mocked_get: Mock,
+    ) -> None:
+        """Un report suivi d’une finale doit produire un match unique."""
+        payload = build_rescheduled_payload()
+        expected_raw_content = configure_mocked_payload(
+            mocked_get,
+            payload,
+        )
+
+        result = fetch_schedule_range(
+            date(2021, 3, 4),
+            date(2021, 4, 3),
+        )
+
+        self.assertEqual(result.raw_content, expected_raw_content)
+        self.assertEqual(len(result.games), 1)
+
+        game = result.games[0]
+
+        self.assertEqual(game.game_id, 123456)
+        self.assertEqual(game.official_date, "2021-04-02")
+        self.assertEqual(
+            game.game_datetime_utc,
+            "2021-04-02T18:10:00Z",
+        )
+        self.assertEqual(game.status_code, "F")
+        self.assertEqual(game.status_detail, "Final")
+        self.assertEqual(game.away_score, 3)
+        self.assertEqual(game.home_score, 0)
+
+    @patch("src.mlb_api.requests.get")
+    def test_duplicate_with_different_identity_is_rejected(
+        self,
+        mocked_get: Mock,
+    ) -> None:
+        """Un identifiant partagé par deux équipes doit être refusé."""
+        payload = build_rescheduled_payload()
+        second_game = payload["dates"][1]["games"][0]
+        second_game["teams"]["home"]["team"] = {
+            "id": 201,
+            "name": "Other Home Team",
+        }
+        configure_mocked_payload(mocked_get, payload)
+
+        with self.assertRaisesRegex(
+            MLBAPIError,
+            "Occurrences contradictoires",
+        ):
+            fetch_schedule_range(
+                date(2021, 3, 4),
+                date(2021, 4, 3),
+            )
+
+    @patch("src.mlb_api.requests.get")
+    def test_conflicting_final_occurrences_are_rejected(
+        self,
+        mocked_get: Mock,
+    ) -> None:
+        """Deux résultats finaux différents doivent être refusés."""
+        payload = build_rescheduled_payload()
+        first_game = payload["dates"][0]["games"][0]
+        first_game["status"] = {
+            "statusCode": "F",
+            "detailedState": "Final",
+        }
+        first_game["teams"]["away"]["score"] = 2
+        first_game["teams"]["home"]["score"] = 1
+        configure_mocked_payload(mocked_get, payload)
+
+        with self.assertRaisesRegex(
+            MLBAPIError,
+            "Occurrences contradictoires",
+        ):
+            fetch_schedule_range(
+                date(2021, 3, 4),
+                date(2021, 4, 3),
+            )
 
     def test_fetch_schedule_range_rejects_more_than_31_days(
         self,

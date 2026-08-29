@@ -18,6 +18,16 @@ REQUEST_TIMEOUT_SECONDS = 30
 MAX_SCHEDULE_RANGE_DAYS = 31
 DISPLAY_LIMIT = 20
 
+FINAL_STATUS_CODES = frozenset({"F"})
+FINAL_STATUS_DETAILS = frozenset(
+    {
+        "FINAL",
+        "GAME OVER",
+        "COMPLETED EARLY",
+    }
+)
+POSTPONED_STATUS_DETAILS = frozenset({"POSTPONED"})
+
 
 class MLBAPIError(RuntimeError):
     """Erreur compréhensible liée à l’API MLB."""
@@ -151,6 +161,73 @@ def _parse_game(raw_game: dict[str, Any]) -> ScheduledGame:
         ) from error
 
 
+def _game_identity(
+    game: ScheduledGame,
+) -> tuple[int, str, int, int]:
+    """Retourne les éléments qui ne doivent jamais changer."""
+    return (
+        game.season,
+        game.game_type,
+        game.away_team_id,
+        game.home_team_id,
+    )
+
+
+def _is_final_game(game: ScheduledGame) -> bool:
+    """Indique si une occurrence décrit un match terminé."""
+    status_code = game.status_code.strip().upper()
+    status_detail = game.status_detail.strip().upper()
+
+    return (
+        status_code in FINAL_STATUS_CODES
+        or status_detail in FINAL_STATUS_DETAILS
+    )
+
+
+def _is_postponed_game(game: ScheduledGame) -> bool:
+    """Indique si une occurrence décrit un match reporté."""
+    status_detail = game.status_detail.strip().upper()
+    return status_detail in POSTPONED_STATUS_DETAILS
+
+
+def _select_canonical_game(
+    existing_game: ScheduledGame,
+    candidate_game: ScheduledGame,
+) -> ScheduledGame:
+    """Fusionne deux occurrences cohérentes d’un même match."""
+    if _game_identity(existing_game) != _game_identity(candidate_game):
+        raise MLBAPIError(
+            "Occurrences contradictoires pour le match MLB "
+            f"{candidate_game.game_id}."
+        )
+
+    if existing_game == candidate_game:
+        return existing_game
+
+    existing_is_final = _is_final_game(existing_game)
+    candidate_is_final = _is_final_game(candidate_game)
+
+    if existing_is_final != candidate_is_final:
+        if candidate_is_final:
+            return candidate_game
+
+        return existing_game
+
+    existing_is_postponed = _is_postponed_game(existing_game)
+    candidate_is_postponed = _is_postponed_game(candidate_game)
+
+    if existing_is_postponed != candidate_is_postponed:
+        if candidate_is_postponed:
+            return existing_game
+
+        return candidate_game
+
+    raise MLBAPIError(
+        "Occurrences contradictoires pour le match MLB "
+        f"{candidate_game.game_id}."
+    )
+
+
 def _parse_schedule_payload(
     payload: dict[str, Any],
 ) -> list[ScheduledGame]:
@@ -159,7 +236,7 @@ def _parse_schedule_payload(
     if not isinstance(date_blocks, list):
         raise MLBAPIError("Liste des dates absente de la réponse MLB.")
 
-    games: list[ScheduledGame] = []
+    game_occurrences: list[ScheduledGame] = []
 
     for date_block in date_blocks:
         if not isinstance(date_block, dict):
@@ -173,13 +250,7 @@ def _parse_schedule_payload(
             if not isinstance(raw_game, dict):
                 raise MLBAPIError("Match MLB invalide.")
 
-            games.append(_parse_game(raw_game))
-
-    game_ids = [game.game_id for game in games]
-    if len(game_ids) != len(set(game_ids)):
-        raise MLBAPIError(
-            "La réponse MLB contient des identifiants en doublon."
-        )
+            game_occurrences.append(_parse_game(raw_game))
 
     reported_total = payload.get("totalGames")
     if reported_total is not None:
@@ -190,13 +261,28 @@ def _parse_schedule_payload(
                 "Le total de matchs MLB est invalide."
             ) from error
 
-        if expected_total != len(games):
+        if expected_total != len(game_occurrences):
             raise MLBAPIError(
                 "La réponse MLB semble partielle : "
-                f"{len(games)} matchs lus sur {expected_total} annoncés."
+                f"{len(game_occurrences)} matchs lus sur "
+                f"{expected_total} annoncés."
             )
 
-    return games
+    canonical_games: dict[int, ScheduledGame] = {}
+
+    for game in game_occurrences:
+        existing_game = canonical_games.get(game.game_id)
+
+        if existing_game is None:
+            canonical_games[game.game_id] = game
+            continue
+
+        canonical_games[game.game_id] = _select_canonical_game(
+            existing_game,
+            game,
+        )
+
+    return list(canonical_games.values())
 
 
 def _request_schedule(

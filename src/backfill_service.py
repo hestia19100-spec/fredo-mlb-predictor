@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import argparse
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import date
+import math
 from pathlib import Path
+import time
 
 from src.backfill_planner import (
     BackfillPlanError,
@@ -24,14 +26,24 @@ from src.ingestion_service import (
     build_schedule_request_parameters,
     run_schedule_ingestion,
 )
+from src.mlb_api import MLBAPIError
 from src.raw_archive import (
     RawArchiveError,
     verify_raw_archive,
+)
+from src.retry_policy import (
+    RetryPolicy,
+    run_with_retries,
 )
 
 
 ACTION_COLLECT = "collect"
 ACTION_SKIP = "skip"
+
+DEFAULT_MAX_ATTEMPTS = 3
+DEFAULT_RETRY_DELAY_SECONDS = 1.0
+DEFAULT_CHUNK_DELAY_SECONDS = 1.0
+RETRY_BACKOFF_MULTIPLIER = 2.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,6 +97,24 @@ class BackfillExecutionResult:
 
     preview: BackfillPreview
     ingestion_results: tuple[ScheduleIngestionResult, ...]
+    attempt_counts: tuple[int, ...]
+
+    def __post_init__(self) -> None:
+        if len(self.ingestion_results) != len(self.attempt_counts):
+            raise ValueError(
+                "Chaque collecte doit posséder un compteur "
+                "de tentatives."
+            )
+
+        if any(
+            isinstance(attempts, bool)
+            or not isinstance(attempts, int)
+            or attempts < 1
+            for attempts in self.attempt_counts
+        ):
+            raise ValueError(
+                "Les compteurs de tentatives doivent être positifs."
+            )
 
     @property
     def executed_chunks(self) -> int:
@@ -108,6 +138,19 @@ class BackfillExecutionResult:
         )
 
     @property
+    def total_attempts(self) -> int:
+        """Additionne toutes les tentatives MLB."""
+        return sum(self.attempt_counts)
+
+    @property
+    def retried_chunks(self) -> int:
+        """Compte les lots ayant nécessité une nouvelle tentative."""
+        return sum(
+            attempts > 1
+            for attempts in self.attempt_counts
+        )
+
+    @property
     def remaining_pending_chunks(self) -> int:
         """Compte les lots restant après cette exécution."""
         return max(
@@ -128,6 +171,33 @@ def _validate_max_chunks(max_chunks: int) -> int:
         )
 
     return max_chunks
+
+
+def _validate_delay_seconds(
+    delay_seconds: float,
+    *,
+    field_name: str,
+) -> float:
+    """Refuse une temporisation négative ou non finie."""
+    if (
+        isinstance(delay_seconds, bool)
+        or not isinstance(delay_seconds, (int, float))
+    ):
+        raise ValueError(
+            f"{field_name} doit être un nombre positif ou nul."
+        )
+
+    normalized_delay = float(delay_seconds)
+
+    if (
+        not math.isfinite(normalized_delay)
+        or normalized_delay < 0
+    ):
+        raise ValueError(
+            f"{field_name} doit être un nombre positif ou nul."
+        )
+
+    return normalized_delay
 
 
 def _resolve_data_directory(
@@ -259,9 +329,16 @@ def execute_backfill(
     database_path: Path = DATABASE_PATH,
     data_directory: Path = DATA_DIR,
     code_version: str | None = None,
+    retry_policy: RetryPolicy = RetryPolicy(),
+    chunk_delay_seconds: float = DEFAULT_CHUNK_DELAY_SECONDS,
+    sleep_function: Callable[[float], None] = time.sleep,
 ) -> BackfillExecutionResult:
-    """Collecte uniquement les premiers lots encore nécessaires."""
+    """Collecte les lots nécessaires avec reprise et temporisation."""
     validated_max_chunks = _validate_max_chunks(max_chunks)
+    validated_chunk_delay = _validate_delay_seconds(
+        chunk_delay_seconds,
+        field_name="Le délai entre les lots",
+    )
     selected_game_types = tuple(game_types)
 
     preview = build_backfill_preview(
@@ -277,37 +354,68 @@ def execute_backfill(
         for plan in preview.chunk_plans
         if plan.should_collect
     )
+    selected_plans = pending_plans[:validated_max_chunks]
 
     ingestion_results: list[ScheduleIngestionResult] = []
+    attempt_counts: list[int] = []
 
-    for plan in pending_plans[:validated_max_chunks]:
-        ingestion_result = run_schedule_ingestion(
-            start_date=plan.chunk.start_date,
-            end_date=plan.chunk.end_date,
-            game_types=selected_game_types,
-            database_path=database_path,
-            data_directory=data_directory,
-            code_version=code_version,
+    for plan_index, plan in enumerate(selected_plans):
+        if plan_index > 0 and validated_chunk_delay > 0:
+            sleep_function(validated_chunk_delay)
+
+        retry_outcome = run_with_retries(
+            lambda current_plan=plan: run_schedule_ingestion(
+                start_date=current_plan.chunk.start_date,
+                end_date=current_plan.chunk.end_date,
+                game_types=selected_game_types,
+                database_path=database_path,
+                data_directory=data_directory,
+                code_version=code_version,
+            ),
+            retry_exceptions=(MLBAPIError,),
+            policy=retry_policy,
+            sleep_function=sleep_function,
         )
-        ingestion_results.append(ingestion_result)
+
+        ingestion_results.append(retry_outcome.value)
+        attempt_counts.append(retry_outcome.attempts)
 
     return BackfillExecutionResult(
         preview=preview,
         ingestion_results=tuple(ingestion_results),
+        attempt_counts=tuple(attempt_counts),
     )
 
 
 def parse_positive_integer(value: str) -> int:
-    """Valide une limite positive fournie dans le terminal."""
+    """Valide un entier positif fourni dans le terminal."""
     try:
         parsed_value = int(value)
     except ValueError as error:
         raise argparse.ArgumentTypeError(
-            "La limite doit être un entier positif."
+            "La valeur doit être un entier positif."
         ) from error
 
     try:
         return _validate_max_chunks(parsed_value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(str(error)) from error
+
+
+def parse_non_negative_float(value: str) -> float:
+    """Valide une durée positive ou nulle."""
+    try:
+        parsed_value = float(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(
+            "La durée doit être un nombre positif ou nul."
+        ) from error
+
+    try:
+        return _validate_delay_seconds(
+            parsed_value,
+            field_name="La durée",
+        )
     except ValueError as error:
         raise argparse.ArgumentTypeError(str(error)) from error
 
@@ -347,6 +455,33 @@ def build_argument_parser() -> argparse.ArgumentParser:
         help=(
             "Nombre maximal de lots à collecter pendant cette "
             "exécution. Valeur par défaut : 1."
+        ),
+    )
+    parser.add_argument(
+        "--max-attempts",
+        type=parse_positive_integer,
+        default=DEFAULT_MAX_ATTEMPTS,
+        help=(
+            "Nombre maximal de tentatives MLB par lot. "
+            "Valeur par défaut : 3."
+        ),
+    )
+    parser.add_argument(
+        "--retry-delay-seconds",
+        type=parse_non_negative_float,
+        default=DEFAULT_RETRY_DELAY_SECONDS,
+        help=(
+            "Première attente après une erreur MLB, avant "
+            "multiplication par deux. Valeur par défaut : 1 seconde."
+        ),
+    )
+    parser.add_argument(
+        "--chunk-delay-seconds",
+        type=parse_non_negative_float,
+        default=DEFAULT_CHUNK_DELAY_SECONDS,
+        help=(
+            "Pause entre deux lots réussis. "
+            "Valeur par défaut : 1 seconde."
         ),
     )
     return parser
@@ -391,6 +526,14 @@ def print_execution(
         f"{execution.executed_chunks}"
     )
     print(
+        f"Tentatives MLB utilisées : "
+        f"{execution.total_attempts}"
+    )
+    print(
+        f"Lots ayant nécessité une nouvelle tentative : "
+        f"{execution.retried_chunks}"
+    )
+    print(
         f"Matchs reçus : {execution.games_received}"
     )
     print(
@@ -401,13 +544,18 @@ def print_execution(
         f"{execution.remaining_pending_chunks}"
     )
 
-    for result in execution.ingestion_results:
+    for result, attempts in zip(
+        execution.ingestion_results,
+        execution.attempt_counts,
+        strict=True,
+    ):
         print(
             "- COLLECTÉ : "
             f"{result.start_date.isoformat()} au "
             f"{result.end_date.isoformat()} | "
             f"collecte n° {result.run_id} | "
             f"{result.games_received} matchs | "
+            f"{attempts} tentative(s) | "
             f"archive {result.archive_relative_path}"
         )
 
@@ -422,12 +570,34 @@ def main(argv: Sequence[str] | None = None) -> int:
             "Mode exécution contrôlée : "
             f"{arguments.max_chunks} lot(s) maximum."
         )
+        print(
+            "Politique réseau : "
+            f"{arguments.max_attempts} tentative(s) maximum "
+            "par lot."
+        )
+        print(
+            "Temporisation : "
+            f"{arguments.chunk_delay_seconds:g} seconde(s) "
+            "entre les lots."
+        )
+
+        retry_policy = RetryPolicy(
+            max_attempts=arguments.max_attempts,
+            initial_delay_seconds=(
+                arguments.retry_delay_seconds
+            ),
+            backoff_multiplier=RETRY_BACKOFF_MULTIPLIER,
+        )
 
         try:
             execution = execute_backfill(
                 start_date=arguments.start_date,
                 end_date=arguments.end_date,
                 max_chunks=arguments.max_chunks,
+                retry_policy=retry_policy,
+                chunk_delay_seconds=(
+                    arguments.chunk_delay_seconds
+                ),
             )
         except Exception as error:
             raise SystemExit(

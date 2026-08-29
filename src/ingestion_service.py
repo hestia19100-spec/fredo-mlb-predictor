@@ -94,18 +94,20 @@ def detect_code_version(
     return detected_version or None
 
 
-def _build_request_parameters(
+def build_schedule_request_parameters(
     *,
     start_date: date,
     end_date: date,
-    game_types: tuple[str, ...],
+    game_types: Iterable[str] = ("R",),
 ) -> dict[str, object]:
-    """Construit les paramètres attendus par le service."""
+    """Construit les paramètres exacts d’une requête calendrier MLB."""
+    normalized_game_types = _normalize_game_types(game_types)
+
     return {
         "sportId": 1,
         "startDate": start_date.isoformat(),
         "endDate": end_date.isoformat(),
-        "gameTypes": ",".join(game_types),
+        "gameTypes": ",".join(normalized_game_types),
         "hydrate": "probablePitcher",
     }
 
@@ -121,7 +123,7 @@ def run_schedule_ingestion(
 ) -> ScheduleIngestionResult:
     """Récupère, archive, enregistre et journalise une période."""
     normalized_game_types = _normalize_game_types(game_types)
-    request_parameters = _build_request_parameters(
+    request_parameters = build_schedule_request_parameters(
         start_date=start_date,
         end_date=end_date,
         game_types=normalized_game_types,

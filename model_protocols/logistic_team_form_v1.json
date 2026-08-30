@@ -1,0 +1,140 @@
+{
+  "protocol_version": 1,
+  "registered_on": "2026-08-30",
+  "registered_after_commit": "4f512ba",
+  "status": "REGISTERED_BEFORE_SEALED_TEST",
+  "model": {
+    "model_version": "logistic_team_form_v1",
+    "estimator": "sklearn.linear_model.LogisticRegression",
+    "parameters": {
+      "C": 1.0,
+      "class_weight": null,
+      "max_iter": 2000,
+      "random_state": 42,
+      "solver": "lbfgs"
+    },
+    "preprocessing": {
+      "imputation": "NONE",
+      "scaler": "sklearn.preprocessing.StandardScaler",
+      "scaler_fit_scope": "TRAINING_SEASONS_ONLY"
+    }
+  },
+  "dataset": {
+    "dataset_version": "mlb_team_form_v1",
+    "path": "data/processed/mlb_team_form_v1_2026-08-29.csv",
+    "sha256": "2a24c1a22a919acfc4ea545f8025f59c86d15873aaf09cdbdcef66236cd0a73e",
+    "cutoff_date": "2026-08-29",
+    "calendar_policy": "J_MINUS_1_BY_OFFICIAL_DATE",
+    "temporal_availability_verdict": "UNVERIFIABLE",
+    "target": "home_win",
+    "row_count": 13253
+  },
+  "features": [
+    "away_games_before",
+    "away_win_pct_before",
+    "away_runs_scored_per_game_before",
+    "away_runs_allowed_per_game_before",
+    "home_games_before",
+    "home_win_pct_before",
+    "home_runs_scored_per_game_before",
+    "home_runs_allowed_per_game_before"
+  ],
+  "chronology": {
+    "development_checks": [
+      {
+        "train_seasons": [
+          2021
+        ],
+        "evaluation_season": 2022
+      },
+      {
+        "train_seasons": [
+          2021,
+          2022
+        ],
+        "evaluation_season": 2023
+      },
+      {
+        "train_seasons": [
+          2021,
+          2022,
+          2023
+        ],
+        "evaluation_season": 2024
+      }
+    ],
+    "final_base_model_training_seasons": [
+      2021,
+      2022,
+      2023
+    ],
+    "calibration_season": 2024,
+    "sealed_test_season": 2025,
+    "recent_retrospective_season": 2026,
+    "sealed_test_rule": "NO_PREDICTION_OR_METRIC_BEFORE_PROTOCOL_AND_CALIBRATION_ARE_FROZEN",
+    "recent_season_rule": "EVALUATE_ONLY_AFTER_THE_2025_VERDICT_WITH_A_DAY_BY_DAY_CUTOFF"
+  },
+  "calibration": {
+    "method": "PLATT_SIGMOID",
+    "fit_season": 2024,
+    "selection_was_fixed_before_sealed_test": true,
+    "isotonic_is_allowed_for_this_version": false,
+    "in_sample_calibration_metrics_are_final_evidence": false
+  },
+  "reference_baseline": {
+    "name": "CONSTANT_TRAINING_HOME_WIN_RATE",
+    "probability_source": "MEAN_HOME_WIN_ON_FINAL_BASE_MODEL_TRAINING_SEASONS_ONLY",
+    "uses_2024_results": false,
+    "uses_2025_results": false
+  },
+  "metrics": {
+    "primary": "LOG_LOSS",
+    "secondary": [
+      "BRIER_SCORE",
+      "CALIBRATION_IN_THE_LARGE",
+      "CALIBRATION_INTERCEPT",
+      "CALIBRATION_SLOPE",
+      "ROC_AUC",
+      "ACCURACY_AT_0_5"
+    ],
+    "accuracy_is_descriptive_only": true,
+    "roc_auc_is_descriptive_only": true,
+    "lower_is_better": [
+      "LOG_LOSS",
+      "BRIER_SCORE"
+    ]
+  },
+  "uncertainty": {
+    "method": "PAIRED_MOVING_CALENDAR_BLOCK_BOOTSTRAP",
+    "calendar_block_days": 7,
+    "replications": 5000,
+    "confidence_level": 0.95,
+    "random_seed": 42,
+    "comparison": "CALIBRATED_MODEL_MINUS_REFERENCE_BASELINE"
+  },
+  "sealed_test_verdict": {
+    "relative_log_loss_improvement_formula": "(baseline_log_loss - model_log_loss) / baseline_log_loss",
+    "minimum_relative_log_loss_improvement": 0.005,
+    "lower_confidence_bound_must_be_above_zero": true,
+    "model_brier_must_not_exceed_baseline": true,
+    "maximum_absolute_calibration_in_the_large": 0.02,
+    "minimum_calibration_slope": 0.8,
+    "maximum_calibration_slope": 1.2,
+    "all_temporal_and_structural_invariants_must_pass": true,
+    "labels": {
+      "validated": "SIGNAL_VALIDE",
+      "positive_but_uncertain": "PROMETTEUR_MAIS_INCONCLUSIF",
+      "rejected": "REJETE_V1",
+      "signal_but_bad_probabilities": "SIGNAL_PRESENT_MAIS_PROBABILITES_NON_EXPLOITABLES"
+    }
+  },
+  "guardrails": [
+    "NEVER_FIT_PREPROCESSING_ON_2024_2025_OR_2026_WHEN_TRAINING_THE_BASE_MODEL",
+    "FIT_PLATT_CALIBRATION_ON_2024_ONLY",
+    "OPEN_2025_ONLY_ONCE_AFTER_THE_PIPELINE_IS_FROZEN",
+    "DO_NOT_SELECT_FEATURES_THRESHOLDS_OR_CALIBRATION_METHOD_FROM_2025",
+    "DO_NOT_REPORT_BETTING_PROFITABILITY_WITHOUT_TIMESTAMPED_PREMATCH_ODDS",
+    "DO_NOT_USE_2026_RESULTS_WITHOUT_A_DAY_BY_DAY_CUTOFF",
+    "ANY_CHANGE_AFTER_OPENING_2025_CREATES_A_NEW_EXPLORATORY_MODEL_VERSION"
+  ]
+}

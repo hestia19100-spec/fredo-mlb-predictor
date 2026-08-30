@@ -1,4 +1,5 @@
 # Python
+
 __pycache__/
 *.py[cod]
 .pytest_cache/
@@ -6,10 +7,12 @@ __pycache__/
 venv/
 
 # Clés et paramètres secrets
+
 .env
 .streamlit/secrets.toml
 
 # Bases de données locales
+
 data/*.db
 data/*.sqlite
 data/*.sqlite3
@@ -19,14 +22,20 @@ data/*.sqlite3
 *.sqlite-wal
 
 # Données brutes et jeux de données générés
+
 data/raw/
 data/processed/
 
+# Sauvegardes locales à télécharger
+
+backups/
+
 # Modèles et journaux générés
+
 models/*.joblib
 models/*.pkl
 logs/*.log
 
 # Fichiers du système
+
 .DS_Store
-Thumbs.db

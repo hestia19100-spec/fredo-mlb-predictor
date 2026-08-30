@@ -1,0 +1,167 @@
+{
+  "evaluation_report_version": 1,
+  "execution_invariants": {
+    "artifact_state_sha256_after": "33ff7d7ef633545f7b6a0605ca968c9b38756145beed8e4c134c650145370277",
+    "artifact_state_sha256_before": "33ff7d7ef633545f7b6a0605ca968c9b38756145beed8e4c134c650145370277",
+    "artifact_state_unchanged": true,
+    "diagnostic_fit_calls": 1,
+    "model_fit_calls": 0,
+    "predict_proba_calls": 1,
+    "season_2026_metrics": 0,
+    "season_2026_predictions": 0
+  },
+  "inputs": {
+    "artifact_manifest": {
+      "path": "model_artifacts/logistic_team_form_v1_platt.json",
+      "sha256": "a7375d5376baa043b3365cff713cb717010ad812efee472b594fa454306c96ae"
+    },
+    "dataset": {
+      "path": "data/processed/mlb_team_form_v1_2026-08-29.csv",
+      "row_count": 13253,
+      "sha256": "2a24c1a22a919acfc4ea545f8025f59c86d15873aaf09cdbdcef66236cd0a73e",
+      "size_bytes": 1680593
+    },
+    "evaluation_protocol": {
+      "path": "evaluation_protocols/logistic_team_form_v1_platt_2025.json",
+      "sha256": "f6dbace5d25d92c5d0ec3c9ae16962ab03e022439177342bd28d607afba7b1a9"
+    },
+    "model_artifact": {
+      "code_version": "1d13f8f361de0865f722a8560f1efda8e95badbc",
+      "path": "models/logistic_team_form_v1_platt.joblib",
+      "sha256": "e0d4d2421ba076072c7ef8b3bc97dd9a341e26c62828a0ad9ba43f30da15ff55",
+      "size_bytes": 1589
+    },
+    "model_protocol": {
+      "path": "model_protocols/logistic_team_form_v1.json",
+      "sha256": "c4cb1af750619967514d37ae3a5a47a6a04255aeaccb20c5e94533dc4d138451"
+    }
+  },
+  "interpretation": "Ce rapport évalue un signal statistique, pas une rentabilité de pari. Aucun ROI n'est calculable sans cotes pré-match horodatées. La disponibilité temporelle historique reste UNVERIFIABLE.",
+  "metrics": {
+    "calibration_diagnostic": {
+      "intercept": 0.052202187732655045,
+      "slope": 0.9650956642569315
+    },
+    "model": {
+      "accuracy_at_0_5": 0.5500878734622144,
+      "brier_score": 0.24507690371631838,
+      "calibration_in_the_large": 0.01194159431178754,
+      "log_loss": 0.6830640760114692,
+      "mean_predicted_home_win_probability": 0.5254046271293372,
+      "observed_home_win_rate": 0.5373462214411248,
+      "roc_auc": 0.5581983958925905,
+      "samples": 2276
+    },
+    "reference_baseline": {
+      "accuracy_at_0_5": 0.5373462214411248,
+      "brier_score": 0.2486380330574734,
+      "calibration_in_the_large": 0.00572479811023674,
+      "log_loss": 0.6904209437182547,
+      "mean_predicted_home_win_probability": 0.531621423330888,
+      "observed_home_win_rate": 0.5373462214411248,
+      "roc_auc": 0.5,
+      "samples": 2276
+    },
+    "relative_log_loss_improvement": 0.010655626503977587
+  },
+  "opening": {
+    "evaluation_code_commit": "47d77269ff43cef8cef0fb5d0a3302cdf1ac1d7f",
+    "evaluation_module_sha256": "1fb3c54940b44411e2b41272864534030957e93e62f3c01aef12d3ac58a4ce51",
+    "open_only_once": true,
+    "opened_at_utc": "2026-08-30T19:40:53+00:00",
+    "opening_id": "f8333da372b844849145942281c19a64"
+  },
+  "predictions": {
+    "columns": [
+      "game_id",
+      "season",
+      "official_date",
+      "feature_as_of_date",
+      "away_team_id",
+      "home_team_id",
+      "away_max_source_date",
+      "home_max_source_date",
+      "home_win",
+      "model_home_win_probability",
+      "baseline_home_win_probability",
+      "model_log_loss",
+      "baseline_log_loss"
+    ],
+    "file": "predictions.csv",
+    "rows": 2276,
+    "sha256": "4396b9aa645e9842cd6f0cbed663e2e0d1ada2487195a09eb081a4a198033b25",
+    "size_bytes": 329704
+  },
+  "prohibited_claims": [
+    "NO_BETTING_PROFITABILITY_WITHOUT_TIMESTAMPED_PREMATCH_ODDS",
+    "NO_ROI_WITHOUT_TIMESTAMPED_PREMATCH_ODDS",
+    "NO_2026_METRIC_BEFORE_THE_2025_VERDICT",
+    "NO_FEATURE_OR_THRESHOLD_CHANGE_AFTER_OPENING_2025_FOR_THIS_MODEL_VERSION",
+    "NO_PROSPECTIVE_CLAIM_WHILE_TEMPORAL_AVAILABILITY_REMAINS_UNVERIFIABLE"
+  ],
+  "reference_baseline": {
+    "games": 6815,
+    "home_wins": 3623,
+    "probability": 0.5316214233308878,
+    "probability_formula": "3623 / 6815",
+    "reestimated": false
+  },
+  "registered_limitations": [
+    "NON_CIRCULAR_BLOCKS_UNDERREPRESENT_CALENDAR_EDGES",
+    "SEVEN_DAY_BLOCK_LENGTH_IS_FIXED_NOT_OPTIMIZED",
+    "BOOTSTRAP_DOES_NOT_CAPTURE_MODEL_TRAINING_UNCERTAINTY",
+    "TEAM_DEPENDENCE_BEYOND_LOCAL_CALENDAR_BLOCKS_MAY_REMAIN",
+    "SEASONAL_NON_STATIONARITY_MAY_REMAIN",
+    "PERCENTILE_INTERVAL_FOR_A_RATIO_MAY_BE_ASYMMETRIC",
+    "SUSPENDED_GAME_INFORMATION_AVAILABILITY_REMAINS_UNVERIFIABLE"
+  ],
+  "runtime": {
+    "joblib": "1.5.3",
+    "numpy": "2.5.2",
+    "pandas": "3.0.5",
+    "python": "3.12.1",
+    "scikit_learn": "1.9.0",
+    "scipy": "1.18.1"
+  },
+  "sealed_cohort": {
+    "calendar_days_inclusive": 175,
+    "feature_columns": [
+      "away_games_before",
+      "away_win_pct_before",
+      "away_runs_scored_per_game_before",
+      "away_runs_allowed_per_game_before",
+      "home_games_before",
+      "home_win_pct_before",
+      "home_runs_scored_per_game_before",
+      "home_runs_allowed_per_game_before"
+    ],
+    "first_official_date": "2025-04-07",
+    "last_official_date": "2025-09-28",
+    "rows": 2276,
+    "season": 2025,
+    "target": "home_win"
+  },
+  "status": "COMPLETED_AND_VERIFIED",
+  "uncertainty": {
+    "block_length_days": 7,
+    "blocks_per_replicate": 25,
+    "calendar_days": 175,
+    "lower": 0.0025623992359699015,
+    "random_seed": 42,
+    "replications": 5000,
+    "statistics_sha256": "8068089d00a2a94a644c5943df5c6e7f83bea585e91eb677350dea25304463b4",
+    "upper": 0.018318477487099832
+  },
+  "verdict": {
+    "bootstrap_lower_bound_above_zero": true,
+    "calibration_in_the_large_within_limit": true,
+    "calibration_slope_within_range": true,
+    "comparison_precision": "UNROUNDED_VALUES",
+    "failed_conditions": [],
+    "label": "SIGNAL_VALIDE",
+    "model_brier_not_worse": true,
+    "primary_supported": true,
+    "probability_guardrails_pass": true,
+    "relative_gain_meets_threshold": true
+  }
+}

@@ -293,6 +293,37 @@ def _differ_only_by_game_datetime(
     )
 
 
+def _differ_only_by_postponement_schedule(
+    existing_game: ScheduledGame,
+    candidate_game: ScheduledGame,
+) -> bool:
+    """
+    Autorise uniquement les changements de reprogrammation.
+
+    MLB peut publier plusieurs occurrences reportées du même
+    match avec un nouvel horaire, un nouveau numéro de match
+    ou un statut de double programme modifié.
+    """
+    normalized_existing = replace(
+        existing_game,
+        game_datetime_utc="",
+        doubleheader=None,
+        game_number=None,
+    )
+
+    normalized_candidate = replace(
+        candidate_game,
+        game_datetime_utc="",
+        doubleheader=None,
+        game_number=None,
+    )
+
+    return (
+        normalized_existing
+        == normalized_candidate
+    )
+
+
 def _select_canonical_game(
     existing_game: ScheduledGame,
     candidate_game: ScheduledGame,
@@ -356,6 +387,30 @@ def _select_canonical_game(
     candidate_is_postponed = _is_postponed_game(
         candidate_game
     )
+
+    if (
+        existing_is_postponed
+        and candidate_is_postponed
+    ):
+        if _differ_only_by_postponement_schedule(
+            existing_game,
+            candidate_game,
+        ):
+            return max(
+                (
+                    existing_game,
+                    candidate_game,
+                ),
+                key=lambda game: (
+                    game.game_datetime_utc
+                ),
+            )
+
+        raise MLBAPIError(
+            "Occurrences contradictoires pour "
+            "le match MLB "
+            f"{candidate_game.game_id}."
+        )
 
     if (
         existing_is_postponed

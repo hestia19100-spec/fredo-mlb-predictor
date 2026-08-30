@@ -1,0 +1,251 @@
+{
+  "evaluation_protocol_version": 1,
+  "registered_on": "2026-08-30",
+  "status": "REGISTERED_BEFORE_SEALED_TEST",
+  "sealed_test_opened_at_registration": false,
+  "purpose": "ONE_TIME_EVALUATION_OF_THE_FROZEN_2025_COHORT",
+  "inputs": {
+    "model_artifact": {
+      "path": "models/logistic_team_form_v1_platt.joblib",
+      "sha256": "e0d4d2421ba076072c7ef8b3bc97dd9a341e26c62828a0ad9ba43f30da15ff55",
+      "size_bytes": 1589,
+      "code_version": "1d13f8f361de0865f722a8560f1efda8e95badbc"
+    },
+    "artifact_manifest": {
+      "path": "model_artifacts/logistic_team_form_v1_platt.json",
+      "sha256": "a7375d5376baa043b3365cff713cb717010ad812efee472b594fa454306c96ae"
+    },
+    "model_protocol": {
+      "path": "model_protocols/logistic_team_form_v1.json",
+      "sha256": "c4cb1af750619967514d37ae3a5a47a6a04255aeaccb20c5e94533dc4d138451"
+    },
+    "dataset": {
+      "path": "data/processed/mlb_team_form_v1_2026-08-29.csv",
+      "sha256": "2a24c1a22a919acfc4ea545f8025f59c86d15873aaf09cdbdcef66236cd0a73e",
+      "row_count": 13253
+    }
+  },
+  "sealed_cohort": {
+    "season": 2025,
+    "expected_rows": 2276,
+    "expected_first_official_date": "2025-04-07",
+    "expected_last_official_date": "2025-09-28",
+    "expected_calendar_days_inclusive": 175,
+    "target": "home_win",
+    "positive_class": 1,
+    "selection_rule": "season == 2025",
+    "recent_season_excluded": 2026
+  },
+  "model_use": {
+    "probability_source": "calibrated_classifier.predict_proba(X) for class 1",
+    "expected_classes": [
+      0,
+      1
+    ],
+    "feature_order_source": "artifact_manifest.model.feature_columns",
+    "fit_allowed": false,
+    "partial_fit_allowed": false,
+    "recalibration_allowed": false,
+    "threshold_tuning_allowed": false,
+    "feature_selection_allowed": false
+  },
+  "reference_baseline": {
+    "name": "CONSTANT_TRAINING_HOME_WIN_RATE",
+    "home_wins": 3623,
+    "games": 6815,
+    "probability_formula": "3623 / 6815",
+    "training_seasons": [
+      2021,
+      2022,
+      2023
+    ],
+    "uses_2024": false,
+    "uses_2025": false,
+    "uses_2026": false,
+    "reestimated_inside_bootstrap": false
+  },
+  "probability_handling": {
+    "required_range_inclusive": [
+      0.0,
+      1.0
+    ],
+    "log_loss_clip_epsilon": 1e-15,
+    "clipping_rule": "min(max(p, epsilon), 1 - epsilon)",
+    "brier_uses_unclipped_probability": true,
+    "classification_threshold": 0.5,
+    "threshold_tie_is_positive_class": true
+  },
+  "metrics": {
+    "primary": {
+      "name": "LOG_LOSS",
+      "logarithm": "NATURAL",
+      "formula": "mean(-(y*log(p) + (1-y)*log(1-p)))",
+      "lower_is_better": true,
+      "computed_for": [
+        "CALIBRATED_MODEL",
+        "REFERENCE_BASELINE"
+      ]
+    },
+    "secondary": {
+      "brier_score": {
+        "formula": "mean((p-y)^2)",
+        "lower_is_better": true,
+        "computed_for": [
+          "CALIBRATED_MODEL",
+          "REFERENCE_BASELINE"
+        ]
+      },
+      "calibration_in_the_large": {
+        "formula": "mean(y) - mean(p)",
+        "computed_for": "CALIBRATED_MODEL",
+        "ideal": 0.0
+      },
+      "calibration_intercept_and_slope": {
+        "formula": "unpenalized logistic regression y ~ intercept + slope*logit(p)",
+        "computed_for": "CALIBRATED_MODEL",
+        "probability_input": "LOG_LOSS_CLIPPED",
+        "implementation": "sklearn.linear_model.LogisticRegression",
+        "parameters": {
+          "C": "numpy.inf",
+          "solver": "lbfgs",
+          "fit_intercept": true,
+          "max_iter": 10000,
+          "tol": 1e-12
+        },
+        "convergence_warning_policy": "ABORT_EVALUATION",
+        "intercept_ideal": 0.0,
+        "slope_ideal": 1.0
+      },
+      "roc_auc": {
+        "implementation": "sklearn.metrics.roc_auc_score",
+        "computed_for": [
+          "CALIBRATED_MODEL",
+          "REFERENCE_BASELINE"
+        ],
+        "descriptive_only": true
+      },
+      "accuracy_at_0_5": {
+        "formula": "mean((p >= 0.5) == y)",
+        "computed_for": [
+          "CALIBRATED_MODEL",
+          "REFERENCE_BASELINE"
+        ],
+        "descriptive_only": true
+      }
+    }
+  },
+  "primary_comparison": {
+    "name": "RELATIVE_LOG_LOSS_IMPROVEMENT",
+    "formula": "(baseline_log_loss - model_log_loss) / baseline_log_loss",
+    "positive_means": "CALIBRATED_MODEL_IS_BETTER",
+    "clarifies_registered_comparison_text": "CALIBRATED_MODEL_MINUS_REFERENCE_BASELINE",
+    "threshold": 0.005,
+    "threshold_operator": ">=",
+    "no_threshold_was_changed": true
+  },
+  "uncertainty": {
+    "method": "PAIRED_MOVING_CALENDAR_BLOCK_BOOTSTRAP",
+    "unit": "CALENDAR_DAY",
+    "include_calendar_days_without_games": true,
+    "calendar_axis": "every date from the minimum to the maximum official_date in the sealed cohort, inclusive",
+    "expected_calendar_axis_days": 175,
+    "block_length_days": 7,
+    "block_start_rule": "all non-circular overlapping starts whose complete 7-day block remains inside the calendar axis",
+    "source_blocks_are_always_complete": true,
+    "replications": 5000,
+    "random_generator": "numpy.random.Generator(numpy.random.PCG64(42))",
+    "random_seed": 42,
+    "sampling_rule": "sample block starts independently and uniformly with replacement",
+    "replicate_length_rule": "sample floor(D/7) complete blocks and, when D mod 7 is nonzero, one additional start whose first D mod 7 days form the final partial block",
+    "expected_complete_blocks_per_replicate": 25,
+    "expected_final_partial_block_days": 0,
+    "row_rule": "concatenate every game from each sampled calendar day in draw order; retain repeated games and keep model and baseline paired",
+    "empty_replicate_policy": "ABORT_EVALUATION",
+    "baseline_probability_reestimated": false,
+    "statistic": "RELATIVE_LOG_LOSS_IMPROVEMENT",
+    "confidence_level": 0.95,
+    "interval": "PERCENTILE_TWO_SIDED",
+    "lower_quantile": 0.025,
+    "upper_quantile": 0.975,
+    "quantile_method": "linear",
+    "required_lower_bound_operator": "> 0",
+    "published_point_estimate": "ORIGINAL_SEALED_COHORT_NOT_BOOTSTRAP_MEAN"
+  },
+  "verdict": {
+    "structural_or_temporal_failure": "ABORT_WITHOUT_VERDICT",
+    "missing_or_non_finite_metric": "ABORT_WITHOUT_VERDICT",
+    "comparison_precision": "UNROUNDED_VALUES",
+    "primary_supported": "relative_log_loss_improvement >= 0.005 and bootstrap_lower_bound > 0",
+    "probability_guardrails_pass": "model_brier <= baseline_brier and abs(model_calibration_in_the_large) <= 0.02 and 0.8 <= model_calibration_slope <= 1.2",
+    "decision_order": [
+      {
+        "when": "primary_supported and probability_guardrails_pass",
+        "label": "SIGNAL_VALIDE"
+      },
+      {
+        "when": "primary_supported and not probability_guardrails_pass",
+        "label": "SIGNAL_PRESENT_MAIS_PROBABILITES_NON_EXPLOITABLES"
+      },
+      {
+        "when": "relative_log_loss_improvement >= 0.005 and bootstrap_lower_bound <= 0 and probability_guardrails_pass",
+        "label": "PROMETTEUR_MAIS_INCONCLUSIF"
+      },
+      {
+        "when": "otherwise",
+        "label": "REJETE_V1"
+      }
+    ],
+    "decision_order_is_exhaustive": true
+  },
+  "preflight_invariants": [
+    "VERIFY_DATASET_SHA256_BEFORE_PARSING",
+    "VERIFY_ARTIFACT_MANIFEST_SHA256_BEFORE_PARSING",
+    "VERIFY_MODEL_PROTOCOL_SHA256_BEFORE_PARSING",
+    "VERIFY_ARTIFACT_SHA256_BEFORE_DESERIALIZATION",
+    "REQUIRE_EXACT_ARTIFACT_METADATA_MATCH",
+    "REQUIRE_EXACTLY_2276_ROWS_FOR_SEASON_2025",
+    "REQUIRE_OFFICIAL_DATE_RANGE_2025_04_07_TO_2025_09_28",
+    "REQUIRE_UNIQUE_GAME_IDS_IN_SEALED_COHORT",
+    "REQUIRE_BINARY_TARGET_WITH_BOTH_CLASSES",
+    "REQUIRE_FINITE_FEATURES_AND_PROBABILITIES",
+    "REQUIRE_FEATURE_SOURCE_DATES_STRICTLY_BEFORE_TARGET_DATE",
+    "REQUIRE_NO_ROW_FROM_SEASON_2026",
+    "REQUIRE_CLEAN_GIT_WORKTREE_BEFORE_OPENING",
+    "REQUIRE_EVALUATION_CODE_COMMITTED_BEFORE_OPENING"
+  ],
+  "opening_control": {
+    "explicit_cli_flag_required": "--open-sealed-test",
+    "preview_must_not_compute_2025_predictions": true,
+    "preview_must_not_compute_2025_metrics": true,
+    "open_only_once": true,
+    "rerun_for_model_selection_forbidden": true
+  },
+  "outputs": {
+    "directory": "evaluation_results/logistic_team_form_v1_platt_2025",
+    "directory_must_not_exist_before_opening": true,
+    "write_mode": "EXCLUSIVE_NO_OVERWRITE",
+    "predictions_file": "predictions.csv",
+    "report_file": "report.json",
+    "report_must_include_input_hashes": true,
+    "report_must_include_evaluation_code_commit": true,
+    "report_must_include_predictions_sha256": true,
+    "report_must_include_all_5000_bootstrap_statistics": false,
+    "results_must_be_committed_without_model_changes": true
+  },
+  "prohibited_claims": [
+    "NO_BETTING_PROFITABILITY_WITHOUT_TIMESTAMPED_PREMATCH_ODDS",
+    "NO_ROI_WITHOUT_TIMESTAMPED_PREMATCH_ODDS",
+    "NO_2026_METRIC_BEFORE_THE_2025_VERDICT",
+    "NO_FEATURE_OR_THRESHOLD_CHANGE_AFTER_OPENING_2025_FOR_THIS_MODEL_VERSION",
+    "NO_PROSPECTIVE_CLAIM_WHILE_TEMPORAL_AVAILABILITY_REMAINS_UNVERIFIABLE"
+  ],
+  "registered_limitations": [
+    "NON_CIRCULAR_BLOCKS_UNDERREPRESENT_CALENDAR_EDGES",
+    "SEVEN_DAY_BLOCK_LENGTH_IS_FIXED_NOT_OPTIMIZED",
+    "BOOTSTRAP_DOES_NOT_CAPTURE_MODEL_TRAINING_UNCERTAINTY",
+    "TEAM_DEPENDENCE_BEYOND_LOCAL_CALENDAR_BLOCKS_MAY_REMAIN",
+    "SEASONAL_NON_STATIONARITY_MAY_REMAIN",
+    "PERCENTILE_INTERVAL_FOR_A_RATIO_MAY_BE_ASYMMETRIC",
+    "SUSPENDED_GAME_INFORMATION_AVAILABILITY_REMAINS_UNVERIFIABLE"
+  ]
+}

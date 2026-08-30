@@ -1,0 +1,89 @@
+{
+  "manifest_version": 1,
+  "registered_on": "2026-08-30",
+  "status": "FROZEN_BEFORE_SEALED_TEST",
+  "artifact": {
+    "path": "models/logistic_team_form_v1_platt.joblib",
+    "serializer": "joblib",
+    "compression_level": 3,
+    "artifact_format_version": 1,
+    "sha256": "e0d4d2421ba076072c7ef8b3bc97dd9a341e26c62828a0ad9ba43f30da15ff55",
+    "size_bytes": 1589,
+    "code_version": "1d13f8f361de0865f722a8560f1efda8e95badbc",
+    "round_trip_verified_after_write": true,
+    "external_copy_verified": true
+  },
+  "model": {
+    "calibrated_model_version": "logistic_team_form_v1_platt",
+    "base_model_version": "logistic_team_form_v1",
+    "calibration_method": "sigmoid",
+    "base_model_unchanged_during_calibration": true,
+    "feature_columns": [
+      "away_games_before",
+      "away_win_pct_before",
+      "away_runs_scored_per_game_before",
+      "away_runs_allowed_per_game_before",
+      "home_games_before",
+      "home_win_pct_before",
+      "home_runs_scored_per_game_before",
+      "home_runs_allowed_per_game_before"
+    ]
+  },
+  "dataset": {
+    "path": "data/processed/mlb_team_form_v1_2026-08-29.csv",
+    "version": "mlb_team_form_v1",
+    "sha256": "2a24c1a22a919acfc4ea545f8025f59c86d15873aaf09cdbdcef66236cd0a73e",
+    "size_bytes": 1680593,
+    "row_count": 13253,
+    "cutoff_date": "2026-08-29"
+  },
+  "protocol": {
+    "path": "model_protocols/logistic_team_form_v1.json",
+    "sha256": "c4cb1af750619967514d37ae3a5a47a6a04255aeaccb20c5e94533dc4d138451"
+  },
+  "chronology": {
+    "base_training_seasons": [
+      2021,
+      2022,
+      2023
+    ],
+    "base_training_rows": 6815,
+    "calibration_season": 2024,
+    "calibration_rows": 2271,
+    "sealed_test_seasons": [
+      2025
+    ],
+    "sealed_test_rows": 2276,
+    "recent_seasons": [
+      2026
+    ],
+    "recent_rows": 1891,
+    "sealed_predictions_computed": false
+  },
+  "reference_baseline": {
+    "name": "CONSTANT_BASE_TRAINING_HOME_WIN_RATE",
+    "home_wins": 3623,
+    "games": 6815,
+    "training_seasons": [
+      2021,
+      2022,
+      2023
+    ],
+    "uses_calibration_season": false,
+    "uses_sealed_test_season": false,
+    "uses_recent_season": false
+  },
+  "runtime": {
+    "python": "3.12.1",
+    "numpy": "2.5.2",
+    "pandas": "3.0.5",
+    "scipy": "1.18.1",
+    "scikit_learn": "1.9.0",
+    "joblib": "1.5.3"
+  },
+  "loading_policy": {
+    "pickle_based_format": true,
+    "verify_sha256_before_deserialization": true,
+    "accept_untrusted_artifact": false
+  }
+}

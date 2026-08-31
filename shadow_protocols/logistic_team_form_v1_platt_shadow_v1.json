@@ -1,0 +1,794 @@
+{
+  "shadow_prediction_protocol_version": 1,
+  "registered_on": "2026-08-31",
+  "registered_after_results_commit": "7d64a6e5c03e36900cbf36f7c10182232c126baa",
+  "status": "REGISTERED_BEFORE_FIRST_SHADOW_PREDICTION",
+  "first_shadow_prediction_created_at_registration": false,
+  "purpose": "PROSPECTIVE_DAILY_SHADOW_PROBABILITIES_WITHOUT_ODDS_OR_BETS",
+  "validated_lineage": {
+    "model_artifact": {
+      "path": "models/logistic_team_form_v1_platt.joblib",
+      "sha256": "e0d4d2421ba076072c7ef8b3bc97dd9a341e26c62828a0ad9ba43f30da15ff55",
+      "size_bytes": 1589,
+      "code_commit": "1d13f8f361de0865f722a8560f1efda8e95badbc",
+      "model_version": "logistic_team_form_v1_platt"
+    },
+    "artifact_manifest": {
+      "path": "model_artifacts/logistic_team_form_v1_platt.json",
+      "sha256": "a7375d5376baa043b3365cff713cb717010ad812efee472b594fa454306c96ae"
+    },
+    "model_protocol": {
+      "path": "model_protocols/logistic_team_form_v1.json",
+      "sha256": "c4cb1af750619967514d37ae3a5a47a6a04255aeaccb20c5e94533dc4d138451"
+    },
+    "historical_dataset_lineage_only": {
+      "path": "data/processed/mlb_team_form_v1_2026-08-29.csv",
+      "sha256": "2a24c1a22a919acfc4ea545f8025f59c86d15873aaf09cdbdcef66236cd0a73e",
+      "row_count": 13253,
+      "must_not_be_loaded_for_shadow_prediction": true
+    },
+    "sealed_evaluation": {
+      "protocol_path": "evaluation_protocols/logistic_team_form_v1_platt_2025.json",
+      "protocol_sha256": "f6dbace5d25d92c5d0ec3c9ae16962ab03e022439177342bd28d607afba7b1a9",
+      "evaluation_code_commit": "47d77269ff43cef8cef0fb5d0a3302cdf1ac1d7f",
+      "results_commit": "7d64a6e5c03e36900cbf36f7c10182232c126baa",
+      "predictions_path": "evaluation_results/logistic_team_form_v1_platt_2025/predictions.csv",
+      "predictions_sha256": "4396b9aa645e9842cd6f0cbed663e2e0d1ada2487195a09eb081a4a198033b25",
+      "report_path": "evaluation_results/logistic_team_form_v1_platt_2025/report.json",
+      "report_sha256": "3f3d71baa122a4ac5f1690356e1c1656e812f500436dd6838d1421ba36522e70",
+      "report_status": "COMPLETED_AND_VERIFIED",
+      "evaluated_games": 2276,
+      "verdict": "SIGNAL_VALIDE",
+      "artifact_state_sha256": "33ff7d7ef633545f7b6a0605ca968c9b38756145beed8e4c134c650145370277",
+      "bootstrap_statistics_sha256": "8068089d00a2a94a644c5943df5c6e7f83bea585e91eb677350dea25304463b4",
+      "artifact_state_unchanged": true,
+      "model_fit_calls": 0,
+      "season_2026_predictions": 0,
+      "season_2026_metrics": 0
+    }
+  },
+  "execution_freeze": {
+    "shadow_service_manifest_required_before_first_run": true,
+    "manifest_path": "shadow_protocols/logistic_team_form_v1_platt_shadow_v1_execution.json",
+    "manifest_must_bind": [
+      "SHADOW_SERVICE_CODE_COMMIT",
+      "SHADOW_SERVICE_MODULE_SHA256",
+      "TRANSITIVE_RUNTIME_FILE_SHA256_MAP",
+      "SHADOW_PROTOCOL_SHA256",
+      "MODEL_ARTIFACT_SHA256",
+      "REQUIREMENTS_SHA256",
+      "TEST_SUITE_RESULT",
+      "RUNTIME_VERSIONS",
+      "MINIMUM_TARGET_OFFICIAL_DATE"
+    ],
+    "service_and_manifest_must_be_committed_and_pushed_before_first_run": true,
+    "runtime_head_must_descend_from_service_code_commit": true,
+    "runtime_files_must_match_execution_manifest_hashes": true,
+    "new_slot_requires_clean_git_worktree": true,
+    "existing_slot_is_inspected_before_clean_worktree_check": true,
+    "runtime_commit_must_descend_from_results_commit": true,
+    "explicit_cli_flag_required": "--execute-shadow",
+    "default_mode": "PREVIEW_WITHOUT_MODEL_OR_PREDICTIONS",
+    "preview_must_not_deserialize_model": true,
+    "preview_must_not_call_predict_proba": true,
+    "preview_must_not_reserve_output_slot": true,
+    "preview_must_not_create_output_files": true
+  },
+  "activation_contract": {
+    "execution_manifest_introduction_commit_formula": "first git commit that adds manifest_path, resolved with git log --diff-filter=A",
+    "execution_manifest_introduction_commit_must_be_on_remote_main": true,
+    "execution_manifest_must_equal_blob_at_introduction_commit": true,
+    "execution_manifest_updates_forbidden_for_v1": true,
+    "all_execution_values_must_be_read_from_introduction_blob": true,
+    "minimum_target_official_date_source": "execution_manifest.minimum_target_official_date",
+    "minimum_target_official_date_must_be_explicit": true,
+    "minimum_target_official_date_rule": "minimum_target_official_date >= max(shadow_protocol.registered_on, utc_date(execution_manifest_remote_visibility_verified_at_utc))",
+    "activation_remote_visibility_must_be_verified_before_first_official_run": true,
+    "activation_verified_at_utc_recorded_in_every_receipt": true,
+    "target_official_date_rule": "target_official_date >= minimum_target_official_date",
+    "no_runtime_override_allowed": true
+  },
+  "operating_mode": {
+    "name": "PROBABILITIES_ONLY_SHADOW_MODE",
+    "strictly_prospective": true,
+    "historical_backfill_allowed": false,
+    "past_2026_games_may_be_labeled_as_shadow_predictions": false,
+    "future_2026_games_may_be_predicted_prospectively": true,
+    "one_official_batch_per_target_date": true,
+    "time_basis": "UTC",
+    "minimum_local_completion_lead_minutes": 120,
+    "minimum_remote_publication_lead_minutes": 60,
+    "late_run_policy": "PERMANENTLY_MISSED_NO_RETROSPECTIVE_BACKFILL"
+  },
+  "daily_batch": {
+    "target_key": "MLB_OFFICIAL_DATE",
+    "execution_time_policy": "ANY_UTC_TIME_IF_ALL_LEAD_REQUIREMENTS_ARE_MET",
+    "target_date_must_not_precede_activation_date": true,
+    "activation_requires_protocol_service_and_execution_manifest_on_remote": true,
+    "all_target_schedule_games_must_be_observed_before_any_target_game_starts": true,
+    "schedule_observed_at_utc_required": true,
+    "information_cutoff_utc_required": true,
+    "issued_at_utc_required": true,
+    "completed_at_utc_required": true,
+    "required_time_order": "schedule_observed_at_utc <= information_cutoff_utc <= issued_at_utc <= completed_at_utc",
+    "local_completion_lead_rule": {
+      "applies_to": "EARLIEST_SCHEDULED_START_AMONG_ALL_PREDICTED_GAMES",
+      "formula": "completed_at_utc <= earliest_predicted_scheduled_start_utc - 120 minutes",
+      "operator_is_inclusive": true,
+      "violation_policy": "FAIL_ENTIRE_RESERVED_SLOT_WITHOUT_PREDICTIONS"
+    },
+    "clock_evidence": {
+      "system_utc_required": true,
+      "mlb_http_date_header_required": true,
+      "mlb_http_response_received_at_utc_required": true,
+      "clock_skew_formula": "system_received_at_utc - parsed_mlb_http_date_utc",
+      "maximum_absolute_clock_skew_seconds": 300
+    }
+  },
+  "source_snapshot": {
+    "official_slot_must_be_reserved_before_schedule_api_or_database_read": true,
+    "fresh_target_schedule_required": true,
+    "maximum_schedule_age_minutes_at_information_cutoff": 15,
+    "schedule_raw_archive_required": true,
+    "schedule_raw_sha256_required": true,
+    "schedule_ingestion_run_id_required": true,
+    "schedule_ingestion_completed_at_utc_required": true,
+    "sqlite_online_backup_snapshot_required": true,
+    "sqlite_snapshot_sha256_required": true,
+    "sqlite_snapshot_size_required": true,
+    "active_ingestion_runs_allowed": false,
+    "foreign_key_violations_allowed": false,
+    "canonical_source_subset_required": true,
+    "canonical_source_subset_contents": [
+      "TARGET_SCHEDULE_ROWS",
+      "ELIGIBLE_SOURCE_FINAL_GAME_ROWS",
+      "TEAM_IDENTITIES",
+      "INGESTION_PROVENANCE"
+    ],
+    "canonical_source_subset_path": "source_snapshot.json.gz",
+    "canonical_gzip": {
+      "implementation": "gzip.GzipFile",
+      "filename": "",
+      "mtime": 0,
+      "compresslevel": 9
+    },
+    "per_source_game_historical_ingestion_link_available": false,
+    "prospective_availability_evidence": "CANONICAL_SOURCE_SUBSET_PUBLISHED_BEFORE_TARGET_GAMES",
+    "information_cutoff_rule": "AFTER_ACCEPTED_INGESTIONS_AND_SQLITE_SNAPSHOT_BEFORE_FEATURE_CONSTRUCTION",
+    "all_ingestions_must_complete_no_later_than_information_cutoff": true,
+    "network_retry_policy_inside_reserved_slot": {
+      "maximum_attempts": 3,
+      "delays_seconds_before_attempts": [
+        0,
+        1,
+        2
+      ],
+      "retryable_exception": "MLBAPIRetryableError_ONLY",
+      "every_attempt_must_be_journaled": true
+    },
+    "no_unregistered_network_or_cache_fallback": true
+  },
+  "candidate_games": {
+    "sport_id": 1,
+    "game_type": "R",
+    "official_date_must_equal_target_date": true,
+    "required_abstract_state": "Preview",
+    "allowed_detailed_states": [
+      "Scheduled",
+      "Pre-Game"
+    ],
+    "game_datetime_utc_required": true,
+    "accepted_pregame_score_states": [
+      "BOTH_NULL",
+      "BOTH_ZERO"
+    ],
+    "nonzero_or_one_sided_pregame_score_policy": "FAIL_ENTIRE_RESERVED_SLOT",
+    "target_score_values_must_be_redacted_from_tracked_target_rows": true,
+    "teams_must_be_distinct": true,
+    "minimum_lead_checked_globally_against_earliest_predicted_start": true,
+    "postponed_and_cancelled_games_are_excluded": true,
+    "started_live_or_final_target_game_policy": "FAIL_ENTIRE_RESERVED_SLOT",
+    "candidate_ledger_includes_every_schedule_game": true,
+    "allowed_exclusion_reasons": [
+      "POSTPONED",
+      "CANCELLED",
+      "START_TIME_MISSING",
+      "INSUFFICIENT_AWAY_HISTORY",
+      "INSUFFICIENT_HOME_HISTORY"
+    ],
+    "wrong_sport_type_date_duplicate_or_unknown_state_policy": "FAIL_ENTIRE_RESERVED_SLOT",
+    "malformed_or_conflicting_candidate_aborts_entire_run": true
+  },
+  "feature_contract": {
+    "dataset_semantics": "mlb_team_form_v1",
+    "calendar_policy": "J_MINUS_1_BY_OFFICIAL_DATE",
+    "minimum_history_games_per_team": 10,
+    "reset_team_state_each_season": true,
+    "same_day_games_never_feed_each_other": true,
+    "allowed_source_rule": "source_game.season == target_game.season and source_game.official_date < target_game.official_date",
+    "accepted_final_status_codes": [
+      "F"
+    ],
+    "accepted_final_status_details_casefolded": [
+      "FINAL",
+      "GAME OVER",
+      "COMPLETED EARLY"
+    ],
+    "accepted_final_rule": "status_code in accepted_final_status_codes OR upper(trim(status_detail)) in accepted_final_status_details_casefolded",
+    "source_scores_required_and_nonnegative": true,
+    "target_scores_and_outcomes_forbidden_as_features": true,
+    "feature_as_of_date_rule": "target_official_date - 1 calendar day",
+    "feature_columns_in_exact_order": [
+      "away_games_before",
+      "away_win_pct_before",
+      "away_runs_scored_per_game_before",
+      "away_runs_allowed_per_game_before",
+      "home_games_before",
+      "home_win_pct_before",
+      "home_runs_scored_per_game_before",
+      "home_runs_allowed_per_game_before"
+    ],
+    "feature_quantization": {
+      "games_before": "INTEGER",
+      "rates_and_averages": "PYTHON_FIXED_POINT_6_DECIMALS_THEN_PARSE_AS_FLOAT",
+      "decimal_separator": "."
+    },
+    "forbidden_features": [
+      "PROBABLE_PITCHER",
+      "VENUE",
+      "TARGET_GAME_TIME",
+      "TARGET_STATUS",
+      "TARGET_SCORE",
+      "TARGET_OUTCOME",
+      "ODDS",
+      "MARKET",
+      "USER_SELECTION"
+    ],
+    "current_season_prior_results_are_features_only": true,
+    "current_season_results_must_never_fit_or_recalibrate_model": true
+  },
+  "model_use": {
+    "verify_artifact_sha256_before_deserialization": true,
+    "trusted_artifact_path_must_match_manifest": true,
+    "expected_classes": [
+      0,
+      1
+    ],
+    "home_probability_source": "calibrated_classifier.predict_proba(X) for class 1",
+    "away_probability_formula": "1 - p_home",
+    "fit_allowed": false,
+    "partial_fit_allowed": false,
+    "recalibration_allowed": false,
+    "threshold_tuning_allowed": false,
+    "feature_selection_allowed": false,
+    "fallback_model_allowed": false,
+    "automatic_latest_model_selection_allowed": false,
+    "maximum_predict_proba_calls_per_nonempty_batch": 1,
+    "probabilities_must_be_finite_and_between_zero_and_one": true,
+    "artifact_serialized_state_before_and_after_must_match": true,
+    "warnings_during_load_or_prediction": "ABORT_ENTIRE_RUN"
+  },
+  "canonicalization": {
+    "text_encoding": "UTF-8",
+    "line_ending": "LF",
+    "sha256_hex_case": "lowercase",
+    "utc_timestamp_format": "RFC3339_SECONDS_Z",
+    "date_format": "YYYY-MM-DD",
+    "canonical_json_for_hashes": "json.dumps(value, ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(',', ':')).encode('utf-8')",
+    "canonical_json_file_has_one_trailing_lf": true,
+    "csv_dialect": {
+      "delimiter": ",",
+      "quotechar": "\"",
+      "quoting": "MINIMAL",
+      "lineterminator": "LF"
+    },
+    "probability_float_format": ".17g",
+    "feature_rate_format_before_model_parse": ".6f",
+    "identifier_preimage_format": "CANONICAL_JSON_ARRAY_WITH_DOMAIN_TAG",
+    "slot_key_components": [
+      "shadow_slot_v1",
+      "shadow_protocol_sha256",
+      "target_official_date"
+    ],
+    "occurrence_key_components": [
+      "shadow_occurrence_v1",
+      "game_id",
+      "official_date_at_snapshot",
+      "scheduled_start_utc_at_snapshot"
+    ],
+    "prediction_id_components": [
+      "shadow_prediction_v1",
+      "shadow_protocol_sha256",
+      "game_id",
+      "official_date_at_snapshot",
+      "scheduled_start_utc_at_snapshot"
+    ]
+  },
+  "idempotency": {
+    "slot_inspection_is_first_operation_before_any_official_input_read": true,
+    "slot_key_formula": "sha256(canonical_json(slot_key_components))",
+    "new_slot_is_atomically_reserved_before_any_schedule_api_or_database_read": true,
+    "result_directory_template": "shadow_results/logistic_team_form_v1_platt_shadow_v1/YYYY-MM-DD",
+    "write_mode": "EXCLUSIVE_NO_OVERWRITE",
+    "exact_completed_identity_fields": [
+      "slot_key",
+      "target_official_date",
+      "shadow_protocol_sha256",
+      "execution_manifest_sha256",
+      "model_artifact_sha256"
+    ],
+    "completed_exact_duplicate": "RETURN_EXISTING_RECEIPT_WITHOUT_MODEL_CALL",
+    "different_inputs_for_consumed_slot": "ABORT_SLOT_ALREADY_CONSUMED",
+    "incomplete_or_failed_slot": "PERMANENTLY_FAILED_NO_REUSE_NO_DELETE",
+    "supplemental_official_runs_allowed": false,
+    "prediction_uniqueness_key_formula": "sha256(canonical_json(prediction_id_components))"
+  },
+  "schedule_change_policy": {
+    "occurrence_key_formula": "sha256(canonical_json(occurrence_key_components))",
+    "doubleheader_games_are_distinct_by_game_id": true,
+    "rescheduled_occurrence_never_mutates_original_prediction": true,
+    "later_schedule_observation_is_append_only": true,
+    "outcome_linkage_and_void_rules_deferred_to_separate_preregistered_protocol": true,
+    "no_outcome_metric_is_computed_in_shadow_v1": true
+  },
+  "output_contract": {
+    "result_root": "shadow_results/logistic_team_form_v1_platt_shadow_v1",
+    "result_root_must_be_tracked_by_git": true,
+    "git_check_ignore_must_report_not_ignored": true,
+    "success_files_in_write_order": [
+      "RESERVED",
+      "source_snapshot.json.gz",
+      "candidate_ledger.csv",
+      "features.csv",
+      "predictions.csv",
+      "receipt.json",
+      "COMPLETED"
+    ],
+    "failure_marker": "FAILED.json",
+    "completed_or_failed_marker_is_terminal": true,
+    "reserved_marker_keys_exact_set": [
+      "marker_schema_version",
+      "batch_id",
+      "slot_key",
+      "target_official_date",
+      "reserved_at_utc",
+      "shadow_protocol_sha256",
+      "execution_manifest_sha256",
+      "runtime_code_commit"
+    ],
+    "failed_marker_keys_exact_set": [
+      "marker_schema_version",
+      "batch_id",
+      "slot_key",
+      "target_official_date",
+      "failed_at_utc",
+      "stage",
+      "error_type",
+      "error_message",
+      "shadow_protocol_sha256",
+      "execution_manifest_sha256",
+      "runtime_code_commit"
+    ],
+    "completed_marker_keys_exact_set": [
+      "marker_schema_version",
+      "batch_id",
+      "receipt_path",
+      "receipt_sha256",
+      "completed_at_utc"
+    ],
+    "canonical_csv": "UTF8_LF_FIXED_COLUMN_ORDER",
+    "canonical_json": "UTF8_LF_SORTED_KEYS_NO_NAN_NO_INFINITY",
+    "fsync_and_reread_hash_verification_required": true,
+    "receipt_written_after_all_data_files": true,
+    "completion_marker_written_last_and_contains_receipt_sha256": true,
+    "partial_outputs_are_never_official": true,
+    "empty_eligible_batch": {
+      "status": "COMPLETED_NO_ELIGIBLE_GAMES",
+      "predict_proba_calls": 0,
+      "earliest_predicted_scheduled_start_utc": null,
+      "features_and_predictions_csv": "HEADER_ONLY",
+      "receipt_and_completed_marker_required": true,
+      "prospective_remote_certification_required": false,
+      "slot_remains_permanently_consumed": true
+    },
+    "source_snapshot_keys_exact_set": [
+      "schema_version",
+      "batch_id",
+      "target_official_date",
+      "created_at_utc",
+      "information_cutoff_utc",
+      "schedule_ingestion",
+      "sqlite_snapshot",
+      "teams",
+      "target_schedule",
+      "source_final_games"
+    ],
+    "schedule_ingestion_keys_exact_set": [
+      "run_id",
+      "completed_at_utc",
+      "raw_archive_path",
+      "raw_archive_sha256",
+      "mlb_http_date_utc",
+      "mlb_http_response_received_at_utc"
+    ],
+    "sqlite_snapshot_keys_exact_set": [
+      "source_database_path",
+      "sha256",
+      "size_bytes",
+      "foreign_key_violation_count",
+      "active_ingestion_count"
+    ],
+    "team_row_keys_exact_set": [
+      "team_id",
+      "name",
+      "abbreviation"
+    ],
+    "target_schedule_row_keys_exact_set": [
+      "game_id",
+      "season",
+      "official_date",
+      "game_datetime_utc",
+      "game_type",
+      "abstract_state",
+      "detailed_state",
+      "away_team_id",
+      "home_team_id",
+      "doubleheader",
+      "game_number"
+    ],
+    "source_final_game_row_keys_exact_set": [
+      "game_id",
+      "season",
+      "official_date",
+      "status_code",
+      "status_detail",
+      "away_team_id",
+      "home_team_id",
+      "away_score",
+      "home_score"
+    ],
+    "candidate_ledger_columns_in_exact_order": [
+      "batch_id",
+      "game_id",
+      "occurrence_key",
+      "season",
+      "official_date",
+      "away_team_id",
+      "home_team_id",
+      "scheduled_start_utc",
+      "abstract_state",
+      "detailed_state",
+      "eligibility_status",
+      "exclusion_reason"
+    ],
+    "features_columns_in_exact_order": [
+      "prediction_id",
+      "batch_id",
+      "game_id",
+      "occurrence_key",
+      "season",
+      "official_date",
+      "away_team_id",
+      "home_team_id",
+      "scheduled_start_utc",
+      "feature_as_of_date",
+      "away_max_source_date",
+      "home_max_source_date",
+      "away_games_before",
+      "away_win_pct_before",
+      "away_runs_scored_per_game_before",
+      "away_runs_allowed_per_game_before",
+      "home_games_before",
+      "home_win_pct_before",
+      "home_runs_scored_per_game_before",
+      "home_runs_allowed_per_game_before",
+      "feature_row_sha256"
+    ],
+    "predictions_columns_in_exact_order": [
+      "prediction_id",
+      "batch_id",
+      "game_id",
+      "occurrence_key",
+      "season",
+      "official_date_at_prediction",
+      "away_team_id",
+      "home_team_id",
+      "scheduled_start_utc_at_prediction",
+      "information_cutoff_utc",
+      "issued_at_utc",
+      "feature_as_of_date",
+      "away_max_source_date",
+      "home_max_source_date",
+      "away_games_before",
+      "away_win_pct_before",
+      "away_runs_scored_per_game_before",
+      "away_runs_allowed_per_game_before",
+      "home_games_before",
+      "home_win_pct_before",
+      "home_runs_scored_per_game_before",
+      "home_runs_allowed_per_game_before",
+      "p_home_win",
+      "p_away_win",
+      "model_version",
+      "artifact_sha256",
+      "protocol_sha256",
+      "code_commit"
+    ],
+    "forbidden_exact_target_or_prediction_field_names": [
+      "away_score",
+      "home_score",
+      "home_win",
+      "target",
+      "outcome",
+      "odds",
+      "implied_probability",
+      "pick",
+      "stake",
+      "edge",
+      "expected_value",
+      "profit",
+      "roi"
+    ],
+    "forbidden_fields_apply_to": [
+      "TARGET_SCHEDULE_ROWS",
+      "CANDIDATE_LEDGER",
+      "FEATURES",
+      "PREDICTIONS",
+      "RECEIPT",
+      "CERTIFICATION"
+    ],
+    "source_final_game_scores_are_the_only_score_fields_allowed": true
+  },
+  "receipt_contract": {
+    "top_level_keys_exact_set": [
+      "receipt_schema_version",
+      "batch",
+      "activation",
+      "times",
+      "lineage",
+      "source",
+      "counts",
+      "output_hashes",
+      "model_invariants",
+      "negative_attestations",
+      "runtime_versions"
+    ],
+    "batch_keys_exact_set": [
+      "batch_id",
+      "slot_key",
+      "target_official_date",
+      "status",
+      "earliest_predicted_scheduled_start_utc"
+    ],
+    "activation_keys_exact_set": [
+      "execution_manifest_introduction_commit",
+      "activation_verified_at_utc",
+      "minimum_target_official_date"
+    ],
+    "times_keys_exact_set": [
+      "started_at_utc",
+      "schedule_observed_at_utc",
+      "information_cutoff_utc",
+      "issued_at_utc",
+      "completed_at_utc",
+      "mlb_http_date_utc",
+      "mlb_http_response_received_at_utc",
+      "clock_skew_seconds"
+    ],
+    "lineage_keys_exact_set": [
+      "runtime_code_commit",
+      "shadow_service_module_sha256",
+      "shadow_protocol_sha256",
+      "execution_manifest_sha256",
+      "model_artifact_sha256",
+      "artifact_manifest_sha256",
+      "model_protocol_sha256",
+      "evaluation_protocol_sha256",
+      "evaluation_report_sha256",
+      "evaluation_results_commit"
+    ],
+    "source_keys_exact_set": [
+      "sqlite_snapshot_sha256",
+      "sqlite_snapshot_size_bytes",
+      "source_snapshot_path",
+      "source_snapshot_sha256",
+      "schedule_ingestion_run_id",
+      "schedule_ingestion_completed_at_utc",
+      "schedule_raw_archive_path",
+      "schedule_raw_archive_sha256"
+    ],
+    "output_hashes_keys_exact_set": [
+      "candidate_ledger_sha256",
+      "features_sha256",
+      "predictions_sha256"
+    ],
+    "counts_keys_exact_set": [
+      "schedule_games",
+      "eligible_games",
+      "predicted_games",
+      "excluded_games_by_reason"
+    ],
+    "excluded_games_by_reason_keys_exact_set": [
+      "POSTPONED",
+      "CANCELLED",
+      "START_TIME_MISSING",
+      "INSUFFICIENT_AWAY_HISTORY",
+      "INSUFFICIENT_HOME_HISTORY"
+    ],
+    "model_invariants_keys_exact_set": [
+      "fit_calls",
+      "partial_fit_calls",
+      "recalibration_calls",
+      "threshold_tuning_calls",
+      "feature_selection_calls",
+      "predict_proba_calls",
+      "artifact_state_sha256_before",
+      "artifact_state_sha256_after",
+      "artifact_state_unchanged"
+    ],
+    "model_invariant_required_values": {
+      "fit_calls": 0,
+      "partial_fit_calls": 0,
+      "recalibration_calls": 0,
+      "threshold_tuning_calls": 0,
+      "feature_selection_calls": 0,
+      "artifact_state_unchanged": true
+    },
+    "predict_proba_calls_rule": "1 if predicted_games > 0 else 0",
+    "artifact_state_hash_rule": "artifact_state_sha256_before == artifact_state_sha256_after",
+    "negative_attestations_keys_exact_set": [
+      "ALL_TARGET_GAMES_UNSTARTED_AT_INFORMATION_CUTOFF",
+      "TARGET_OUTCOMES_NOT_AVAILABLE_AT_INFORMATION_CUTOFF",
+      "TARGET_SCORE_VALUES_REDACTED_FROM_TRACKED_TARGET_ROWS",
+      "TARGET_SCORES_NOT_USED_AS_FEATURES",
+      "ODDS_NOT_READ",
+      "BETTING_RECOMMENDATIONS_NOT_COMPUTED",
+      "SEASON_2026_METRICS_NOT_COMPUTED"
+    ],
+    "negative_attestations_required_value": true,
+    "runtime_versions_keys_exact_set": [
+      "python",
+      "numpy",
+      "pandas",
+      "scipy",
+      "scikit_learn",
+      "joblib"
+    ],
+    "game_ids_must_be_unique": true,
+    "probability_pairs_must_sum_to_one_with_absolute_tolerance": 1e-12
+  },
+  "prospective_certification": {
+    "required_for_strong_prospective_claim": true,
+    "claim_level": "REMOTE_SERVER_ATTESTED_NOT_CRYPTOGRAPHICALLY_TIMESTAMPED",
+    "results_must_be_committed_and_pushed_unchanged": true,
+    "remote_commit_must_contain_exact_output_hashes": true,
+    "remote_visibility_check": "GITHUB_API_COMMIT_RESPONSE_WITH_HTTPS_DATE_HEADER",
+    "remote_time_must_precede_each_predicted_game_by_at_least_minutes": 60,
+    "certification_path_template": "shadow_certifications/logistic_team_form_v1_platt_shadow_v1/YYYY-MM-DD.json",
+    "raw_remote_evidence_path_template": "shadow_certifications/logistic_team_form_v1_platt_shadow_v1/YYYY-MM-DD.remote.json.gz",
+    "certification_root_must_be_tracked_by_git": true,
+    "git_check_ignore_must_report_not_ignored": true,
+    "certification_is_outside_completed_batch_directory": true,
+    "certification_write_mode": "APPEND_ONLY_EXCLUSIVE_CREATE",
+    "raw_remote_evidence_write_mode": "APPEND_ONLY_EXCLUSIVE_CREATE",
+    "remote_evidence_gzip": {
+      "implementation": "gzip.GzipFile",
+      "filename": "",
+      "mtime": 0,
+      "compresslevel": 9
+    },
+    "raw_remote_evidence_keys_exact_set": [
+      "evidence_schema_version",
+      "request_url",
+      "request_method",
+      "response_status_code",
+      "selected_response_headers",
+      "response_received_at_utc",
+      "response_body_base64",
+      "response_body_sha256"
+    ],
+    "selected_response_header_keys_exact_set": [
+      "date",
+      "content-type",
+      "etag",
+      "x-github-request-id"
+    ],
+    "certification_keys_exact_set": [
+      "certification_schema_version",
+      "target_official_date",
+      "batch_id",
+      "results_commit",
+      "results_remote_ref",
+      "results_tree_file_hashes",
+      "remote_query_url",
+      "remote_http_date_utc",
+      "remote_response_received_at_utc",
+      "remote_response_body_sha256",
+      "raw_remote_evidence_path",
+      "raw_remote_evidence_sha256",
+      "earliest_predicted_start_utc",
+      "remote_publication_lead_minutes",
+      "status",
+      "claim_level"
+    ],
+    "results_tree_file_hashes_entry_keys_exact_set": [
+      "path",
+      "sha256",
+      "size_bytes"
+    ],
+    "results_tree_file_hashes_expected_relative_paths": [
+      "RESERVED",
+      "source_snapshot.json.gz",
+      "candidate_ledger.csv",
+      "features.csv",
+      "predictions.csv",
+      "receipt.json",
+      "COMPLETED"
+    ],
+    "results_tree_file_hashes_order": "LEXICOGRAPHIC_BY_RELATIVE_PATH",
+    "certification_must_reference_preexisting_results_commit": true,
+    "remote_response_body_must_name_exact_results_commit": true,
+    "late_or_missing_remote_evidence_status": "LOCAL_SHADOW_ONLY_NOT_PROSPECTIVELY_CERTIFIED",
+    "retroactive_certification_allowed": false,
+    "remote_evidence_never_changes_original_predictions": true
+  },
+  "scoring_and_betting": {
+    "outcome_collection_enabled": false,
+    "season_2026_metrics_allowed": false,
+    "odds_input_allowed": false,
+    "implied_probability_allowed": false,
+    "edge_allowed": false,
+    "expected_value_allowed": false,
+    "bet_recommendation_allowed": false,
+    "stake_allowed": false,
+    "roi_allowed": false,
+    "profitability_claim_allowed": false,
+    "later_scoring_requires_separate_frozen_protocol": true,
+    "later_odds_analysis_requires_timestamped_prematch_odds": true
+  },
+  "preflight_invariants": [
+    "INSPECT_EXISTING_SLOT_BEFORE_ANY_OFFICIAL_INPUT_READ",
+    "REQUIRE_CLEAN_GIT_WORKTREE_FOR_NEW_SLOT",
+    "REQUIRE_RUNTIME_HEAD_DESCENDS_FROM_SERVICE_COMMIT",
+    "REQUIRE_TRANSITIVE_RUNTIME_FILES_MATCH_EXECUTION_MANIFEST_HASHES",
+    "VERIFY_SHADOW_PROTOCOL_SHA256",
+    "VERIFY_EXECUTION_MANIFEST_SHA256",
+    "VERIFY_MODEL_ARTIFACT_SHA256_BEFORE_DESERIALIZATION",
+    "VERIFY_ARTIFACT_MANIFEST_AND_MODEL_PROTOCOL_SHA256",
+    "REQUIRE_NO_ACTIVE_INGESTION",
+    "REQUIRE_FRESH_AUDITED_SCHEDULE_INGESTION",
+    "REQUIRE_SQLITE_SNAPSHOT_AND_FOREIGN_KEY_INTEGRITY",
+    "REQUIRE_EXECUTION_MANIFEST_INTRODUCTION_COMMIT_VISIBLE_ON_REMOTE_MAIN",
+    "REQUIRE_EXECUTION_MANIFEST_EQUALS_IMMUTABLE_INTRODUCTION_BLOB",
+    "REQUIRE_TARGET_DATE_AT_OR_AFTER_EXPLICIT_MINIMUM_TARGET_DATE",
+    "REQUIRE_MINIMUM_TARGET_DATE_NOT_BEFORE_REGISTRATION_OR_MANIFEST_REMOTE_VISIBILITY_DATE",
+    "REQUIRE_ALL_TARGET_GAMES_UNSTARTED_AT_INFORMATION_CUTOFF",
+    "REQUIRE_COMPLETION_120_MINUTES_BEFORE_EARLIEST_PREDICTED_START",
+    "REQUIRE_PREGAME_SCORES_BOTH_NULL_OR_BOTH_ZERO",
+    "REQUIRE_UNIQUE_GAME_IDS_AND_OCCURRENCE_KEYS",
+    "REQUIRE_EXACT_FEATURE_ORDER_AND_FINITE_VALUES",
+    "REQUIRE_ALL_TRACKED_OUTPUT_SCHEMAS_EXACT",
+    "REQUIRE_SHADOW_RESULT_AND_CERTIFICATION_ROOTS_NOT_IGNORED_BY_GIT",
+    "REQUIRE_OUTPUT_SLOT_ABSENT_OR_EXACT_COMPLETED_DUPLICATE",
+    "REQUIRE_NO_HISTORICAL_2026_SHADOW_BACKFILL"
+  ],
+  "failure_policy": {
+    "failure_before_reservation": "ABORT_WITHOUT_OFFICIAL_INPUT_READ",
+    "failure_after_reservation": "WRITE_FAILED_JSON_AND_NEVER_REUSE_SLOT",
+    "structural_or_temporal_failure": "ABORT_WITHOUT_PREDICTIONS",
+    "hash_or_lineage_failure": "ABORT_WITHOUT_MODEL_DESERIALIZATION",
+    "partial_prediction_publication_allowed": false,
+    "only_registered_network_retries_inside_reserved_slot_allowed": true,
+    "automatic_output_deletion_allowed": false
+  },
+  "registered_limitations": [
+    "MODEL_USES_TEAM_FORM_ONLY",
+    "NO_PITCHER_BULLPEN_LINEUP_OR_VENUE_FEATURES",
+    "NO_TIMESTAMPED_PREMATCH_ODDS",
+    "NO_BETTING_PROFITABILITY_EVIDENCE",
+    "HISTORICAL_PER_GAME_AVAILABILITY_BEFORE_ACTIVATION_REMAINS_UNVERIFIABLE",
+    "OFFICIAL_DATE_POLICY_IGNORES_RESULTS_FROM_EARLIER_SAME_DAY_GAMES",
+    "A_MISSED_DAILY_BATCH_CAN_NEVER_BE_RECOVERED_AS_PROSPECTIVE",
+    "FUTURE_OUTCOME_SCORING_AND_ODDS_ANALYSIS_REQUIRE_SEPARATE_PREREGISTRATION"
+  ]
+}

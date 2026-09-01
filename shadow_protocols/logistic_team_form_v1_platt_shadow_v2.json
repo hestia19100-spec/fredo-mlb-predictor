@@ -1,0 +1,1636 @@
+{
+  "shadow_prediction_protocol_version": 2,
+  "registered_on": "2026-08-31",
+  "registered_after_results_commit": "7d64a6e5c03e36900cbf36f7c10182232c126baa",
+  "status": "REGISTERED_BEFORE_FIRST_SHADOW_V2_PREDICTION",
+  "first_shadow_prediction_created_at_registration": false,
+  "purpose": "PROSPECTIVE_DAILY_SHADOW_PROBABILITIES_WITHOUT_ODDS_OR_BETS",
+  "supersedes_unexecuted_protocol": {
+    "path": "shadow_protocols/logistic_team_form_v1_platt_shadow_v1.json",
+    "sha256": "dad8bd60b45400ede52952f6ac7c58de71fe75843cb0c010980fdad00ac1f8a7",
+    "registration_commit": "56298f43e88b6d276aba1d52cb8170c87df259b7",
+    "execution_manifest_created": false,
+    "shadow_prediction_created": false,
+    "v1_execution_is_permanently_forbidden": true,
+    "reason": "CLOSE_ACTIVATION_WARNING_IDENTIFIER_AND_ORDERING_AMBIGUITIES_BEFORE_FIRST_RUN"
+  },
+  "remote_repository": {
+    "provider": "GITHUB",
+    "owner": "hestia19100-spec",
+    "repository": "fredo-mlb-predictor",
+    "branch": "main",
+    "full_ref": "refs/heads/main",
+    "web_url": "https://github.com/hestia19100-spec/fredo-mlb-predictor",
+    "api_base_url": "https://api.github.com",
+    "compare_api_url_template": "https://api.github.com/repos/hestia19100-spec/fredo-mlb-predictor/compare/{expected_commit}...main",
+    "request_method": "GET",
+    "application_request_headers_exact": {
+      "Accept": "application/vnd.github+json",
+      "X-GitHub-Api-Version": "2022-11-28",
+      "User-Agent": "fredo-mlb-predictor-shadow-v2/1.0"
+    },
+    "application_request_headers_definition": "the exact case-sensitive key/value map passed by the service through the requests headers argument; no additional application header is allowed",
+    "transport_generated_headers_policy": "headers generated internally by requests or urllib3 are outside application_request_headers_exact and must not be used as evidence or persisted",
+    "authorization_header_allowed": false,
+    "cookies_allowed": false,
+    "effective_url_must_equal_request_url": true,
+    "response_status_code_exact": 200,
+    "response_redirect_count_exact": 0,
+    "response_body_json_rules": {
+      "base_commit.sha": "expected_commit",
+      "merge_base_commit.sha": "expected_commit",
+      "status_allowed_values": [
+        "ahead",
+        "identical"
+      ]
+    },
+    "remote_ref_recorded_in_activation_and_certification_must_equal": "refs/heads/main",
+    "response_body_bytes_definition": "DECODED_HTTP_ENTITY_BYTES_EXPOSED_BY_REQUESTS_RESPONSE_CONTENT",
+    "tls_certificate_verification_required": true,
+    "authentication_is_forbidden_for_v2": true
+  },
+  "validated_lineage": {
+    "model_artifact": {
+      "path": "models/logistic_team_form_v1_platt.joblib",
+      "sha256": "e0d4d2421ba076072c7ef8b3bc97dd9a341e26c62828a0ad9ba43f30da15ff55",
+      "size_bytes": 1589,
+      "code_commit": "1d13f8f361de0865f722a8560f1efda8e95badbc",
+      "model_version": "logistic_team_form_v1_platt"
+    },
+    "artifact_manifest": {
+      "path": "model_artifacts/logistic_team_form_v1_platt.json",
+      "sha256": "a7375d5376baa043b3365cff713cb717010ad812efee472b594fa454306c96ae"
+    },
+    "model_protocol": {
+      "path": "model_protocols/logistic_team_form_v1.json",
+      "sha256": "c4cb1af750619967514d37ae3a5a47a6a04255aeaccb20c5e94533dc4d138451"
+    },
+    "historical_dataset_lineage_only": {
+      "path": "data/processed/mlb_team_form_v1_2026-08-29.csv",
+      "sha256": "2a24c1a22a919acfc4ea545f8025f59c86d15873aaf09cdbdcef66236cd0a73e",
+      "row_count": 13253,
+      "must_not_be_loaded_for_shadow_prediction": true
+    },
+    "sealed_evaluation": {
+      "protocol_path": "evaluation_protocols/logistic_team_form_v1_platt_2025.json",
+      "protocol_sha256": "f6dbace5d25d92c5d0ec3c9ae16962ab03e022439177342bd28d607afba7b1a9",
+      "evaluation_code_commit": "47d77269ff43cef8cef0fb5d0a3302cdf1ac1d7f",
+      "results_commit": "7d64a6e5c03e36900cbf36f7c10182232c126baa",
+      "predictions_path": "evaluation_results/logistic_team_form_v1_platt_2025/predictions.csv",
+      "predictions_sha256": "4396b9aa645e9842cd6f0cbed663e2e0d1ada2487195a09eb081a4a198033b25",
+      "report_path": "evaluation_results/logistic_team_form_v1_platt_2025/report.json",
+      "report_sha256": "3f3d71baa122a4ac5f1690356e1c1656e812f500436dd6838d1421ba36522e70",
+      "report_status": "COMPLETED_AND_VERIFIED",
+      "evaluated_games": 2276,
+      "verdict": "SIGNAL_VALIDE",
+      "artifact_state_sha256": "33ff7d7ef633545f7b6a0605ca968c9b38756145beed8e4c134c650145370277",
+      "bootstrap_statistics_sha256": "8068089d00a2a94a644c5943df5c6e7f83bea585e91eb677350dea25304463b4",
+      "artifact_state_unchanged": true,
+      "model_fit_calls": 0,
+      "season_2026_predictions": 0,
+      "season_2026_metrics": 0
+    }
+  },
+  "execution_freeze": {
+    "shadow_service_manifest_required_before_first_run": true,
+    "manifest_path": "shadow_protocols/logistic_team_form_v1_platt_shadow_v2_execution.json",
+    "execution_manifest_schema_version_exact": 1,
+    "execution_manifest_status_exact": "FROZEN_BEFORE_SHADOW_V2_ACTIVATION",
+    "execution_manifest_keys_exact_set": [
+      "execution_manifest_schema_version",
+      "status",
+      "shadow_service_code_commit",
+      "shadow_service_module_path",
+      "shadow_service_module_sha256",
+      "transitive_runtime_file_sha256_map",
+      "shadow_protocol_path",
+      "shadow_protocol_sha256",
+      "model_artifact_path",
+      "model_artifact_sha256",
+      "model_artifact_size_bytes",
+      "requirements_path",
+      "requirements_sha256",
+      "test_suite_result",
+      "runtime_versions",
+      "minimum_target_official_date",
+      "created_at_utc"
+    ],
+    "shadow_service_module_path_exact": "src/shadow_prediction.py",
+    "shadow_protocol_path_exact": "shadow_protocols/logistic_team_form_v1_platt_shadow_v2.json",
+    "requirements_path_exact": "requirements.txt",
+    "transitive_runtime_file_sha256_map_minimum_paths": [
+      "src/calibrated_model.py",
+      "src/database.py",
+      "src/game_repository.py",
+      "src/ingestion_repository.py",
+      "src/ingestion_service.py",
+      "src/mlb_api.py",
+      "src/raw_archive.py",
+      "src/retry_policy.py",
+      "src/shadow_prediction.py"
+    ],
+    "transitive_runtime_file_sha256_map_rule": "lexicographically sorted repository-relative POSIX paths for the complete recursive closure of local Python modules imported at runtime by src/shadow_prediction.py, including every minimum path; each value is sha256(exact file bytes).hexdigest(); missing closure members and unrelated extra files are forbidden",
+    "test_suite_result_keys_exact_set": [
+      "command",
+      "status",
+      "tests_run",
+      "failures",
+      "errors",
+      "skipped",
+      "completed_at_utc",
+      "tested_code_commit"
+    ],
+    "test_suite_result_required_values": {
+      "command": "python -m unittest discover -s tests -v",
+      "status": "OK",
+      "failures": 0,
+      "errors": 0,
+      "tested_code_commit_rule": "exactly shadow_service_code_commit"
+    },
+    "runtime_versions_keys_exact_set": [
+      "python",
+      "numpy",
+      "pandas",
+      "scipy",
+      "scikit_learn",
+      "joblib"
+    ],
+    "shadow_service_code_commit_must_precede_execution_manifest_introduction_commit": true,
+    "manifest_must_bind": [
+      "SHADOW_SERVICE_CODE_COMMIT",
+      "SHADOW_SERVICE_MODULE_SHA256",
+      "TRANSITIVE_RUNTIME_FILE_SHA256_MAP",
+      "SHADOW_PROTOCOL_SHA256",
+      "MODEL_ARTIFACT_SHA256",
+      "REQUIREMENTS_SHA256",
+      "TEST_SUITE_RESULT",
+      "RUNTIME_VERSIONS",
+      "MINIMUM_TARGET_OFFICIAL_DATE"
+    ],
+    "service_and_manifest_must_be_committed_and_pushed_before_first_run": true,
+    "runtime_head_must_descend_from_service_code_commit": true,
+    "runtime_files_must_match_execution_manifest_hashes": true,
+    "new_slot_requires_clean_git_worktree": true,
+    "existing_slot_is_inspected_before_clean_worktree_check": true,
+    "runtime_commit_must_descend_from_results_commit": true,
+    "explicit_cli_flag_required": "--execute-shadow",
+    "activation_cli_flag_required": "--activate-shadow",
+    "default_mode": "PREVIEW_WITHOUT_MODEL_OR_PREDICTIONS",
+    "preview_must_not_deserialize_model": true,
+    "preview_must_not_call_predict_proba": true,
+    "preview_must_not_reserve_output_slot": true,
+    "preview_must_not_create_output_files": true
+  },
+  "activation_contract": {
+    "execution_manifest_introduction_commit_formula": "first git commit that adds manifest_path, resolved with git log --diff-filter=A",
+    "execution_manifest_introduction_commit_must_be_on_remote_main": true,
+    "execution_manifest_must_equal_blob_at_introduction_commit": true,
+    "execution_manifest_updates_forbidden_for_v2": true,
+    "all_execution_values_must_be_read_from_introduction_blob": true,
+    "activation_mode_must_run_after_execution_manifest_is_remote": true,
+    "activation_mode_must_not_reserve_daily_slot": true,
+    "activation_mode_must_not_read_mlb_or_sqlite": true,
+    "activation_mode_must_not_deserialize_or_predict": true,
+    "activation_path": "shadow_activations/logistic_team_form_v1_platt_shadow_v2/activation.json",
+    "activation_raw_remote_evidence_path": "shadow_activations/logistic_team_form_v1_platt_shadow_v2/execution_manifest.remote.json.gz",
+    "activation_root_must_be_tracked_by_git": true,
+    "activation_git_check_ignore_must_report_not_ignored": true,
+    "activation_files_write_mode": "APPEND_ONLY_EXCLUSIVE_CREATE",
+    "activation_files_must_be_committed_and_pushed_before_first_official_batch": true,
+    "activation_introduction_commit_formula": "first git commit that adds activation_path, resolved with git log --diff-filter=A",
+    "activation_introduction_commit_must_be_on_remote_main": true,
+    "activation_must_equal_blob_at_introduction_commit": true,
+    "activation_updates_forbidden_for_v2": true,
+    "activation_introduction_commit_remote_visibility_must_be_reverified_for_each_new_slot": true,
+    "activation_remote_response_must_name_exact_activation_introduction_commit": true,
+    "activation_remote_blob_must_equal_immutable_introduction_blob_for_each_new_slot": true,
+    "activation_verified_at_utc_source": "activation.json.execution_manifest_remote_http_date_utc",
+    "activation_remote_reverified_at_utc_source": "HTTPS Date header from the per-slot GitHub API response that names activation_introduction_commit",
+    "activation_remote_reverified_at_utc_must_not_follow_reserved_at_utc": true,
+    "per_slot_reverification_raw_evidence_filename": "activation_reverification.remote.json.gz",
+    "per_slot_reverification_query_url_formula": "remote_repository.compare_api_url_template with expected_commit = activation_introduction_commit",
+    "per_slot_reverification_must_follow_remote_repository_contract": true,
+    "per_slot_reverification_evidence_bytes_must_be_built_before_reservation": true,
+    "per_slot_reverification_evidence_must_be_written_exclusively_immediately_after_reserved_marker": true,
+    "per_slot_reverification_evidence_sha256_must_be_recorded_in_receipt": true,
+    "per_slot_reverification_response_body_sha256_must_be_recorded_in_receipt": true,
+    "minimum_target_official_date_source": "execution_manifest.minimum_target_official_date",
+    "minimum_target_official_date_must_be_explicit": true,
+    "minimum_target_official_date_rule": "minimum_target_official_date >= max(shadow_protocol.registered_on, utc_date(activation.execution_manifest_remote_http_date_utc))",
+    "activation_remote_visibility_must_be_verified_before_first_official_run": true,
+    "activation_verified_at_utc_is_persistent_and_recorded_in_every_receipt": true,
+    "activation_remote_reverification_required_for_each_new_slot": true,
+    "target_official_date_rule": "target_official_date >= max(minimum_target_official_date, utc_date(activation_remote_reverified_at_utc), utc_date(reserved_at_utc))",
+    "no_runtime_override_allowed": true
+  },
+  "activation_evidence": {
+    "activation_keys_exact_set": [
+      "activation_schema_version",
+      "status",
+      "shadow_protocol_path",
+      "shadow_protocol_sha256",
+      "execution_manifest_path",
+      "execution_manifest_sha256",
+      "execution_manifest_introduction_commit",
+      "execution_manifest_remote_ref",
+      "execution_manifest_remote_query_url",
+      "execution_manifest_remote_effective_url",
+      "execution_manifest_remote_response_status_code",
+      "execution_manifest_remote_response_redirect_count",
+      "execution_manifest_remote_http_date_utc",
+      "execution_manifest_remote_response_received_at_utc",
+      "execution_manifest_remote_response_body_sha256",
+      "raw_remote_evidence_path",
+      "raw_remote_evidence_sha256",
+      "minimum_target_official_date",
+      "created_at_utc",
+      "claim_level"
+    ],
+    "status": "ACTIVATED_BEFORE_FIRST_SHADOW_V2_BATCH",
+    "claim_level": "REMOTE_SERVER_ATTESTED_NOT_CRYPTOGRAPHICALLY_TIMESTAMPED",
+    "raw_remote_evidence_keys_exact_set": [
+      "evidence_schema_version",
+      "request_url",
+      "request_method",
+      "application_request_headers",
+      "effective_url",
+      "response_status_code",
+      "response_redirect_count",
+      "selected_response_headers",
+      "response_received_at_utc",
+      "response_body_base64",
+      "response_body_sha256"
+    ],
+    "selected_response_header_keys_exact_set": [
+      "date",
+      "content-type",
+      "etag",
+      "x-github-request-id"
+    ],
+    "remote_evidence_gzip": {
+      "implementation": "gzip.GzipFile",
+      "filename": "",
+      "mtime": 0,
+      "compresslevel": 9
+    },
+    "remote_request_method": "GET",
+    "remote_response_status_code_required": 200,
+    "remote_response_redirect_count_required": 0,
+    "remote_request_and_response_must_follow_remote_repository_contract": true,
+    "remote_response_body_sha256_must_match_decoded_response_body": true,
+    "raw_remote_evidence_sha256_must_match_persisted_gzip_bytes": true,
+    "activation_json_to_raw_remote_evidence_invariants_exact": [
+      "activation.execution_manifest_remote_query_url == raw.request_url",
+      "raw.request_method == remote_repository.request_method",
+      "raw.application_request_headers == remote_repository.application_request_headers_exact",
+      "activation.execution_manifest_remote_effective_url == raw.effective_url == raw.request_url",
+      "activation.execution_manifest_remote_response_status_code == raw.response_status_code == remote_repository.response_status_code_exact",
+      "activation.execution_manifest_remote_response_redirect_count == raw.response_redirect_count == remote_repository.response_redirect_count_exact",
+      "activation.execution_manifest_remote_http_date_utc == parse_IMF_FIXDATE_GMT(raw.selected_response_headers.date)",
+      "activation.execution_manifest_remote_response_received_at_utc == raw.response_received_at_utc",
+      "activation.execution_manifest_remote_response_body_sha256 == raw.response_body_sha256 == sha256(base64_decode(raw.response_body_base64))",
+      "activation.raw_remote_evidence_path == activation_contract.activation_raw_remote_evidence_path",
+      "activation.raw_remote_evidence_sha256 == sha256(persisted raw gzip bytes)",
+      "activation.execution_manifest_remote_ref == remote_repository.full_ref"
+    ],
+    "remote_response_body_must_name_exact_execution_manifest_introduction_commit": true,
+    "execution_manifest_sha256_must_match_immutable_introduction_blob": true,
+    "per_slot_reverification_uses_same_raw_remote_evidence_schema_and_gzip": true,
+    "per_slot_reverification_expected_commit": "activation_introduction_commit",
+    "per_slot_reverification_response_body_must_satisfy_remote_repository_response_body_json_rules": true,
+    "per_slot_reverification_selected_date_header_must_parse_as_IMF_FIXDATE_GMT": true,
+    "activation_is_not_a_prediction_or_daily_batch": true
+  },
+  "operating_mode": {
+    "name": "PROBABILITIES_ONLY_SHADOW_V2_MODE",
+    "strictly_prospective": true,
+    "historical_backfill_allowed": false,
+    "past_2026_games_may_be_labeled_as_shadow_predictions": false,
+    "future_2026_games_may_be_predicted_prospectively": true,
+    "target_season_exact": 2026,
+    "future_other_seasons_require_new_registered_protocol": true,
+    "one_official_batch_per_target_date": true,
+    "time_basis": "UTC",
+    "minimum_local_completion_lead_minutes": 120,
+    "minimum_remote_publication_lead_minutes": 60,
+    "late_run_policy": "PERMANENTLY_MISSED_NO_RETROSPECTIVE_BACKFILL"
+  },
+  "daily_batch": {
+    "target_key": "MLB_OFFICIAL_DATE",
+    "execution_time_policy": "ANY_UTC_TIME_IF_ALL_LEAD_REQUIREMENTS_ARE_MET",
+    "target_date_must_not_precede_activation_remote_visibility_utc_date": true,
+    "activation_requires_protocol_service_execution_manifest_and_activation_on_remote": true,
+    "all_target_schedule_games_must_be_observed_before_any_target_game_starts": true,
+    "started_at_utc_required": true,
+    "started_at_utc_definition": "UTC instant captured for a new absent slot immediately after slot inspection and before any remote activation reverification or other new-slot preflight; exact completed duplicates return the existing receipt and do not create new timing values",
+    "schedule_observed_at_utc_required": true,
+    "schedule_observed_at_utc_formula": "mlb_http_response_received_at_utc",
+    "information_cutoff_utc_required": true,
+    "issued_at_utc_required": true,
+    "receipt_finalized_at_utc_required": true,
+    "completed_at_utc_required": true,
+    "issued_at_utc_definition": "UTC instant captured immediately before canonical predictions.csv bytes are built",
+    "receipt_finalized_at_utc_definition": "UTC instant captured immediately before receipt.json serialization after every preceding success file has been fsynced and reread",
+    "completed_at_utc_definition": "UTC instant captured after receipt.json has been exclusively published, fsynced and reread, immediately before canonical COMPLETED marker bytes are built; this value exists only in COMPLETED and is the local completion time used by the lead rule",
+    "required_time_order": "started_at_utc <= activation_reverification_raw.response_received_at_utc <= RESERVED.reserved_at_utc == receipt.times.reserved_at_utc <= schedule_observed_at_utc <= information_cutoff_utc <= issued_at_utc <= receipt_finalized_at_utc <= COMPLETED.completed_at_utc",
+    "required_time_order_scope": "NEW_ABSENT_SLOT_ONLY; exact completed duplicate returns existing receipt without a new activation request, reservation or time sequence",
+    "schedule_age_seconds_formula": "information_cutoff_utc - schedule_observed_at_utc",
+    "schedule_age_seconds_allowed_range_inclusive": [
+      0,
+      900
+    ],
+    "schedule_request_parameters_exact": {
+      "sportId": 1,
+      "startDate": "runtime_target_official_date",
+      "endDate": "runtime_target_official_date",
+      "gameTypes": "R",
+      "hydrate": "probablePitcher"
+    },
+    "schedule_request_parameters_canonical_json_rule": "json.dumps(schedule_request_parameters_exact with both runtime date placeholders replaced by target_official_date, ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(',', ':'))",
+    "schedule_effective_url_query_validation": "urllib.parse.urlsplit(effective_url).query decoded with urllib.parse.parse_qsl(keep_blank_values=True, strict_parsing=True); duplicate query names forbidden; decoded key/value multimap must equal schedule_request_parameters_exact after runtime date substitution and str() conversion of integer values; query pair order is irrelevant",
+    "local_completion_lead_rule": {
+      "applies_to": "EARLIEST_SCHEDULED_START_AMONG_ALL_PREDICTED_GAMES",
+      "formula": "completed_at_utc <= earliest_predicted_scheduled_start_utc - 120 minutes",
+      "operator_is_inclusive": true,
+      "violation_policy": "FAIL_ENTIRE_RESERVED_SLOT_WITHOUT_PREDICTIONS"
+    },
+    "clock_evidence": {
+      "system_utc_required": true,
+      "mlb_http_date_header_required": true,
+      "mlb_http_date_header_raw_format": "IMF_FIXDATE_GMT",
+      "mlb_http_response_received_at_utc_required": true,
+      "mlb_response_effective_url_scheme_exact": "https",
+      "mlb_response_effective_url_host_exact": "statsapi.mlb.com",
+      "mlb_response_effective_url_path_exact": "/api/v1/schedule",
+      "mlb_response_status_code_exact": 200,
+      "mlb_response_redirect_count_exact": 0,
+      "clock_skew_formula": "mlb_http_response_received_at_utc - mlb_http_date_utc",
+      "maximum_absolute_clock_skew_seconds": 300
+    }
+  },
+  "source_snapshot": {
+    "official_slot_must_be_reserved_before_schedule_api_or_database_read": true,
+    "fresh_target_schedule_required": true,
+    "maximum_schedule_age_minutes_at_information_cutoff": 15,
+    "schedule_age_formula": "information_cutoff_utc - schedule_ingestion.mlb_http_response_received_at_utc",
+    "schedule_age_must_be_nonnegative_and_at_most_900_seconds": true,
+    "schedule_raw_archive_required": true,
+    "schedule_raw_sha256_required": true,
+    "schedule_ingestion_run_id_required": true,
+    "schedule_ingestion_completed_at_utc_required": true,
+    "schedule_ingestion_provenance_must_match_exact_request_parameters": true,
+    "schedule_http_observation_must_be_persisted_in_canonical_source_subset": true,
+    "schedule_http_body_sha256_must_equal_raw_archive_sha256": true,
+    "sqlite_online_backup_snapshot_required": true,
+    "sqlite_snapshot_sha256_required": true,
+    "sqlite_snapshot_size_required": true,
+    "sqlite_snapshot_lifecycle": "temporary read-only online-backup file outside tracked output; canonical rows plus its SHA-256 and size are persisted before temporary cleanup",
+    "active_ingestion_runs_allowed": false,
+    "foreign_key_violations_allowed": false,
+    "canonical_source_subset_required": true,
+    "canonical_source_subset_contents": [
+      "TARGET_SCHEDULE_ROWS",
+      "ELIGIBLE_SOURCE_FINAL_GAME_ROWS",
+      "TEAM_IDENTITIES",
+      "INGESTION_PROVENANCE"
+    ],
+    "canonical_source_subset_path": "source_snapshot.json.gz",
+    "canonical_gzip": {
+      "implementation": "gzip.GzipFile",
+      "filename": "",
+      "mtime": 0,
+      "compresslevel": 9
+    },
+    "per_source_game_historical_ingestion_link_available": false,
+    "prospective_availability_evidence": "CANONICAL_SOURCE_SUBSET_PUBLISHED_BEFORE_TARGET_GAMES",
+    "information_cutoff_rule": "AFTER_ACCEPTED_INGESTIONS_AND_SQLITE_SNAPSHOT_BEFORE_FEATURE_CONSTRUCTION",
+    "all_ingestions_must_complete_no_later_than_information_cutoff": true,
+    "network_retry_policy_inside_reserved_slot": {
+      "maximum_attempts": 3,
+      "delays_seconds_before_attempts": [
+        0,
+        1,
+        2
+      ],
+      "retryable_exception": "MLBAPIRetryableError_ONLY",
+      "every_attempt_must_be_journaled": true
+    },
+    "no_unregistered_network_or_cache_fallback": true
+  },
+  "candidate_games": {
+    "sport_id": 1,
+    "game_type": "R",
+    "season_must_equal": 2026,
+    "official_date_must_equal_target_date": true,
+    "required_abstract_state": "Preview",
+    "allowed_detailed_states": [
+      "Scheduled",
+      "Pre-Game"
+    ],
+    "status_text_normalization": "str(value).strip().upper() with null rejected for target schedule statuses",
+    "classification_tables": {
+      "POSTPONED": {
+        "normalized_status_codes": [
+          "D",
+          "DI",
+          "DR"
+        ],
+        "normalized_detailed_states": [
+          "POSTPONED"
+        ],
+        "required_pair_rule": "normalized status_code is in normalized_status_codes AND normalized detailed_state is in normalized_detailed_states",
+        "action": "EXCLUDE_POSTPONED"
+      },
+      "CANCELLED": {
+        "normalized_status_codes": [
+          "C",
+          "CI",
+          "CR"
+        ],
+        "normalized_detailed_states": [
+          "CANCELLED"
+        ],
+        "required_pair_rule": "normalized status_code is in normalized_status_codes AND normalized detailed_state is in normalized_detailed_states",
+        "action": "EXCLUDE_CANCELLED"
+      },
+      "SCHEDULED": {
+        "normalized_status_codes": [
+          "S"
+        ],
+        "normalized_abstract_states": [
+          "PREVIEW"
+        ],
+        "normalized_detailed_states": [
+          "SCHEDULED"
+        ],
+        "required_triplet_rule": "normalized status_code, abstract_state and detailed_state each belong to their exact table",
+        "action": "CONTINUE_CLASSIFICATION"
+      },
+      "PRE_GAME": {
+        "normalized_status_codes": [
+          "P"
+        ],
+        "normalized_abstract_states": [
+          "PREVIEW"
+        ],
+        "normalized_detailed_states": [
+          "PRE-GAME"
+        ],
+        "required_triplet_rule": "normalized status_code, abstract_state and detailed_state each belong to their exact table",
+        "action": "CONTINUE_CLASSIFICATION"
+      },
+      "LIVE": {
+        "normalized_abstract_states": [
+          "LIVE"
+        ],
+        "action": "FAIL_ENTIRE_RESERVED_SLOT"
+      },
+      "FINAL": {
+        "normalized_abstract_states": [
+          "FINAL"
+        ],
+        "action": "FAIL_ENTIRE_RESERVED_SLOT"
+      }
+    },
+    "classification_order_exact": [
+      "VALIDATE_STRUCTURE_IDENTITY_SPORT_TYPE_SEASON_DATE_AND_PREGAME_SCORE_PAIR",
+      "MATCH_EXACT_POSTPONED_PAIR",
+      "MATCH_EXACT_CANCELLED_PAIR",
+      "FAIL_IF_LIVE_OR_FINAL_ABSTRACT_STATE",
+      "MATCH_EXACT_SCHEDULED_OR_PRE_GAME_TRIPLET_OTHERWISE_FAIL_UNKNOWN_STATE",
+      "EXCLUDE_IF_START_TIME_MISSING",
+      "EXCLUDE_IF_BOTH_TEAMS_HAVE_INSUFFICIENT_HISTORY",
+      "EXCLUDE_IF_ONLY_AWAY_TEAM_HAS_INSUFFICIENT_HISTORY",
+      "EXCLUDE_IF_ONLY_HOME_TEAM_HAS_INSUFFICIENT_HISTORY",
+      "MARK_ELIGIBLE"
+    ],
+    "eligibility_status_domain_exact": [
+      "ELIGIBLE",
+      "EXCLUDED"
+    ],
+    "eligible_exclusion_reason_canonical_value": null,
+    "excluded_exclusion_reason_must_be_exact_allowed_reason": true,
+    "game_datetime_utc_required": false,
+    "missing_game_datetime_utc_canonical_value": null,
+    "missing_start_time_is_exclusion": true,
+    "accepted_pregame_score_states": [
+      "BOTH_NULL",
+      "BOTH_ZERO"
+    ],
+    "nonzero_or_one_sided_pregame_score_policy": "FAIL_ENTIRE_RESERVED_SLOT",
+    "target_score_values_must_be_redacted_from_tracked_target_rows": true,
+    "teams_must_be_distinct": true,
+    "minimum_lead_checked_globally_against_earliest_predicted_start": true,
+    "postponed_and_cancelled_games_are_excluded": true,
+    "postponed_and_cancelled_classification_precedes_abstract_state_validation": true,
+    "required_abstract_state_applies_only_after_postponed_and_cancelled_exclusion": true,
+    "started_live_or_final_target_game_policy": "FAIL_ENTIRE_RESERVED_SLOT",
+    "candidate_ledger_includes_every_schedule_game": true,
+    "allowed_exclusion_reasons": [
+      "POSTPONED",
+      "CANCELLED",
+      "START_TIME_MISSING",
+      "INSUFFICIENT_BOTH_HISTORY",
+      "INSUFFICIENT_AWAY_HISTORY",
+      "INSUFFICIENT_HOME_HISTORY"
+    ],
+    "insufficient_history_reason_priority": [
+      "INSUFFICIENT_BOTH_HISTORY",
+      "INSUFFICIENT_AWAY_HISTORY",
+      "INSUFFICIENT_HOME_HISTORY"
+    ],
+    "insufficient_history_reason_rule": "BOTH when away and home each have fewer than minimum_history_games_per_team; otherwise AWAY or HOME for the single insufficient side",
+    "wrong_sport_type_date_duplicate_or_unknown_state_policy": "FAIL_ENTIRE_RESERVED_SLOT",
+    "malformed_or_conflicting_candidate_aborts_entire_run": true
+  },
+  "feature_contract": {
+    "dataset_semantics": "mlb_team_form_v1",
+    "calendar_policy": "J_MINUS_1_BY_OFFICIAL_DATE",
+    "minimum_history_games_per_team": 10,
+    "reset_team_state_each_season": true,
+    "same_day_games_never_feed_each_other": true,
+    "allowed_source_rule": "source_game.season == target_game.season and source_game.official_date < target_game.official_date",
+    "accepted_final_status_codes": [
+      "F"
+    ],
+    "accepted_final_status_details_casefolded": [
+      "FINAL",
+      "GAME OVER",
+      "COMPLETED EARLY"
+    ],
+    "accepted_final_rule": "status_code in accepted_final_status_codes OR upper(trim(status_detail)) in accepted_final_status_details_casefolded",
+    "source_scores_required_and_nonnegative": true,
+    "source_game_validation": {
+      "game_type_exact": "R",
+      "integer_fields_reject_booleans": [
+        "game_id",
+        "season",
+        "away_team_id",
+        "home_team_id",
+        "away_score",
+        "home_score"
+      ],
+      "official_date_must_be_valid_iso_date": true,
+      "season_must_equal_target_season": true,
+      "official_date_must_be_strictly_before_target_official_date": true,
+      "team_ids_must_be_distinct": true,
+      "scores_must_be_nonnegative": true,
+      "tied_final_scores_allowed": false,
+      "duplicate_game_ids_allowed": false,
+      "malformed_accepted_final_game_policy": "FAIL_ENTIRE_RESERVED_SLOT",
+      "nonfinal_games_are_not_source_rows": true
+    },
+    "team_state_initial_values": {
+      "games": 0,
+      "wins": 0,
+      "runs_scored": 0,
+      "runs_allowed": 0,
+      "max_source_date": null
+    },
+    "team_state_update_order": [
+      "official_date",
+      "game_id"
+    ],
+    "team_state_update_formulas": {
+      "away_team.games": "away_team.games + 1",
+      "away_team.wins": "away_team.wins + int(away_score > home_score)",
+      "away_team.runs_scored": "away_team.runs_scored + away_score",
+      "away_team.runs_allowed": "away_team.runs_allowed + home_score",
+      "away_team.max_source_date": "max(previous away_team.max_source_date, source_game.official_date) with null treated as absent",
+      "home_team.games": "home_team.games + 1",
+      "home_team.wins": "home_team.wins + int(home_score > away_score)",
+      "home_team.runs_scored": "home_team.runs_scored + home_score",
+      "home_team.runs_allowed": "home_team.runs_allowed + away_score",
+      "home_team.max_source_date": "max(previous home_team.max_source_date, source_game.official_date) with null treated as absent"
+    },
+    "feature_value_formulas": {
+      "away_games_before": "away_team.games",
+      "away_win_pct_before": "away_team.wins / away_team.games",
+      "away_runs_scored_per_game_before": "away_team.runs_scored / away_team.games",
+      "away_runs_allowed_per_game_before": "away_team.runs_allowed / away_team.games",
+      "home_games_before": "home_team.games",
+      "home_win_pct_before": "home_team.wins / home_team.games",
+      "home_runs_scored_per_game_before": "home_team.runs_scored / home_team.games",
+      "home_runs_allowed_per_game_before": "home_team.runs_allowed / home_team.games"
+    },
+    "source_date_formulas": {
+      "feature_as_of_date": "target_official_date - 1 calendar day",
+      "away_max_source_date": "away_team.max_source_date",
+      "home_max_source_date": "home_team.max_source_date",
+      "max_source_dates_must_be_strictly_before_target_official_date": true
+    },
+    "minimum_history_rule_exact": "away_team.games >= 10 AND home_team.games >= 10 before any division or feature row creation",
+    "target_scores_and_outcomes_forbidden_as_features": true,
+    "feature_as_of_date_rule": "target_official_date - 1 calendar day",
+    "feature_columns_in_exact_order": [
+      "away_games_before",
+      "away_win_pct_before",
+      "away_runs_scored_per_game_before",
+      "away_runs_allowed_per_game_before",
+      "home_games_before",
+      "home_win_pct_before",
+      "home_runs_scored_per_game_before",
+      "home_runs_allowed_per_game_before"
+    ],
+    "feature_quantization": {
+      "games_before": "INTEGER",
+      "rates_and_averages": "format(binary64_value, '.6f') to exact ASCII text then parse that text with Python float before numpy.asarray(dtype=numpy.float64)",
+      "rounding_implementation": "CPython format mini-language fixed-point .6f under the exact manifest Python version",
+      "decimal_separator": ".",
+      "negative_zero_allowed": false,
+      "matrix_dtype": "numpy.float64",
+      "matrix_column_order": "feature_columns_in_exact_order",
+      "matrix_row_order": "canonicalization.row_ordering.features"
+    },
+    "forbidden_features": [
+      "PROBABLE_PITCHER",
+      "VENUE",
+      "TARGET_GAME_TIME",
+      "TARGET_STATUS",
+      "TARGET_SCORE",
+      "TARGET_OUTCOME",
+      "ODDS",
+      "MARKET",
+      "USER_SELECTION"
+    ],
+    "current_season_prior_results_are_features_only": true,
+    "current_season_results_must_never_fit_or_recalibrate_model": true
+  },
+  "model_use": {
+    "verify_artifact_sha256_before_deserialization": true,
+    "trusted_artifact_path_must_match_manifest": true,
+    "expected_classes": [
+      0,
+      1
+    ],
+    "home_probability_source": "calibrated_classifier.predict_proba(X) for class 1",
+    "away_probability_formula": "1 - p_home",
+    "fit_allowed": false,
+    "partial_fit_allowed": false,
+    "recalibration_allowed": false,
+    "threshold_tuning_allowed": false,
+    "feature_selection_allowed": false,
+    "fallback_model_allowed": false,
+    "automatic_latest_model_selection_allowed": false,
+    "maximum_predict_proba_calls_per_nonempty_batch": 1,
+    "probabilities_must_be_finite_and_between_zero_and_one": true,
+    "artifact_serialized_state_before_and_after_must_match": true,
+    "artifact_deserialization_contract": {
+      "trusted_bytes_source": "model_artifact_path after exact SHA-256 and size verification",
+      "loader": "joblib.load(io.BytesIO(trusted_bytes))",
+      "legacy_type_alias": "temporarily bind __main__.CalibratedModelArtifact to src.calibrated_model.CalibratedModelArtifact only during joblib.load, then restore or delete the prior binding",
+      "artifact_type_exact": "src.calibrated_model.CalibratedModelArtifact",
+      "metadata_must_match_artifact_manifest": true
+    },
+    "artifact_state_sha256_method": {
+      "serializer": "joblib.dump",
+      "destination": "io.BytesIO",
+      "compress": 3,
+      "digest": "sha256(buffer.getvalue()).hexdigest()",
+      "runtime_versions_must_equal_execution_manifest": true,
+      "warning_handling": "model_use.warning_policy",
+      "computed_immediately_before_predict_proba": true,
+      "computed_immediately_after_predict_proba": true
+    },
+    "warning_policy": {
+      "policy_id": "VERIFIED_JOBLIB_NUMPY_COMPATIBILITY_V1",
+      "default": "ABORT_ENTIRE_RUN",
+      "approved_load_or_state_serialization_warning": {
+        "category": "DeprecationWarning",
+        "message_regex": "Setting the shape on a NumPy array has been deprecated.*",
+        "module_regex": "joblib\\.numpy_pickle",
+        "allowed_stages": [
+          "ARTIFACT_DESERIALIZATION",
+          "ARTIFACT_STATE_SERIALIZATION"
+        ],
+        "requires_exact_manifest_runtime_versions": true
+      },
+      "matching_implementation": "inside warnings.catch_warnings(record=True), call warnings.simplefilter('error') first, then warnings.filterwarnings('always', message=message_regex, category=DeprecationWarning, module=module_regex, append=False); execute exactly one allowed stage inside that context",
+      "message_regex_semantics": "Python warnings.filterwarnings semantics: case-insensitive re.match from the start against str(warning message); the registered trailing .* is intentional",
+      "module_regex_semantics": "Python warnings.filterwarnings semantics: case-sensitive re.match from the start against the fully qualified module name supplied by the warnings machinery",
+      "approved_warning_count_semantics": "length of the recorded WarningMessage list produced by the exact matching_implementation; any warning not selected by the approved filter is raised as an exception by the error filter",
+      "approved_warning_count_must_be_recorded": true,
+      "warnings_during_predict_proba": "ABORT_ENTIRE_RUN",
+      "all_other_warnings": "ABORT_ENTIRE_RUN"
+    }
+  },
+  "canonicalization": {
+    "text_encoding": "UTF-8",
+    "line_ending": "LF",
+    "sha256_hex_case": "lowercase",
+    "utc_timestamp_format": "RFC3339_SECONDS_Z",
+    "date_format": "YYYY-MM-DD",
+    "canonical_json_for_hashes": "json.dumps(value, ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(',', ':')).encode('utf-8')",
+    "canonical_json_file_has_one_trailing_lf": true,
+    "csv_dialect": {
+      "delimiter": ",",
+      "quotechar": "\"",
+      "quoting": "MINIMAL",
+      "lineterminator": "LF"
+    },
+    "probability_float_format": ".17g",
+    "feature_rate_format_before_model_parse": ".6f",
+    "identifier_preimage_format": "CANONICAL_JSON_ARRAY_WITH_DOMAIN_TAG",
+    "slot_key_components": [
+      "shadow_slot_v2",
+      "shadow_protocol_sha256",
+      "target_official_date"
+    ],
+    "batch_id_components": [
+      "shadow_batch_v2",
+      "slot_key",
+      "execution_manifest_sha256",
+      "model_artifact_sha256"
+    ],
+    "occurrence_key_components": [
+      "shadow_occurrence_v2",
+      "game_id",
+      "official_date_at_snapshot",
+      "scheduled_start_utc_at_snapshot"
+    ],
+    "prediction_id_components": [
+      "shadow_prediction_v2",
+      "shadow_protocol_sha256",
+      "game_id",
+      "official_date_at_snapshot",
+      "scheduled_start_utc_at_snapshot"
+    ],
+    "feature_row_sha256_components": [
+      "shadow_feature_row_v2",
+      "feature_row_values_in_features_columns_exact_order_excluding_feature_row_sha256"
+    ],
+    "identifier_formulas_exact": {
+      "slot_key": "sha256(canonical_json([\"shadow_slot_v2\", runtime_shadow_protocol_sha256, runtime_target_official_date]))",
+      "batch_id": "sha256(canonical_json([\"shadow_batch_v2\", runtime_slot_key, runtime_execution_manifest_sha256, runtime_model_artifact_sha256]))",
+      "occurrence_key": "sha256(canonical_json([\"shadow_occurrence_v2\", runtime_game_id, runtime_official_date_at_snapshot, runtime_scheduled_start_utc_at_snapshot_or_null]))",
+      "prediction_id": "sha256(canonical_json([\"shadow_prediction_v2\", runtime_shadow_protocol_sha256, runtime_game_id, runtime_official_date_at_snapshot, runtime_scheduled_start_utc_at_snapshot]))",
+      "feature_row_sha256": "sha256(canonical_json([\"shadow_feature_row_v2\", runtime_feature_row_values_in_features_columns_exact_order_excluding_feature_row_sha256]))"
+    },
+    "identifier_runtime_value_types": {
+      "sha256_values": "JSON string of exactly 64 lowercase hexadecimal ASCII characters",
+      "game_id_team_ids_season_and_games_before": "JSON integer, booleans forbidden",
+      "official_dates": "JSON string YYYY-MM-DD",
+      "scheduled_start_utc": "JSON string RFC3339_SECONDS_Z; JSON null only for an excluded occurrence with missing start time",
+      "feature_rates_and_averages": "JSON strings matching ^[0-9]+\\.[0-9]{6}$",
+      "domain_tags": "literal JSON strings shown in identifier_formulas_exact"
+    },
+    "identifier_source_field_mapping_exact": {
+      "runtime_official_date_at_snapshot": "target_schedule.official_date copied unchanged to candidate_ledger.official_date, features.official_date and predictions.official_date_at_prediction",
+      "runtime_scheduled_start_utc_at_snapshot_or_null": "target_schedule.game_datetime_utc copied unchanged to candidate_ledger.scheduled_start_utc; for an eligible game it is non-null and is copied unchanged to features.scheduled_start_utc and predictions.scheduled_start_utc_at_prediction",
+      "runtime_scheduled_start_utc_at_snapshot": "same value as runtime_scheduled_start_utc_at_snapshot_or_null with JSON null forbidden because prediction_id is created only for an eligible game"
+    },
+    "feature_row_values_in_exact_order_and_type": [
+      "prediction_id:sha256_string",
+      "batch_id:sha256_string",
+      "game_id:integer",
+      "occurrence_key:sha256_string",
+      "season:integer",
+      "official_date:date_string",
+      "away_team_id:integer",
+      "home_team_id:integer",
+      "scheduled_start_utc:utc_timestamp_string",
+      "feature_as_of_date:date_string",
+      "away_max_source_date:date_string",
+      "home_max_source_date:date_string",
+      "away_games_before:integer",
+      "away_win_pct_before:fixed_6_string",
+      "away_runs_scored_per_game_before:fixed_6_string",
+      "away_runs_allowed_per_game_before:fixed_6_string",
+      "home_games_before:integer",
+      "home_win_pct_before:fixed_6_string",
+      "home_runs_scored_per_game_before:fixed_6_string",
+      "home_runs_allowed_per_game_before:fixed_6_string"
+    ],
+    "known_answer_vectors": {
+      "slot_key": {
+        "preimage": [
+          "shadow_slot_v2",
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "2026-09-01"
+        ],
+        "sha256": "534a9e487bb6f9af8faba5682750b636eee84b07496613571b1cfbeccebc9676"
+      },
+      "batch_id": {
+        "preimage": [
+          "shadow_batch_v2",
+          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+        ],
+        "sha256": "bd6199cc0c8ab005be588fe03103811a5054b516037594f13d50497a162928bc"
+      },
+      "occurrence_key": {
+        "preimage": [
+          "shadow_occurrence_v2",
+          123456,
+          "2026-09-01",
+          "2026-09-01T23:10:00Z"
+        ],
+        "sha256": "a0b0c323cb249ffaa96762c36439fec1d37a7e1d2e345cc7734a3fee6da3a4e1"
+      },
+      "occurrence_key_missing_start": {
+        "preimage": [
+          "shadow_occurrence_v2",
+          123456,
+          "2026-09-01",
+          null
+        ],
+        "sha256": "50e4ab25b98b6d05d9183c680e21f031fd28f8ecee76c7c4511a3bb4638e8401"
+      },
+      "prediction_id": {
+        "preimage": [
+          "shadow_prediction_v2",
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          123456,
+          "2026-09-01",
+          "2026-09-01T23:10:00Z"
+        ],
+        "sha256": "6b3ab93aedeb2a0b0da158aa9a5f0e51075cb4560965b1d15d6e1b66242b9f21"
+      },
+      "feature_row_sha256": {
+        "preimage": [
+          "shadow_feature_row_v2",
+          [
+            "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            123456,
+            "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            2026,
+            "2026-09-01",
+            111,
+            222,
+            "2026-09-01T23:10:00Z",
+            "2026-08-31",
+            "2026-08-31",
+            "2026-08-31",
+            10,
+            "0.500000",
+            "4.250000",
+            "3.750000",
+            12,
+            "0.583333",
+            "4.500000",
+            "4.000000"
+          ]
+        ],
+        "sha256": "98bb3e09b94de8182eb9d28ac3a0ed0e1978ff8354298587b67a2b0b6616fd47"
+      }
+    },
+    "row_ordering": {
+      "sort_direction_for_every_term": "ASCENDING",
+      "integer_identifiers_sort_numerically": true,
+      "dates_and_utc_timestamps_sort_by_canonical_text": true,
+      "teams": [
+        "team_id"
+      ],
+      "source_final_games": [
+        "official_date",
+        "game_id"
+      ],
+      "target_schedule": [
+        "missing_time_flag",
+        "game_datetime_utc",
+        "game_id"
+      ],
+      "candidate_ledger": [
+        "missing_time_flag",
+        "scheduled_start_utc",
+        "game_id"
+      ],
+      "features": [
+        "scheduled_start_utc",
+        "game_id"
+      ],
+      "predictions": [
+        "scheduled_start_utc_at_prediction",
+        "game_id"
+      ],
+      "ordering_terms_are_derived_and_not_additional_output_fields": true,
+      "missing_time_flag_rule": "0 when target_schedule.game_datetime_utc or candidate_ledger.scheduled_start_utc is present, 1 when it is absent",
+      "missing_time_sort_value": "EMPTY_STRING_AFTER_MISSING_TIME_FLAG"
+    }
+  },
+  "idempotency": {
+    "slot_inspection_is_first_operation_before_any_official_input_read": true,
+    "slot_key_formula": "canonicalization.identifier_formulas_exact.slot_key using runtime values, never the component-name strings",
+    "batch_id_formula": "canonicalization.identifier_formulas_exact.batch_id using runtime values, never the component-name strings",
+    "new_slot_is_atomically_reserved_before_any_schedule_api_or_database_read": true,
+    "result_directory_template": "shadow_results/logistic_team_form_v1_platt_shadow_v2/YYYY-MM-DD",
+    "write_mode": "EXCLUSIVE_NO_OVERWRITE",
+    "exact_completed_identity_fields": [
+      "slot_key",
+      "target_official_date",
+      "shadow_protocol_sha256",
+      "execution_manifest_sha256",
+      "model_artifact_sha256"
+    ],
+    "completed_exact_duplicate": "RETURN_EXISTING_RECEIPT_WITHOUT_MODEL_CALL",
+    "different_inputs_for_consumed_slot": "ABORT_SLOT_ALREADY_CONSUMED",
+    "incomplete_or_failed_slot": "PERMANENTLY_FAILED_NO_REUSE_NO_DELETE",
+    "supplemental_official_runs_allowed": false,
+    "prediction_uniqueness_key_formula": "canonicalization.identifier_formulas_exact.prediction_id using runtime values, never the component-name strings"
+  },
+  "schedule_change_policy": {
+    "occurrence_key_formula": "canonicalization.identifier_formulas_exact.occurrence_key using runtime values, never the component-name strings",
+    "doubleheader_games_are_distinct_by_game_id": true,
+    "rescheduled_occurrence_never_mutates_original_prediction": true,
+    "later_schedule_observation_is_append_only": true,
+    "outcome_linkage_and_void_rules_deferred_to_separate_preregistered_protocol": true,
+    "no_outcome_metric_is_computed_in_shadow_v2": true
+  },
+  "output_contract": {
+    "result_root": "shadow_results/logistic_team_form_v1_platt_shadow_v2",
+    "result_root_must_be_tracked_by_git": true,
+    "git_check_ignore_must_report_not_ignored": true,
+    "success_files_in_write_order": [
+      "RESERVED",
+      "activation_reverification.remote.json.gz",
+      "source_snapshot.json.gz",
+      "candidate_ledger.csv",
+      "features.csv",
+      "predictions.csv",
+      "receipt.json",
+      "COMPLETED"
+    ],
+    "failure_marker": "FAILED.json",
+    "completed_or_failed_marker_is_terminal": true,
+    "reserved_marker_keys_exact_set": [
+      "marker_schema_version",
+      "batch_id",
+      "slot_key",
+      "target_official_date",
+      "reserved_at_utc",
+      "shadow_protocol_sha256",
+      "execution_manifest_sha256",
+      "runtime_code_commit"
+    ],
+    "failed_marker_keys_exact_set": [
+      "marker_schema_version",
+      "batch_id",
+      "slot_key",
+      "target_official_date",
+      "failed_at_utc",
+      "stage",
+      "error_type",
+      "error_message",
+      "shadow_protocol_sha256",
+      "execution_manifest_sha256",
+      "runtime_code_commit"
+    ],
+    "completed_marker_keys_exact_set": [
+      "marker_schema_version",
+      "batch_id",
+      "receipt_path",
+      "receipt_sha256",
+      "completed_at_utc"
+    ],
+    "canonical_csv": "UTF8_LF_FIXED_COLUMN_ORDER",
+    "canonical_json": "UTF8_LF_SORTED_KEYS_NO_NAN_NO_INFINITY",
+    "schema_versions_exact": {
+      "execution_manifest_schema_version": 1,
+      "activation_schema_version": 1,
+      "remote_evidence_schema_version": 1,
+      "reserved_marker_schema_version": 1,
+      "failed_marker_schema_version": 1,
+      "completed_marker_schema_version": 1,
+      "source_snapshot_schema_version": 1,
+      "receipt_schema_version": 1,
+      "certification_schema_version": 1
+    },
+    "batch_status_domain_exact": [
+      "COMPLETED_WITH_PREDICTIONS",
+      "COMPLETED_NO_ELIGIBLE_GAMES"
+    ],
+    "candidate_ledger_empty_field_rules": {
+      "exclusion_reason_when_eligibility_status_is_ELIGIBLE": "empty CSV field encoding internal JSON null",
+      "scheduled_start_utc_when_target_schedule_game_datetime_utc_is_null": "empty CSV field encoding internal JSON null regardless of exclusion_reason",
+      "all_other_fields": "NONEMPTY"
+    },
+    "fsync_and_reread_hash_verification_required": true,
+    "receipt_written_after_all_data_files": true,
+    "completion_marker_written_last_and_contains_receipt_sha256": true,
+    "partial_outputs_are_never_official": true,
+    "empty_eligible_batch": {
+      "status": "COMPLETED_NO_ELIGIBLE_GAMES",
+      "predict_proba_calls": 0,
+      "earliest_predicted_scheduled_start_utc": null,
+      "features_and_predictions_csv": "HEADER_ONLY",
+      "receipt_and_completed_marker_required": true,
+      "prospective_remote_certification_required": false,
+      "slot_remains_permanently_consumed": true
+    },
+    "source_snapshot_keys_exact_set": [
+      "schema_version",
+      "batch_id",
+      "target_official_date",
+      "created_at_utc",
+      "information_cutoff_utc",
+      "schedule_ingestion",
+      "sqlite_snapshot",
+      "teams",
+      "target_schedule",
+      "source_final_games"
+    ],
+    "schedule_ingestion_keys_exact_set": [
+      "run_id",
+      "source",
+      "requested_start_date",
+      "requested_end_date",
+      "game_types",
+      "request_parameters_json",
+      "completed_at_utc",
+      "raw_archive_path",
+      "raw_archive_sha256",
+      "response_effective_url",
+      "response_status_code",
+      "response_redirect_count",
+      "mlb_http_date_header_raw",
+      "mlb_http_date_utc",
+      "mlb_http_response_received_at_utc",
+      "response_body_sha256"
+    ],
+    "sqlite_snapshot_keys_exact_set": [
+      "source_database_path",
+      "sha256",
+      "size_bytes",
+      "foreign_key_violation_count",
+      "active_ingestion_count"
+    ],
+    "team_row_keys_exact_set": [
+      "team_id",
+      "name",
+      "abbreviation"
+    ],
+    "target_schedule_row_keys_exact_set": [
+      "game_id",
+      "season",
+      "official_date",
+      "game_datetime_utc",
+      "game_type",
+      "status_code",
+      "abstract_state",
+      "detailed_state",
+      "away_team_id",
+      "home_team_id",
+      "doubleheader",
+      "game_number"
+    ],
+    "source_final_game_row_keys_exact_set": [
+      "game_id",
+      "season",
+      "official_date",
+      "game_type",
+      "status_code",
+      "status_detail",
+      "away_team_id",
+      "home_team_id",
+      "away_score",
+      "home_score"
+    ],
+    "candidate_ledger_columns_in_exact_order": [
+      "batch_id",
+      "game_id",
+      "occurrence_key",
+      "season",
+      "official_date",
+      "away_team_id",
+      "home_team_id",
+      "scheduled_start_utc",
+      "status_code",
+      "abstract_state",
+      "detailed_state",
+      "eligibility_status",
+      "exclusion_reason"
+    ],
+    "features_columns_in_exact_order": [
+      "prediction_id",
+      "batch_id",
+      "game_id",
+      "occurrence_key",
+      "season",
+      "official_date",
+      "away_team_id",
+      "home_team_id",
+      "scheduled_start_utc",
+      "feature_as_of_date",
+      "away_max_source_date",
+      "home_max_source_date",
+      "away_games_before",
+      "away_win_pct_before",
+      "away_runs_scored_per_game_before",
+      "away_runs_allowed_per_game_before",
+      "home_games_before",
+      "home_win_pct_before",
+      "home_runs_scored_per_game_before",
+      "home_runs_allowed_per_game_before",
+      "feature_row_sha256"
+    ],
+    "predictions_columns_in_exact_order": [
+      "prediction_id",
+      "batch_id",
+      "game_id",
+      "occurrence_key",
+      "season",
+      "official_date_at_prediction",
+      "away_team_id",
+      "home_team_id",
+      "scheduled_start_utc_at_prediction",
+      "information_cutoff_utc",
+      "issued_at_utc",
+      "feature_as_of_date",
+      "away_max_source_date",
+      "home_max_source_date",
+      "away_games_before",
+      "away_win_pct_before",
+      "away_runs_scored_per_game_before",
+      "away_runs_allowed_per_game_before",
+      "home_games_before",
+      "home_win_pct_before",
+      "home_runs_scored_per_game_before",
+      "home_runs_allowed_per_game_before",
+      "p_home_win",
+      "p_away_win",
+      "model_version",
+      "artifact_sha256",
+      "protocol_sha256",
+      "code_commit"
+    ],
+    "forbidden_exact_target_or_prediction_field_names": [
+      "away_score",
+      "home_score",
+      "home_win",
+      "target",
+      "outcome",
+      "odds",
+      "implied_probability",
+      "pick",
+      "stake",
+      "edge",
+      "expected_value",
+      "profit",
+      "roi"
+    ],
+    "forbidden_fields_apply_to": [
+      "TARGET_SCHEDULE_ROWS",
+      "CANDIDATE_LEDGER",
+      "FEATURES",
+      "PREDICTIONS",
+      "RECEIPT",
+      "CERTIFICATION"
+    ],
+    "source_final_game_scores_are_the_only_score_fields_allowed": true
+  },
+  "receipt_contract": {
+    "top_level_keys_exact_set": [
+      "receipt_schema_version",
+      "batch",
+      "activation",
+      "times",
+      "schedule_http_response",
+      "lineage",
+      "source",
+      "counts",
+      "output_hashes",
+      "model_invariants",
+      "negative_attestations",
+      "runtime_versions"
+    ],
+    "batch_keys_exact_set": [
+      "batch_id",
+      "slot_key",
+      "target_official_date",
+      "status",
+      "earliest_predicted_scheduled_start_utc"
+    ],
+    "batch_status_rule": "COMPLETED_WITH_PREDICTIONS when predicted_games > 0; otherwise COMPLETED_NO_ELIGIBLE_GAMES",
+    "activation_keys_exact_set": [
+      "execution_manifest_introduction_commit",
+      "activation_introduction_commit",
+      "activation_path",
+      "activation_sha256",
+      "activation_verified_at_utc",
+      "activation_remote_reverified_at_utc",
+      "activation_remote_ref",
+      "activation_remote_reverification_query_url",
+      "activation_remote_reverification_effective_url",
+      "activation_remote_reverification_status_code",
+      "activation_remote_reverification_redirect_count",
+      "activation_remote_reverification_response_received_at_utc",
+      "activation_remote_reverification_response_body_sha256",
+      "activation_remote_reverification_evidence_path",
+      "activation_remote_reverification_evidence_sha256",
+      "minimum_target_official_date"
+    ],
+    "activation_reverification_to_raw_remote_evidence_invariants_exact": [
+      "receipt.activation.activation_remote_ref == remote_repository.full_ref",
+      "receipt.activation.activation_remote_reverification_query_url == raw.request_url",
+      "raw.request_method == remote_repository.request_method",
+      "raw.application_request_headers == remote_repository.application_request_headers_exact",
+      "receipt.activation.activation_remote_reverification_effective_url == raw.effective_url == raw.request_url",
+      "receipt.activation.activation_remote_reverification_status_code == raw.response_status_code == remote_repository.response_status_code_exact",
+      "receipt.activation.activation_remote_reverification_redirect_count == raw.response_redirect_count == remote_repository.response_redirect_count_exact",
+      "receipt.activation.activation_remote_reverified_at_utc == parse_IMF_FIXDATE_GMT(raw.selected_response_headers.date)",
+      "receipt.activation.activation_remote_reverification_response_received_at_utc == raw.response_received_at_utc",
+      "receipt.activation.activation_remote_reverification_response_body_sha256 == raw.response_body_sha256 == sha256(base64_decode(raw.response_body_base64))",
+      "receipt.activation.activation_remote_reverification_evidence_path == output_contract.result_root/target_official_date/activation_reverification.remote.json.gz",
+      "receipt.activation.activation_remote_reverification_evidence_sha256 == sha256(persisted raw gzip bytes) == receipt.output_hashes.activation_reverification_evidence_sha256"
+    ],
+    "times_keys_exact_set": [
+      "started_at_utc",
+      "reserved_at_utc",
+      "schedule_observed_at_utc",
+      "information_cutoff_utc",
+      "issued_at_utc",
+      "receipt_finalized_at_utc",
+      "mlb_http_date_utc",
+      "mlb_http_response_received_at_utc",
+      "clock_skew_seconds",
+      "schedule_age_seconds"
+    ],
+    "times_invariant_rules": [
+      "started_at_utc <= activation_reverification_raw.response_received_at_utc <= reserved_at_utc",
+      "reserved_at_utc == RESERVED.reserved_at_utc",
+      "schedule_observed_at_utc == mlb_http_response_received_at_utc",
+      "schedule_age_seconds == information_cutoff_utc - schedule_observed_at_utc",
+      "0 <= schedule_age_seconds <= 900",
+      "reserved_at_utc <= schedule_observed_at_utc <= information_cutoff_utc <= issued_at_utc <= receipt_finalized_at_utc",
+      "receipt_finalized_at_utc <= COMPLETED.completed_at_utc"
+    ],
+    "schedule_http_response_keys_exact_set": [
+      "effective_url",
+      "status_code",
+      "redirect_count",
+      "date_header_raw",
+      "date_header_utc",
+      "received_at_utc",
+      "body_sha256"
+    ],
+    "lineage_keys_exact_set": [
+      "runtime_code_commit",
+      "shadow_service_module_sha256",
+      "shadow_protocol_sha256",
+      "execution_manifest_sha256",
+      "model_artifact_sha256",
+      "artifact_manifest_sha256",
+      "model_protocol_sha256",
+      "evaluation_protocol_sha256",
+      "evaluation_report_sha256",
+      "evaluation_results_commit"
+    ],
+    "source_keys_exact_set": [
+      "sqlite_snapshot_sha256",
+      "sqlite_snapshot_size_bytes",
+      "source_snapshot_path",
+      "source_snapshot_sha256",
+      "schedule_ingestion_run_id",
+      "schedule_source",
+      "schedule_requested_start_date",
+      "schedule_requested_end_date",
+      "schedule_game_types",
+      "schedule_request_parameters_json",
+      "schedule_ingestion_completed_at_utc",
+      "schedule_raw_archive_path",
+      "schedule_raw_archive_sha256"
+    ],
+    "output_hashes_keys_exact_set": [
+      "activation_reverification_evidence_sha256",
+      "candidate_ledger_sha256",
+      "features_sha256",
+      "predictions_sha256"
+    ],
+    "counts_keys_exact_set": [
+      "schedule_games",
+      "eligible_games",
+      "predicted_games",
+      "excluded_games_by_reason"
+    ],
+    "excluded_games_by_reason_keys_exact_set": [
+      "POSTPONED",
+      "CANCELLED",
+      "START_TIME_MISSING",
+      "INSUFFICIENT_BOTH_HISTORY",
+      "INSUFFICIENT_AWAY_HISTORY",
+      "INSUFFICIENT_HOME_HISTORY"
+    ],
+    "count_conservation_rules": [
+      "schedule_games == eligible_games + sum(excluded_games_by_reason.values())",
+      "predicted_games == eligible_games"
+    ],
+    "row_count_and_identity_invariants_exact": [
+      "counts.schedule_games == len(source_snapshot.target_schedule) == data_row_count(candidate_ledger.csv)",
+      "counts.eligible_games == count(candidate_ledger.eligibility_status == 'ELIGIBLE') == data_row_count(features.csv) == data_row_count(predictions.csv)",
+      "for every allowed exclusion reason R, counts.excluded_games_by_reason[R] == count(candidate_ledger.exclusion_reason == R)",
+      "ordered game_id list in source_snapshot.target_schedule == ordered game_id list in candidate_ledger.csv",
+      "ordered (game_id, occurrence_key) list for ELIGIBLE candidate_ledger rows == ordered (game_id, occurrence_key) list in features.csv == ordered (game_id, occurrence_key) list in predictions.csv",
+      "ordered prediction_id list in features.csv == ordered prediction_id list in predictions.csv",
+      "when counts.eligible_games == 0, features.csv and predictions.csv contain their exact header and zero data rows, predict_proba_calls == 0 and batch.status == 'COMPLETED_NO_ELIGIBLE_GAMES'",
+      "when counts.eligible_games > 0, every features.csv row and predictions.csv row is nonempty, predict_proba_calls == 1 and batch.status == 'COMPLETED_WITH_PREDICTIONS'"
+    ],
+    "cross_section_and_cross_file_invariants_exact": [
+      "receipt.batch.batch_id == source_snapshot.batch_id == every candidate_ledger.batch_id == every features.batch_id == every predictions.batch_id",
+      "receipt.batch.target_official_date == source_snapshot.target_official_date == every candidate_ledger.official_date == every features.official_date == every predictions.official_date_at_prediction",
+      "receipt.times.information_cutoff_utc == source_snapshot.information_cutoff_utc == every predictions.information_cutoff_utc",
+      "receipt.times.mlb_http_date_utc == receipt.schedule_http_response.date_header_utc == source_snapshot.schedule_ingestion.mlb_http_date_utc",
+      "receipt.times.mlb_http_response_received_at_utc == receipt.schedule_http_response.received_at_utc == source_snapshot.schedule_ingestion.mlb_http_response_received_at_utc",
+      "receipt.schedule_http_response.effective_url == source_snapshot.schedule_ingestion.response_effective_url",
+      "receipt.schedule_http_response.status_code == source_snapshot.schedule_ingestion.response_status_code",
+      "receipt.schedule_http_response.redirect_count == source_snapshot.schedule_ingestion.response_redirect_count",
+      "receipt.schedule_http_response.body_sha256 == source_snapshot.schedule_ingestion.response_body_sha256 == receipt.source.schedule_raw_archive_sha256",
+      "receipt.activation.activation_remote_reverification_evidence_sha256 == receipt.output_hashes.activation_reverification_evidence_sha256",
+      "receipt.output_hashes.candidate_ledger_sha256 == sha256(persisted candidate_ledger.csv bytes)",
+      "receipt.output_hashes.features_sha256 == sha256(persisted features.csv bytes)",
+      "receipt.output_hashes.predictions_sha256 == sha256(persisted predictions.csv bytes)",
+      "receipt.source.sqlite_snapshot_sha256 == source_snapshot.sqlite_snapshot.sha256 and receipt.source.sqlite_snapshot_size_bytes == source_snapshot.sqlite_snapshot.size_bytes",
+      "receipt.source schedule provenance fields equal their same-named source_snapshot.schedule_ingestion values after the receipt schedule_ prefix mapping",
+      "receipt.source.source_snapshot_sha256 == sha256(persisted source_snapshot.json.gz bytes)",
+      "receipt.lineage.runtime_code_commit == runtime git HEAD and descends from execution_manifest.shadow_service_code_commit and registered_after_results_commit",
+      "receipt.lineage.shadow_service_module_sha256 == execution_manifest.shadow_service_module_sha256",
+      "receipt.lineage.shadow_protocol_sha256 == sha256(immutable shadow v2 protocol bytes) == execution_manifest.shadow_protocol_sha256",
+      "receipt.lineage.execution_manifest_sha256 == sha256(immutable execution manifest introduction blob)",
+      "receipt.lineage.model_artifact_sha256 == validated_lineage.model_artifact.sha256 == execution_manifest.model_artifact_sha256",
+      "receipt.lineage.artifact_manifest_sha256 == validated_lineage.artifact_manifest.sha256",
+      "receipt.lineage.model_protocol_sha256 == validated_lineage.model_protocol.sha256",
+      "receipt.lineage.evaluation_protocol_sha256 == validated_lineage.sealed_evaluation.protocol_sha256",
+      "receipt.lineage.evaluation_report_sha256 == validated_lineage.sealed_evaluation.report_sha256 and receipt.lineage.evaluation_results_commit == validated_lineage.sealed_evaluation.results_commit",
+      "COMPLETED.batch_id == receipt.batch.batch_id and COMPLETED.receipt_sha256 == sha256(persisted receipt.json bytes)",
+      "receipt.times.receipt_finalized_at_utc <= COMPLETED.completed_at_utc and COMPLETED.completed_at_utc satisfies daily_batch.local_completion_lead_rule"
+    ],
+    "count_value_domain": "JSON nonnegative integer with booleans forbidden",
+    "model_invariants_keys_exact_set": [
+      "fit_calls",
+      "partial_fit_calls",
+      "recalibration_calls",
+      "threshold_tuning_calls",
+      "feature_selection_calls",
+      "predict_proba_calls",
+      "artifact_state_sha256_before",
+      "artifact_state_sha256_after",
+      "artifact_state_unchanged",
+      "warning_policy_id",
+      "approved_compatibility_warning_count",
+      "unexpected_warning_count"
+    ],
+    "model_invariant_required_values": {
+      "fit_calls": 0,
+      "partial_fit_calls": 0,
+      "recalibration_calls": 0,
+      "threshold_tuning_calls": 0,
+      "feature_selection_calls": 0,
+      "artifact_state_unchanged": true,
+      "warning_policy_id": "VERIFIED_JOBLIB_NUMPY_COMPATIBILITY_V1",
+      "unexpected_warning_count": 0
+    },
+    "approved_compatibility_warning_count_rule": "nonnegative integer counting only exact matches to model_use.warning_policy.approved_load_or_state_serialization_warning",
+    "predict_proba_calls_rule": "1 if predicted_games > 0 else 0",
+    "artifact_state_hash_rule": "when predicted_games > 0, both hashes are computed exactly by model_use.artifact_state_sha256_method and artifact_state_sha256_before == artifact_state_sha256_after; when predicted_games == 0, artifact_state_sha256_before and artifact_state_sha256_after are JSON null and artifact_state_unchanged is true because the artifact is not deserialized",
+    "empty_batch_model_invariant_values": {
+      "fit_calls": 0,
+      "partial_fit_calls": 0,
+      "recalibration_calls": 0,
+      "threshold_tuning_calls": 0,
+      "feature_selection_calls": 0,
+      "predict_proba_calls": 0,
+      "artifact_state_sha256_before": null,
+      "artifact_state_sha256_after": null,
+      "artifact_state_unchanged": true,
+      "warning_policy_id": "VERIFIED_JOBLIB_NUMPY_COMPATIBILITY_V1",
+      "approved_compatibility_warning_count": 0,
+      "unexpected_warning_count": 0
+    },
+    "negative_attestations_keys_exact_set": [
+      "ALL_TARGET_GAMES_UNSTARTED_AT_INFORMATION_CUTOFF",
+      "TARGET_OUTCOMES_NOT_AVAILABLE_AT_INFORMATION_CUTOFF",
+      "TARGET_SCORE_VALUES_REDACTED_FROM_TRACKED_TARGET_ROWS",
+      "TARGET_SCORES_NOT_USED_AS_FEATURES",
+      "ODDS_NOT_READ",
+      "BETTING_RECOMMENDATIONS_NOT_COMPUTED",
+      "SEASON_2026_METRICS_NOT_COMPUTED"
+    ],
+    "negative_attestations_required_value": true,
+    "runtime_versions_keys_exact_set": [
+      "python",
+      "numpy",
+      "pandas",
+      "scipy",
+      "scikit_learn",
+      "joblib"
+    ],
+    "game_ids_must_be_unique": true,
+    "probability_pairs_must_sum_to_one_with_absolute_tolerance": 1e-12
+  },
+  "prospective_certification": {
+    "required_for_strong_prospective_claim": true,
+    "claim_level": "REMOTE_SERVER_ATTESTED_NOT_CRYPTOGRAPHICALLY_TIMESTAMPED",
+    "results_must_be_committed_and_pushed_unchanged": true,
+    "remote_commit_must_contain_exact_output_hashes": true,
+    "remote_visibility_check": "remote_repository.compare_api_url_template with expected_commit = results_commit and every remote_repository rule enforced",
+    "remote_request_method_exact": "GET",
+    "remote_response_status_code_exact": 200,
+    "remote_response_redirect_count_exact": 0,
+    "remote_effective_url_must_equal_query_url": true,
+    "results_remote_ref_exact": "refs/heads/main",
+    "remote_time_must_precede_each_predicted_game_by_at_least_minutes": 60,
+    "remote_lead_threshold_rule": "earliest_predicted_start_utc - remote_http_date_utc >= 3600 exact integer seconds; comparison is performed before formatting remote_publication_lead_minutes",
+    "remote_publication_lead_minutes_formula": "lead_seconds = exact integer seconds in earliest_predicted_start_utc - remote_http_date_utc; Decimal(lead_seconds) / Decimal(60) quantized to Decimal('0.000001') with decimal.ROUND_HALF_EVEN and encoded as a JSON string with exactly six fractional digits",
+    "remote_publication_lead_minutes_type": "JSON string matching ^[0-9]+\\.[0-9]{6}$",
+    "certification_path_template": "shadow_certifications/logistic_team_form_v1_platt_shadow_v2/YYYY-MM-DD.json",
+    "raw_remote_evidence_path_template": "shadow_certifications/logistic_team_form_v1_platt_shadow_v2/YYYY-MM-DD.remote.json.gz",
+    "certification_root_must_be_tracked_by_git": true,
+    "git_check_ignore_must_report_not_ignored": true,
+    "certification_is_outside_completed_batch_directory": true,
+    "certification_write_mode": "APPEND_ONLY_EXCLUSIVE_CREATE",
+    "raw_remote_evidence_write_mode": "APPEND_ONLY_EXCLUSIVE_CREATE",
+    "certification_write_order_exact": [
+      "RAW_REMOTE_EVIDENCE_GZIP",
+      "CERTIFICATION_JSON"
+    ],
+    "certification_status_exact": "PROSPECTIVELY_CERTIFIED_REMOTE_MAIN_BEFORE_GAMES",
+    "certification_json_to_raw_remote_evidence_invariants_exact": [
+      "certification.remote_query_url == raw.request_url",
+      "raw.request_method == remote_repository.request_method",
+      "raw.application_request_headers == remote_repository.application_request_headers_exact",
+      "certification.remote_effective_url == raw.effective_url == raw.request_url",
+      "certification.remote_response_status_code == raw.response_status_code == remote_repository.response_status_code_exact",
+      "certification.remote_response_redirect_count == raw.response_redirect_count == remote_repository.response_redirect_count_exact",
+      "certification.remote_http_date_utc == parse_IMF_FIXDATE_GMT(raw.selected_response_headers.date)",
+      "certification.remote_response_received_at_utc == raw.response_received_at_utc",
+      "certification.remote_response_body_sha256 == raw.response_body_sha256 == sha256(base64_decode(raw.response_body_base64))",
+      "certification.raw_remote_evidence_path == prospective_certification.raw_remote_evidence_path_template with YYYY-MM-DD replaced by target_official_date",
+      "certification.raw_remote_evidence_sha256 == sha256(persisted raw gzip bytes)",
+      "certification.results_remote_ref == remote_repository.full_ref"
+    ],
+    "certification_to_completed_batch_invariants_exact": [
+      "certification.target_official_date == receipt.batch.target_official_date == date component of the exact batch directory",
+      "certification.batch_id == receipt.batch.batch_id == COMPLETED.batch_id",
+      "certification.earliest_predicted_start_utc == receipt.batch.earliest_predicted_scheduled_start_utc == minimum predictions.scheduled_start_utc_at_prediction",
+      "certification.results_commit contains the exact completed batch directory and all results_tree_file_hashes blobs",
+      "certification.status == prospective_certification.certification_status_exact",
+      "certification.claim_level == prospective_certification.claim_level"
+    ],
+    "remote_evidence_gzip": {
+      "implementation": "gzip.GzipFile",
+      "filename": "",
+      "mtime": 0,
+      "compresslevel": 9
+    },
+    "raw_remote_evidence_keys_exact_set": [
+      "evidence_schema_version",
+      "request_url",
+      "request_method",
+      "application_request_headers",
+      "effective_url",
+      "response_status_code",
+      "response_redirect_count",
+      "selected_response_headers",
+      "response_received_at_utc",
+      "response_body_base64",
+      "response_body_sha256"
+    ],
+    "selected_response_header_keys_exact_set": [
+      "date",
+      "content-type",
+      "etag",
+      "x-github-request-id"
+    ],
+    "certification_keys_exact_set": [
+      "certification_schema_version",
+      "target_official_date",
+      "batch_id",
+      "results_commit",
+      "results_remote_ref",
+      "results_tree_file_hashes",
+      "remote_query_url",
+      "remote_effective_url",
+      "remote_response_status_code",
+      "remote_response_redirect_count",
+      "remote_http_date_utc",
+      "remote_response_received_at_utc",
+      "remote_response_body_sha256",
+      "raw_remote_evidence_path",
+      "raw_remote_evidence_sha256",
+      "earliest_predicted_start_utc",
+      "remote_publication_lead_minutes",
+      "status",
+      "claim_level"
+    ],
+    "results_tree_file_hashes_entry_keys_exact_set": [
+      "path",
+      "sha256",
+      "size_bytes"
+    ],
+    "results_tree_file_hashes_expected_relative_paths": [
+      "COMPLETED",
+      "RESERVED",
+      "activation_reverification.remote.json.gz",
+      "candidate_ledger.csv",
+      "features.csv",
+      "predictions.csv",
+      "receipt.json",
+      "source_snapshot.json.gz"
+    ],
+    "results_tree_file_hashes_order": "LEXICOGRAPHIC_BY_RELATIVE_PATH",
+    "results_tree_file_hashes_source_of_truth": "for each expected relative path P, read exact blob bytes with git show results_commit:shadow_results/logistic_team_form_v1_platt_shadow_v2/target_official_date/P; the current working tree is forbidden as a hash or size source",
+    "results_tree_file_hashes_validation_rules": [
+      "entry paths are unique and equal results_tree_file_hashes_expected_relative_paths in exact lexicographic order",
+      "entry.path is the relative path P only and contains no directory traversal or absolute component",
+      "entry.size_bytes == len(exact git blob bytes) as a nonnegative JSON integer with booleans forbidden",
+      "entry.sha256 == sha256(exact git blob bytes).hexdigest()",
+      "the results_commit tree contains every expected blob at the exact batch prefix for certification.target_official_date",
+      "certification.results_commit is the same expected_commit proven on remote_repository.full_ref by the compare API response"
+    ],
+    "certification_must_reference_preexisting_results_commit": true,
+    "remote_query_url_formula": "remote_repository.compare_api_url_template with expected_commit = results_commit",
+    "remote_response_body_must_satisfy_remote_repository_response_body_json_rules_for_results_commit": true,
+    "remote_response_body_must_name_exact_results_commit": true,
+    "late_or_missing_remote_evidence_status": "LOCAL_SHADOW_ONLY_NOT_PROSPECTIVELY_CERTIFIED",
+    "certification_file_creation_policy": "create both raw evidence gzip and certification JSON only when every certification invariant succeeds and the lead threshold is met; any missing, invalid or late remote response creates neither official file and leaves the batch LOCAL_SHADOW_ONLY_NOT_PROSPECTIVELY_CERTIFIED",
+    "partial_certification_failure_policy": "if a process failure occurs after exclusive publication of raw evidence gzip but before exclusive publication of certification JSON, preserve the orphan gzip, forbid deletion or retry for that target date, create no certification JSON and leave the batch permanently LOCAL_SHADOW_ONLY_NOT_PROSPECTIVELY_CERTIFIED",
+    "empty_batch_certification_policy": "certification is forbidden when receipt.batch.status == 'COMPLETED_NO_ELIGIBLE_GAMES' because no predicted start exists",
+    "retroactive_certification_allowed": false,
+    "remote_evidence_never_changes_original_predictions": true
+  },
+  "scoring_and_betting": {
+    "outcome_collection_enabled": false,
+    "season_2026_metrics_allowed": false,
+    "odds_input_allowed": false,
+    "implied_probability_allowed": false,
+    "edge_allowed": false,
+    "expected_value_allowed": false,
+    "bet_recommendation_allowed": false,
+    "stake_allowed": false,
+    "roi_allowed": false,
+    "profitability_claim_allowed": false,
+    "later_scoring_requires_separate_frozen_protocol": true,
+    "later_odds_analysis_requires_timestamped_prematch_odds": true
+  },
+  "preflight_invariants": [
+    "INSPECT_EXISTING_SLOT_BEFORE_ANY_OFFICIAL_INPUT_READ",
+    "REQUIRE_CLEAN_GIT_WORKTREE_FOR_NEW_SLOT",
+    "REQUIRE_RUNTIME_HEAD_DESCENDS_FROM_SERVICE_COMMIT",
+    "REQUIRE_TRANSITIVE_RUNTIME_FILES_MATCH_EXECUTION_MANIFEST_HASHES",
+    "REQUIRE_RUNTIME_VERSIONS_MATCH_ARTIFACT_AND_EXECUTION_MANIFESTS",
+    "VERIFY_SHADOW_PROTOCOL_SHA256",
+    "VERIFY_EXECUTION_MANIFEST_SHA256",
+    "VERIFY_MODEL_ARTIFACT_SHA256_BEFORE_DESERIALIZATION",
+    "VERIFY_ARTIFACT_MANIFEST_AND_MODEL_PROTOCOL_SHA256",
+    "REQUIRE_NO_ACTIVE_INGESTION",
+    "REQUIRE_FRESH_AUDITED_SCHEDULE_INGESTION",
+    "REQUIRE_EXACT_MLB_SCHEDULE_QUERY_PARAMETERS_AND_INGESTION_PROVENANCE",
+    "REQUIRE_MLB_SCHEDULE_RESPONSE_HTTPS_EXACT_HOST_PATH_STATUS_AND_NO_REDIRECT",
+    "REQUIRE_MLB_DATE_HEADER_RAW_AND_NORMALIZED_WITHIN_CLOCK_SKEW_LIMIT",
+    "REQUIRE_MLB_HTTP_BODY_SHA256_EQUALS_ARCHIVED_RAW_RESPONSE_SHA256",
+    "REQUIRE_SQLITE_SNAPSHOT_AND_FOREIGN_KEY_INTEGRITY",
+    "REQUIRE_EXECUTION_MANIFEST_INTRODUCTION_COMMIT_VISIBLE_ON_REMOTE_MAIN",
+    "REQUIRE_EXECUTION_MANIFEST_EQUALS_IMMUTABLE_INTRODUCTION_BLOB",
+    "VERIFY_ACTIVATION_SHA256_AGAINST_IMMUTABLE_INTRODUCTION_BLOB",
+    "REQUIRE_ACTIVATION_INTRODUCTION_COMMIT_VISIBLE_ON_REMOTE_MAIN",
+    "REQUIRE_ACTIVATION_EQUALS_IMMUTABLE_INTRODUCTION_BLOB",
+    "REQUIRE_ACTIVATION_REMOTE_REVERIFICATION_BEFORE_NEW_SLOT_RESERVATION",
+    "REQUIRE_ACTIVATION_REMOTE_RESPONSE_NAMES_EXACT_INTRODUCTION_COMMIT",
+    "REQUIRE_ALL_GITHUB_REQUESTS_MATCH_EXACT_REMOTE_REPOSITORY_CONTRACT",
+    "REQUIRE_PER_SLOT_ACTIVATION_REVERIFICATION_RAW_EVIDENCE_PERSISTED_AND_HASHED",
+    "REQUIRE_TARGET_DATE_AT_OR_AFTER_EXPLICIT_MINIMUM_TARGET_DATE",
+    "REQUIRE_MINIMUM_TARGET_DATE_NOT_BEFORE_REGISTRATION_OR_ACTIVATION_REMOTE_VISIBILITY_DATE",
+    "REQUIRE_TARGET_DATE_NOT_BEFORE_ACTIVATION_REVERIFICATION_UTC_DATE",
+    "REQUIRE_TARGET_DATE_NOT_BEFORE_SLOT_RESERVATION_UTC_DATE",
+    "REQUIRE_TARGET_SEASON_EXACTLY_2026",
+    "REQUIRE_ALL_TARGET_GAMES_UNSTARTED_AT_INFORMATION_CUTOFF",
+    "REQUIRE_SCHEDULE_OBSERVED_EQUALS_MLB_HTTP_RESPONSE_RECEIVED_AT",
+    "REQUIRE_SCHEDULE_AGE_BETWEEN_ZERO_AND_900_SECONDS_INCLUSIVE",
+    "REQUIRE_COMPLETION_120_MINUTES_BEFORE_EARLIEST_PREDICTED_START",
+    "REQUIRE_PREGAME_SCORES_BOTH_NULL_OR_BOTH_ZERO",
+    "REQUIRE_EXACT_CANDIDATE_CLASSIFICATION_TABLES_AND_ORDER",
+    "REQUIRE_UNIQUE_GAME_IDS_AND_OCCURRENCE_KEYS",
+    "REQUIRE_EXACT_FEATURE_ORDER_AND_FINITE_VALUES",
+    "REQUIRE_EXACT_TEAM_STATE_FEATURE_FORMULAS_AND_FIXED_6_QUANTIZATION",
+    "REQUIRE_CANONICAL_ROW_ORDERING_AND_FEATURE_ROW_HASHES",
+    "REQUIRE_IDENTIFIER_KNOWN_ANSWER_VECTORS",
+    "REQUIRE_EXACT_SCHEMA_VERSIONS_STATUS_DOMAINS_AND_NULL_ENCODINGS",
+    "REQUIRE_EXACT_ARTIFACT_STATE_SERIALIZATION_HASH_METHOD",
+    "REQUIRE_ONLY_REGISTERED_COMPATIBILITY_WARNING_AND_ZERO_UNEXPECTED_WARNINGS",
+    "REQUIRE_ALL_TRACKED_OUTPUT_SCHEMAS_EXACT",
+    "REQUIRE_SHADOW_RESULT_ACTIVATION_AND_CERTIFICATION_ROOTS_NOT_IGNORED_BY_GIT",
+    "REQUIRE_OUTPUT_SLOT_ABSENT_OR_EXACT_COMPLETED_DUPLICATE",
+    "REQUIRE_NO_HISTORICAL_2026_SHADOW_BACKFILL"
+  ],
+  "failure_policy": {
+    "failure_before_reservation": "ABORT_WITHOUT_OFFICIAL_INPUT_READ",
+    "failure_after_reservation": "WRITE_FAILED_JSON_AND_NEVER_REUSE_SLOT",
+    "structural_or_temporal_failure": "ABORT_WITHOUT_PREDICTIONS",
+    "hash_or_lineage_failure": "ABORT_WITHOUT_MODEL_DESERIALIZATION",
+    "partial_prediction_publication_allowed": false,
+    "only_registered_network_retries_inside_reserved_slot_allowed": true,
+    "automatic_output_deletion_allowed": false
+  },
+  "registered_limitations": [
+    "MODEL_USES_TEAM_FORM_ONLY",
+    "NO_PITCHER_BULLPEN_LINEUP_OR_VENUE_FEATURES",
+    "NO_TIMESTAMPED_PREMATCH_ODDS",
+    "NO_BETTING_PROFITABILITY_EVIDENCE",
+    "PRIOR_UNEXECUTED_PROTOCOL_PERMANENTLY_SUPERSEDED",
+    "HISTORICAL_PER_GAME_AVAILABILITY_BEFORE_ACTIVATION_REMAINS_UNVERIFIABLE",
+    "OFFICIAL_DATE_POLICY_IGNORES_RESULTS_FROM_EARLIER_SAME_DAY_GAMES",
+    "A_MISSED_DAILY_BATCH_CAN_NEVER_BE_RECOVERED_AS_PROSPECTIVE",
+    "FUTURE_OUTCOME_SCORING_AND_ODDS_ANALYSIS_REQUIRE_SEPARATE_PREREGISTRATION"
+  ]
+}

@@ -13,6 +13,7 @@ from dataclasses import asdict, dataclass
 from datetime import date, datetime
 import hashlib
 import json
+import math
 from pathlib import Path, PurePosixPath
 import re
 from typing import Any, Mapping, Sequence
@@ -60,10 +61,341 @@ EXPECTED_MODEL_PROTOCOL_SHA256 = (
 )
 
 _CANONICAL_DATE_PATTERN = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}\Z")
+_SHA256_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
+_UTC_TIMESTAMP_PATTERN = re.compile(
+    r"([0-9]{4})-([0-9]{2})-([0-9]{2})T"
+    r"([0-9]{2}):([0-9]{2}):([0-9]{2})Z\Z"
+)
+_FIXED_6_PATTERN = re.compile(r"[0-9]+\.[0-9]{6}\Z")
+
+_FEATURE_ROW_FIELD_NAMES = (
+    "prediction_id",
+    "batch_id",
+    "game_id",
+    "occurrence_key",
+    "season",
+    "official_date",
+    "away_team_id",
+    "home_team_id",
+    "scheduled_start_utc",
+    "feature_as_of_date",
+    "away_max_source_date",
+    "home_max_source_date",
+    "away_games_before",
+    "away_win_pct_before",
+    "away_runs_scored_per_game_before",
+    "away_runs_allowed_per_game_before",
+    "home_games_before",
+    "home_win_pct_before",
+    "home_runs_scored_per_game_before",
+    "home_runs_allowed_per_game_before",
+)
+_FEATURE_ROW_SHA256_INDEXES = (0, 1, 3)
+_FEATURE_ROW_INTEGER_INDEXES = (2, 4, 6, 7, 12, 16)
+_FEATURE_ROW_DATE_INDEXES = (5, 9, 10, 11)
+_FEATURE_ROW_TIMESTAMP_INDEX = 8
+_FEATURE_ROW_FIXED_6_INDEXES = (13, 14, 15, 17, 18, 19)
 
 
 class ShadowPredictionError(RuntimeError):
     """Erreur qui interdit de produire meme un apercu fiable."""
+
+
+def _validate_json_value(
+    value: object,
+    *,
+    path: str = "$",
+    ancestors: set[int] | None = None,
+) -> None:
+    """Refuse les extensions Python ambigues avant canonicalisation JSON."""
+    value_type = type(value)
+    if value is None or value_type in (bool, int, str):
+        return
+    if value_type is float:
+        if not math.isfinite(value):
+            raise ShadowPredictionError(
+                f"Valeur JSON non finie interdite a {path}."
+            )
+        return
+
+    if value_type not in (list, dict):
+        raise ShadowPredictionError(
+            f"Type non JSON interdit a {path} : {value_type.__name__}."
+        )
+
+    current_id = id(value)
+    active_ancestors = ancestors if ancestors is not None else set()
+    if current_id in active_ancestors:
+        raise ShadowPredictionError(
+            f"Reference circulaire interdite a {path}."
+        )
+    active_ancestors.add(current_id)
+    try:
+        if value_type is list:
+            for index, item in enumerate(value):
+                _validate_json_value(
+                    item,
+                    path=f"{path}[{index}]",
+                    ancestors=active_ancestors,
+                )
+            return
+
+        for key, item in value.items():
+            if type(key) is not str:
+                raise ShadowPredictionError(
+                    f"Cle JSON non textuelle interdite a {path}."
+                )
+            _validate_json_value(
+                item,
+                path=f"{path}.{key}",
+                ancestors=active_ancestors,
+            )
+    finally:
+        active_ancestors.remove(current_id)
+
+
+def _canonical_json_bytes(value: object) -> bytes:
+    """Applique exactement la canonicalisation de hachage du protocole v2."""
+    _validate_json_value(value)
+    try:
+        return json.dumps(
+            value,
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    except (TypeError, ValueError, UnicodeEncodeError) as error:
+        raise ShadowPredictionError(
+            "Valeur impossible a canonicaliser en JSON UTF-8."
+        ) from error
+
+
+def _sha256_identifier(preimage: object) -> str:
+    """Hache une preimage JSON-array sans saut de ligne terminal."""
+    if type(preimage) is not list or not preimage:
+        raise ShadowPredictionError(
+            "La preimage d'un identifiant doit etre un tableau JSON non vide."
+        )
+    if type(preimage[0]) is not str:
+        raise ShadowPredictionError(
+            "Le domaine d'un identifiant doit etre une chaine JSON."
+        )
+    return hashlib.sha256(_canonical_json_bytes(preimage)).hexdigest()
+
+
+def _require_sha256(value: object, *, field: str) -> str:
+    if type(value) is not str or not _SHA256_PATTERN.fullmatch(value):
+        raise ShadowPredictionError(
+            f"{field} doit contenir exactement 64 caracteres hexadecimaux "
+            "ASCII minuscules."
+        )
+    return value
+
+
+def _require_integer(value: object, *, field: str) -> int:
+    if type(value) is not int:
+        raise ShadowPredictionError(
+            f"{field} doit etre un entier JSON; les booleens sont interdits."
+        )
+    return value
+
+
+def _require_date_string(value: object, *, field: str) -> str:
+    if type(value) is not str or not _CANONICAL_DATE_PATTERN.fullmatch(
+        value
+    ):
+        raise ShadowPredictionError(
+            f"{field} doit respecter exactement YYYY-MM-DD."
+        )
+    try:
+        parsed = date.fromisoformat(value)
+    except ValueError as error:
+        raise ShadowPredictionError(
+            f"{field} n'est pas une date calendaire valide : {value!r}."
+        ) from error
+    if parsed.isoformat() != value:
+        raise ShadowPredictionError(
+            f"{field} doit etre une date ISO canonique."
+        )
+    return value
+
+
+def _require_utc_timestamp(value: object, *, field: str) -> str:
+    if type(value) is not str:
+        raise ShadowPredictionError(
+            f"{field} doit etre une chaine RFC3339_SECONDS_Z."
+        )
+    match = _UTC_TIMESTAMP_PATTERN.fullmatch(value)
+    if match is None:
+        raise ShadowPredictionError(
+            f"{field} doit respecter exactement RFC3339_SECONDS_Z."
+        )
+    try:
+        datetime(*(int(component) for component in match.groups()))
+    except ValueError as error:
+        raise ShadowPredictionError(
+            f"{field} n'est pas un instant UTC valide : {value!r}."
+        ) from error
+    return value
+
+
+def _require_fixed_6_string(value: object, *, field: str) -> str:
+    if type(value) is not str or not _FIXED_6_PATTERN.fullmatch(value):
+        raise ShadowPredictionError(
+            f"{field} doit etre une chaine decimale non negative avec "
+            "exactement six decimales."
+        )
+    return value
+
+
+def build_slot_key(
+    *,
+    shadow_protocol_sha256: str,
+    target_official_date: str,
+) -> str:
+    """Construit l'identifiant v2 d'un slot sans aucune entree-sortie."""
+    protocol_hash = _require_sha256(
+        shadow_protocol_sha256,
+        field="shadow_protocol_sha256",
+    )
+    target_date = _require_date_string(
+        target_official_date,
+        field="target_official_date",
+    )
+    return _sha256_identifier(
+        ["shadow_slot_v2", protocol_hash, target_date]
+    )
+
+
+def build_batch_id(
+    *,
+    slot_key: str,
+    execution_manifest_sha256: str,
+    model_artifact_sha256: str,
+) -> str:
+    """Construit l'identifiant v2 d'un lot sans consulter ses fichiers."""
+    validated_slot_key = _require_sha256(slot_key, field="slot_key")
+    manifest_hash = _require_sha256(
+        execution_manifest_sha256,
+        field="execution_manifest_sha256",
+    )
+    model_hash = _require_sha256(
+        model_artifact_sha256,
+        field="model_artifact_sha256",
+    )
+    return _sha256_identifier(
+        [
+            "shadow_batch_v2",
+            validated_slot_key,
+            manifest_hash,
+            model_hash,
+        ]
+    )
+
+
+def build_occurrence_key(
+    *,
+    game_id: int,
+    official_date_at_snapshot: str,
+    scheduled_start_utc_at_snapshot_or_null: str | None,
+) -> str:
+    """Construit une occurrence v2; seul ce hachage accepte un debut nul."""
+    validated_game_id = _require_integer(game_id, field="game_id")
+    official_date = _require_date_string(
+        official_date_at_snapshot,
+        field="official_date_at_snapshot",
+    )
+    scheduled_start: str | None
+    if scheduled_start_utc_at_snapshot_or_null is None:
+        scheduled_start = None
+    else:
+        scheduled_start = _require_utc_timestamp(
+            scheduled_start_utc_at_snapshot_or_null,
+            field="scheduled_start_utc_at_snapshot_or_null",
+        )
+    return _sha256_identifier(
+        [
+            "shadow_occurrence_v2",
+            validated_game_id,
+            official_date,
+            scheduled_start,
+        ]
+    )
+
+
+def build_prediction_id(
+    *,
+    shadow_protocol_sha256: str,
+    game_id: int,
+    official_date_at_snapshot: str,
+    scheduled_start_utc_at_snapshot: str,
+) -> str:
+    """Construit l'identifiant v2 d'une prediction admissible."""
+    protocol_hash = _require_sha256(
+        shadow_protocol_sha256,
+        field="shadow_protocol_sha256",
+    )
+    validated_game_id = _require_integer(game_id, field="game_id")
+    official_date = _require_date_string(
+        official_date_at_snapshot,
+        field="official_date_at_snapshot",
+    )
+    scheduled_start = _require_utc_timestamp(
+        scheduled_start_utc_at_snapshot,
+        field="scheduled_start_utc_at_snapshot",
+    )
+    return _sha256_identifier(
+        [
+            "shadow_prediction_v2",
+            protocol_hash,
+            validated_game_id,
+            official_date,
+            scheduled_start,
+        ]
+    )
+
+
+def build_feature_row_sha256(
+    *,
+    feature_row_values_in_features_columns_exact_order_excluding_feature_row_sha256:
+        list[object],
+) -> str:
+    """Hache les 20 valeurs v2 d'une ligne de variables, dans l'ordre fige."""
+    source_values = (
+        feature_row_values_in_features_columns_exact_order_excluding_feature_row_sha256
+    )
+    if type(source_values) is not list:
+        raise ShadowPredictionError(
+            "Les valeurs de feature row doivent etre un tableau JSON."
+        )
+    if len(source_values) != len(_FEATURE_ROW_FIELD_NAMES):
+        raise ShadowPredictionError(
+            "Une feature row v2 doit contenir exactement "
+            f"{len(_FEATURE_ROW_FIELD_NAMES)} valeurs."
+        )
+
+    values = list(source_values)
+    for index in _FEATURE_ROW_SHA256_INDEXES:
+        _require_sha256(values[index], field=_FEATURE_ROW_FIELD_NAMES[index])
+    for index in _FEATURE_ROW_INTEGER_INDEXES:
+        _require_integer(values[index], field=_FEATURE_ROW_FIELD_NAMES[index])
+    for index in _FEATURE_ROW_DATE_INDEXES:
+        _require_date_string(
+            values[index],
+            field=_FEATURE_ROW_FIELD_NAMES[index],
+        )
+    _require_utc_timestamp(
+        values[_FEATURE_ROW_TIMESTAMP_INDEX],
+        field=_FEATURE_ROW_FIELD_NAMES[_FEATURE_ROW_TIMESTAMP_INDEX],
+    )
+    for index in _FEATURE_ROW_FIXED_6_INDEXES:
+        _require_fixed_6_string(
+            values[index],
+            field=_FEATURE_ROW_FIELD_NAMES[index],
+        )
+
+    return _sha256_identifier(["shadow_feature_row_v2", values])
 
 
 @dataclass(frozen=True, slots=True)

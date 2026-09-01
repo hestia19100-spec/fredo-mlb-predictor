@@ -5,9 +5,12 @@ from __future__ import annotations
 import argparse
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, replace
-from datetime import date
+from datetime import date, datetime, timezone
+from email.utils import format_datetime, parsedate_to_datetime
+import hashlib
 import json
 from typing import Any
+from urllib.parse import parse_qsl, urlsplit
 
 import requests
 
@@ -44,7 +47,7 @@ class ScheduledGame:
     game_id: int
     season: int
     official_date: str
-    game_datetime_utc: str
+    game_datetime_utc: str | None
     game_type: str
     status_code: str
     status_detail: str
@@ -62,6 +65,7 @@ class ScheduledGame:
     away_probable_pitcher_name: str | None
     home_probable_pitcher_id: int | None
     home_probable_pitcher_name: str | None
+    abstract_state: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,6 +78,154 @@ class ScheduleFetchResult:
     request_parameters: dict[str, object]
     raw_content: bytes
     games: tuple[ScheduledGame, ...]
+    response_effective_url: str | None = None
+    response_status_code: int | None = None
+    response_redirect_count: int | None = None
+    mlb_http_date_header_raw: str | None = None
+    mlb_http_date_utc: str | None = None
+    mlb_http_response_received_at_utc: str | None = None
+    response_body_sha256: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _ScheduleHTTPResponse:
+    """Réponse HTTP décodée avec ses preuves temporelles."""
+
+    raw_content: bytes
+    payload: dict[str, Any]
+    response_effective_url: str
+    response_status_code: int
+    response_redirect_count: int
+    mlb_http_date_header_raw: str | None
+    mlb_http_date_utc: str | None
+    response_received_at_utc: str
+    response_body_sha256: str
+
+
+def _utc_now() -> datetime:
+    """Retourne l'heure UTC utilisée comme preuve locale."""
+    return datetime.now(timezone.utc)
+
+
+def _format_utc_seconds(value: datetime) -> str:
+    """Normalise un instant UTC au format RFC3339 à la seconde."""
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise MLBAPIError("Un horodatage UTC avec fuseau est obligatoire.")
+
+    return (
+        value.astimezone(timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+
+
+def _parse_http_date(value: object) -> str:
+    """Valide l'en-tête HTTP Date renvoyé par MLB."""
+    if (
+        not isinstance(value, str)
+        or not value
+        or value != value.strip()
+    ):
+        raise MLBAPIError("L'en-tête HTTP Date de MLB est absent.")
+
+    try:
+        parsed = parsedate_to_datetime(value)
+    except (TypeError, ValueError, OverflowError) as error:
+        raise MLBAPIError(
+            "L'en-tête HTTP Date de MLB est invalide."
+        ) from error
+
+    if (
+        parsed.tzinfo is None
+        or parsed.utcoffset() is None
+        or parsed.utcoffset().total_seconds() != 0
+    ):
+        raise MLBAPIError("L'en-tête HTTP Date de MLB n'est pas UTC.")
+
+    canonical_value = format_datetime(
+        parsed.astimezone(timezone.utc),
+        usegmt=True,
+    )
+    if value != canonical_value:
+        raise MLBAPIError(
+            "L'en-tête HTTP Date de MLB n'est pas au format "
+            "IMF-fixdate GMT canonique."
+        )
+
+    return _format_utc_seconds(parsed)
+
+
+def _validate_observed_effective_url(
+    effective_url: object,
+    parameters: dict[str, object],
+) -> str:
+    """Valide l'URL réellement servie pour une observation shadow."""
+    if not isinstance(effective_url, str) or not effective_url:
+        raise MLBAPIError("L'URL effective de la réponse MLB est absente.")
+
+    parsed_url = urlsplit(effective_url)
+    if (
+        parsed_url.scheme != "https"
+        or parsed_url.netloc != "statsapi.mlb.com"
+        or parsed_url.path != "/api/v1/schedule"
+        or parsed_url.fragment
+    ):
+        raise MLBAPIError("L'URL effective de la réponse MLB est invalide.")
+
+    try:
+        query_pairs = parse_qsl(
+            parsed_url.query,
+            keep_blank_values=True,
+            strict_parsing=True,
+        )
+    except ValueError as error:
+        raise MLBAPIError(
+            "La requête effective MLB contient une query invalide."
+        ) from error
+
+    query_names = [name for name, _ in query_pairs]
+    if len(query_names) != len(set(query_names)):
+        raise MLBAPIError(
+            "La requête effective MLB contient un paramètre en doublon."
+        )
+
+    actual_query = dict(query_pairs)
+    expected_query = {
+        str(name): str(value)
+        for name, value in parameters.items()
+    }
+    if actual_query != expected_query:
+        raise MLBAPIError(
+            "Les paramètres de l'URL effective MLB sont inattendus."
+        )
+
+    return effective_url
+
+
+def _validate_observed_clock(
+    *,
+    mlb_http_date_utc: str,
+    response_received_at: datetime,
+) -> None:
+    """Refuse une horloge locale trop éloignée de la preuve MLB."""
+    parsed_http_date = datetime.fromisoformat(
+        mlb_http_date_utc.replace("Z", "+00:00")
+    )
+    normalized_received_at = (
+        response_received_at
+        .astimezone(timezone.utc)
+        .replace(microsecond=0)
+    )
+    clock_skew_seconds = (
+        normalized_received_at
+        - parsed_http_date
+    ).total_seconds()
+    if abs(clock_skew_seconds) > 300:
+        raise MLBAPIError(
+            "L'horloge locale diffère de plus de 300 secondes "
+            "de l'en-tête HTTP Date de MLB."
+        )
 
 
 def _optional_int(value: Any) -> int | None:
@@ -138,8 +290,10 @@ def _parse_game(
             official_date=str(
                 raw_game["officialDate"]
             ),
-            game_datetime_utc=str(
-                raw_game["gameDate"]
+            game_datetime_utc=(
+                str(raw_game["gameDate"])
+                if raw_game.get("gameDate") is not None
+                else None
             ),
             game_type=str(
                 raw_game["gameType"]
@@ -197,6 +351,10 @@ def _parse_game(
             ),
             home_probable_pitcher_name=(
                 home_probable_pitcher_name
+            ),
+            abstract_state=str(
+                status.get("abstractGameState")
+                or ""
             ),
         )
 
@@ -364,7 +522,8 @@ def _select_canonical_game(
                     candidate_game,
                 ),
                 key=lambda game: (
-                    game.game_datetime_utc
+                    game.game_datetime_utc is None,
+                    game.game_datetime_utc or "",
                 ),
             )
 
@@ -402,7 +561,8 @@ def _select_canonical_game(
                     candidate_game,
                 ),
                 key=lambda game: (
-                    game.game_datetime_utc
+                    game.game_datetime_utc is not None,
+                    game.game_datetime_utc or "",
                 ),
             )
 
@@ -430,6 +590,8 @@ def _select_canonical_game(
 
 def _parse_schedule_payload(
     payload: dict[str, Any],
+    *,
+    reject_duplicate_game_ids: bool = False,
 ) -> list[ScheduledGame]:
     """Transforme et contrôle tous les matchs d’une réponse."""
     date_blocks = payload.get(
@@ -514,6 +676,14 @@ def _parse_schedule_payload(
                 f"lus sur {expected_total} annoncés."
             )
 
+    if reject_duplicate_game_ids:
+        game_ids = [game.game_id for game in game_occurrences]
+        if len(game_ids) != len(set(game_ids)):
+            raise MLBAPIError(
+                "La réponse MLB prospective contient des identifiants "
+                "de match en doublon."
+            )
+
     canonical_games: dict[
         int,
         ScheduledGame,
@@ -543,10 +713,12 @@ def _parse_schedule_payload(
     )
 
 
-def _request_schedule(
+def _request_schedule_response(
     parameters: dict[str, object],
-) -> tuple[bytes, dict[str, Any]]:
-    """Télécharge puis décode une réponse MLB unique."""
+    *,
+    require_http_date: bool,
+) -> _ScheduleHTTPResponse:
+    """Télécharge et décode une réponse avec preuve temporelle."""
     headers = {
         "User-Agent": (
             "fredo-mlb-predictor/0.1"
@@ -554,11 +726,22 @@ def _request_schedule(
     }
 
     try:
+        request_options: dict[str, Any] = {
+            "params": parameters,
+            "headers": headers,
+            "timeout": REQUEST_TIMEOUT_SECONDS,
+        }
+        if require_http_date:
+            request_options["allow_redirects"] = False
+
         response = requests.get(
             MLB_SCHEDULE_URL,
-            params=parameters,
-            headers=headers,
-            timeout=REQUEST_TIMEOUT_SECONDS,
+            **request_options,
+        )
+
+        response_received_at = _utc_now()
+        response_received_at_utc = _format_utc_seconds(
+            response_received_at
         )
 
         response.raise_for_status()
@@ -648,7 +831,91 @@ def _request_schedule(
             "dans la réponse MLB."
         )
 
-    return raw_content, payload
+    response_body_sha256 = hashlib.sha256(raw_content).hexdigest()
+    response_status_value = getattr(response, "status_code", None)
+    response_history = getattr(response, "history", ())
+    response_url_value = getattr(response, "url", None)
+
+    if require_http_date:
+        if type(response_status_value) is not int:
+            raise MLBAPIError("Le statut HTTP de MLB est invalide.")
+        if response_status_value != 200:
+            raise MLBAPIError(
+                "Le statut HTTP observé de MLB doit être exactement 200."
+            )
+        if not isinstance(response_history, (list, tuple)):
+            raise MLBAPIError("L'historique de redirection MLB est invalide.")
+        if len(response_history) != 0:
+            raise MLBAPIError("Une redirection HTTP MLB est interdite.")
+
+        response_effective_url = _validate_observed_effective_url(
+            response_url_value,
+            parameters,
+        )
+        response_status_code = response_status_value
+        response_redirect_count = len(response_history)
+    else:
+        response_effective_url = (
+            response_url_value
+            if isinstance(response_url_value, str)
+            else MLB_SCHEDULE_URL
+        )
+        response_status_code = (
+            response_status_value
+            if type(response_status_value) is int
+            else 0
+        )
+        response_redirect_count = (
+            len(response_history)
+            if isinstance(response_history, (list, tuple))
+            else 0
+        )
+
+    response_headers = getattr(response, "headers", {})
+    http_date_value = (
+        response_headers.get("Date")
+        if hasattr(response_headers, "get")
+        else None
+    )
+    mlb_http_date_utc = (
+        _parse_http_date(http_date_value)
+        if require_http_date
+        else None
+    )
+    mlb_http_date_header_raw = (
+        http_date_value
+        if require_http_date and isinstance(http_date_value, str)
+        else None
+    )
+
+    if require_http_date and mlb_http_date_utc is not None:
+        _validate_observed_clock(
+            mlb_http_date_utc=mlb_http_date_utc,
+            response_received_at=response_received_at,
+        )
+
+    return _ScheduleHTTPResponse(
+        raw_content=raw_content,
+        payload=payload,
+        response_effective_url=response_effective_url,
+        response_status_code=response_status_code,
+        response_redirect_count=response_redirect_count,
+        mlb_http_date_header_raw=mlb_http_date_header_raw,
+        mlb_http_date_utc=mlb_http_date_utc,
+        response_received_at_utc=response_received_at_utc,
+        response_body_sha256=response_body_sha256,
+    )
+
+
+def _request_schedule(
+    parameters: dict[str, object],
+) -> tuple[bytes, dict[str, Any]]:
+    """Télécharge puis décode une réponse MLB unique."""
+    observation = _request_schedule_response(
+        parameters,
+        require_http_date=False,
+    )
+    return observation.raw_content, observation.payload
 
 
 def _normalize_game_types(
@@ -760,6 +1027,62 @@ def fetch_schedule_range(
         ),
         raw_content=raw_content,
         games=tuple(games),
+    )
+
+
+def fetch_schedule_range_observed(
+    start_date: date,
+    end_date: date,
+    game_types: Iterable[str] = ("R",),
+) -> ScheduleFetchResult:
+    """Récupère une période avec les preuves HTTP nécessaires au shadow."""
+    if end_date < start_date:
+        raise ValueError(
+            "La date de fin ne peut pas précéder la date de début."
+        )
+
+    inclusive_days = (end_date - start_date).days + 1
+    if inclusive_days > MAX_SCHEDULE_RANGE_DAYS:
+        raise ValueError(
+            "Une récupération ne peut pas dépasser 31 jours."
+        )
+
+    normalized_game_types = _normalize_game_types(game_types)
+    parameters: dict[str, object] = {
+        "sportId": MLB_SPORT_ID,
+        "startDate": start_date.isoformat(),
+        "endDate": end_date.isoformat(),
+        "gameTypes": ",".join(normalized_game_types),
+        "hydrate": "probablePitcher",
+    }
+
+    observation = _request_schedule_response(
+        parameters,
+        require_http_date=True,
+    )
+    games = _parse_schedule_payload(
+        observation.payload,
+        reject_duplicate_game_ids=True,
+    )
+
+    return ScheduleFetchResult(
+        start_date=start_date,
+        end_date=end_date,
+        game_types=normalized_game_types,
+        request_parameters=dict(parameters),
+        raw_content=observation.raw_content,
+        games=tuple(games),
+        response_effective_url=observation.response_effective_url,
+        response_status_code=observation.response_status_code,
+        response_redirect_count=observation.response_redirect_count,
+        mlb_http_date_header_raw=(
+            observation.mlb_http_date_header_raw
+        ),
+        mlb_http_date_utc=observation.mlb_http_date_utc,
+        mlb_http_response_received_at_utc=(
+            observation.response_received_at_utc
+        ),
+        response_body_sha256=observation.response_body_sha256,
     )
 
 

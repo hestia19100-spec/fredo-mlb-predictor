@@ -21,7 +21,11 @@ from src.ingestion_repository import (
     mark_ingestion_success,
     start_ingestion_run,
 )
-from src.mlb_api import fetch_schedule_range
+from src.mlb_api import (
+    ScheduledGame,
+    fetch_schedule_range,
+    fetch_schedule_range_observed,
+)
 from src.raw_archive import archive_raw_response
 
 
@@ -45,6 +49,14 @@ class ScheduleIngestionResult:
     archive_relative_path: str
     response_sha256: str
     code_version: str | None
+    games: tuple[ScheduledGame, ...] = ()
+    response_effective_url: str | None = None
+    response_status_code: int | None = None
+    response_redirect_count: int | None = None
+    mlb_http_date_header_raw: str | None = None
+    mlb_http_date_utc: str | None = None
+    mlb_http_response_received_at_utc: str | None = None
+    response_body_sha256: str | None = None
 
 
 def _normalize_game_types(
@@ -120,6 +132,7 @@ def run_schedule_ingestion(
     database_path: Path = DATABASE_PATH,
     data_directory: Path = DATA_DIR,
     code_version: str | None = None,
+    require_http_observation: bool = False,
 ) -> ScheduleIngestionResult:
     """Récupère, archive, enregistre et journalise une période."""
     normalized_game_types = _normalize_game_types(game_types)
@@ -146,11 +159,31 @@ def run_schedule_ingestion(
     )
 
     try:
-        fetch_result = fetch_schedule_range(
+        fetch_function = (
+            fetch_schedule_range_observed
+            if require_http_observation
+            else fetch_schedule_range
+        )
+        fetch_result = fetch_function(
             start_date,
             end_date,
             game_types=normalized_game_types,
         )
+
+        if require_http_observation:
+            required_http_evidence = (
+                fetch_result.response_effective_url,
+                fetch_result.response_status_code,
+                fetch_result.response_redirect_count,
+                fetch_result.mlb_http_date_header_raw,
+                fetch_result.mlb_http_date_utc,
+                fetch_result.mlb_http_response_received_at_utc,
+                fetch_result.response_body_sha256,
+            )
+            if any(value is None for value in required_http_evidence):
+                raise ScheduleIngestionError(
+                    "La collecte MLB ne contient pas ses preuves HTTP."
+                )
 
         if fetch_result.request_parameters != request_parameters:
             raise ScheduleIngestionError(
@@ -165,6 +198,14 @@ def run_schedule_ingestion(
             end_date=end_date,
             data_directory=data_directory,
         )
+
+        if (
+            require_http_observation
+            and fetch_result.response_body_sha256 != archive.sha256
+        ):
+            raise ScheduleIngestionError(
+                "Le SHA-256 du corps HTTP MLB diffère de l'archive brute."
+            )
 
         games_saved = save_schedule(
             fetch_result.games,
@@ -207,6 +248,41 @@ def run_schedule_ingestion(
         archive_relative_path=archive.relative_path,
         response_sha256=archive.sha256,
         code_version=effective_code_version,
+        games=(
+            tuple(fetch_result.games)
+            if require_http_observation
+            else ()
+        ),
+        response_effective_url=fetch_result.response_effective_url,
+        response_status_code=fetch_result.response_status_code,
+        response_redirect_count=fetch_result.response_redirect_count,
+        mlb_http_date_header_raw=fetch_result.mlb_http_date_header_raw,
+        mlb_http_date_utc=fetch_result.mlb_http_date_utc,
+        mlb_http_response_received_at_utc=(
+            fetch_result.mlb_http_response_received_at_utc
+        ),
+        response_body_sha256=fetch_result.response_body_sha256,
+    )
+
+
+def run_observed_schedule_ingestion(
+    *,
+    start_date: date,
+    end_date: date,
+    game_types: Iterable[str] = ("R",),
+    database_path: Path = DATABASE_PATH,
+    data_directory: Path = DATA_DIR,
+    code_version: str | None = None,
+) -> ScheduleIngestionResult:
+    """Collecte un calendrier avec les preuves HTTP du même appel."""
+    return run_schedule_ingestion(
+        start_date=start_date,
+        end_date=end_date,
+        game_types=game_types,
+        database_path=database_path,
+        data_directory=data_directory,
+        code_version=code_version,
+        require_http_observation=True,
     )
 
 

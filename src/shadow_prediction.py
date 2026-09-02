@@ -17,8 +17,10 @@ import hashlib
 import io
 import json
 import math
+import os
 from pathlib import Path, PurePosixPath
 import re
+import tempfile
 from typing import Any, Mapping, Sequence
 
 
@@ -102,6 +104,10 @@ _FEATURE_ROW_FIXED_6_INDEXES = (13, 14, 15, 17, 18, 19)
 
 class ShadowPredictionError(RuntimeError):
     """Erreur qui interdit de produire meme un apercu fiable."""
+
+
+class ShadowPublicationConflictError(ShadowPredictionError):
+    """Refus attendu lorsqu'un chemin append-only est deja consomme."""
 
 
 def _validate_json_value(
@@ -283,6 +289,101 @@ def _canonical_gzip_bytes(payload: bytes) -> bytes:
     ) as gzip_file:
         gzip_file.write(payload)
     return destination.getvalue()
+
+
+def _fsync_parent_directory(directory: Path) -> None:
+    """Synchronise l'entree de repertoire sur les plateformes POSIX."""
+    if os.name == "nt":
+        return
+
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    directory_descriptor = os.open(directory, flags)
+    try:
+        os.fsync(directory_descriptor)
+    finally:
+        os.close(directory_descriptor)
+
+
+def _publish_exclusive_verified(destination: Path, content: bytes) -> str:
+    """Publie une fois, synchronise, relit et renvoie le SHA-256 exact.
+
+    Le parent doit deja exister. Un lien physique cree la destination sans
+    aucune possibilite de remplacement, meme si deux processus publient au
+    meme instant. Une destination publiee n'est jamais supprimee par ce
+    helper, y compris lorsqu'une verification ulterieure echoue.
+    """
+    if not isinstance(destination, Path):
+        raise ShadowPredictionError(
+            "La destination append-only doit etre un objet Path."
+        )
+    if type(content) is not bytes:
+        raise ShadowPredictionError(
+            "Le contenu append-only doit etre fourni en octets exacts."
+        )
+    if not destination.name:
+        raise ShadowPredictionError(
+            "La destination append-only doit nommer un fichier."
+        )
+
+    parent = destination.parent
+    if not parent.is_dir():
+        raise ShadowPredictionError(
+            "Le repertoire parent doit exister avant toute publication."
+        )
+
+    expected_sha256 = hashlib.sha256(content).hexdigest()
+    temporary_path: Path | None = None
+    published = False
+
+    try:
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{destination.name}.",
+            suffix=".tmp",
+            dir=parent,
+        )
+        temporary_path = Path(temporary_name)
+
+        try:
+            with os.fdopen(descriptor, "wb") as temporary_file:
+                temporary_file.write(content)
+                temporary_file.flush()
+                os.fsync(temporary_file.fileno())
+        except BaseException:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+            raise
+
+        try:
+            os.link(temporary_path, destination)
+        except FileExistsError as error:
+            raise ShadowPublicationConflictError(
+                f"La destination append-only existe deja : {destination}."
+            ) from error
+
+        published = True
+        temporary_path.unlink()
+        temporary_path = None
+        _fsync_parent_directory(parent)
+
+        persisted = destination.read_bytes()
+        persisted_sha256 = hashlib.sha256(persisted).hexdigest()
+        if persisted != content or persisted_sha256 != expected_sha256:
+            raise ShadowPredictionError(
+                "La relecture append-only ne correspond pas aux octets "
+                "publies."
+            )
+        return expected_sha256
+    except (ShadowPredictionError, OSError):
+        raise
+    finally:
+        if temporary_path is not None:
+            try:
+                temporary_path.unlink(missing_ok=True)
+            except OSError:
+                if not published:
+                    raise
 
 
 def _format_feature_rate(value: object) -> str:

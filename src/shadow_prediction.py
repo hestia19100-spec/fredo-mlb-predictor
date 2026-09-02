@@ -321,6 +321,10 @@ class ShadowPublicationConflictError(ShadowPredictionError):
     """Refus attendu lorsqu'un chemin append-only est deja consomme."""
 
 
+class ShadowPredictionSlotConsumedError(ShadowPublicationConflictError):
+    """Refus definitif lorsqu'un slot journalier n'est plus absent."""
+
+
 class ShadowPredictionSlotState(str, Enum):
     """Etats fermes d'un creneau journalier v2 deja inspecte."""
 
@@ -340,6 +344,17 @@ class ShadowPredictionSlotInspection:
     slot_key: str
     batch_id: str
     receipt: dict[str, Any] | None
+
+
+@dataclass(frozen=True, slots=True)
+class ShadowPredictionSlotReservation:
+    """Preuve locale retournee apres creation exclusive de RESERVED."""
+
+    slot_path: Path
+    slot_key: str
+    batch_id: str
+    reserved_marker: dict[str, Any]
+    reserved_marker_sha256: str
 
 
 def _validate_json_value(
@@ -558,9 +573,11 @@ def _publish_exclusive_verified(destination: Path, content: bytes) -> str:
         )
 
     parent = destination.parent
-    if not parent.is_dir():
+    parent_mode = _lstat_mode(parent)
+    if not isinstance(parent_mode, int) or not stat.S_ISDIR(parent_mode):
         raise ShadowPredictionError(
-            "Le repertoire parent doit exister avant toute publication."
+            "Le repertoire parent doit exister, etre local et ne pas etre "
+            "symbolique avant toute publication."
         )
 
     expected_sha256 = hashlib.sha256(content).hexdigest()
@@ -677,6 +694,15 @@ def _require_sha256(value: object, *, field: str) -> str:
     if type(value) is not str or not _SHA256_PATTERN.fullmatch(value):
         raise ShadowPredictionError(
             f"{field} doit contenir exactement 64 caracteres hexadecimaux "
+            "ASCII minuscules."
+        )
+    return value
+
+
+def _require_git_commit(value: object, *, field: str) -> str:
+    if type(value) is not str or not _GIT_COMMIT_PATTERN.fullmatch(value):
+        raise ShadowPredictionError(
+            f"{field} doit contenir exactement 40 caracteres hexadecimaux "
             "ASCII minuscules."
         )
     return value
@@ -1416,6 +1442,167 @@ def inspect_shadow_prediction_slot(
     ):
         return inspection(mismatch)
     return inspection(ShadowPredictionSlotState.COMPLETED_EXACT, receipt)
+
+
+def _require_shadow_result_root(
+    *,
+    project_directory: Path,
+) -> Path:
+    """Exige la racine versionnee sans creer ni suivre aucun composant."""
+    current = project_directory
+    for component in SHADOW_RESULT_ROOT_RELATIVE_PATH.parts:
+        current = current / component
+        mode = _lstat_mode(current)
+        if not isinstance(mode, int) or not stat.S_ISDIR(mode):
+            raise ShadowPredictionError(
+                "La racine versionnee des resultats fantomes doit deja "
+                "exister et ne contenir aucun lien symbolique."
+            )
+    return current
+
+
+def reserve_shadow_prediction_slot(
+    target_official_date: date | str,
+    *,
+    reserved_at_utc: str,
+    runtime_code_commit: str,
+    shadow_protocol_sha256: str,
+    execution_manifest_sha256: str,
+    model_artifact_sha256: str,
+    project_directory: Path = PROJECT_DIRECTORY,
+) -> ShadowPredictionSlotReservation:
+    """Reserve une fois un slot v2 absent et publie son premier fichier.
+
+    Tous les instants et identifiants variables sont fournis par l'appelant :
+    cette primitive ne consulte ni horloge, ni Git, ni reseau, ni SQLite, ni
+    modele. Une fois le repertoire du slot cree, aucune erreur ne provoque sa
+    suppression ou sa reutilisation.
+    """
+    target = _parse_target_official_date(target_official_date)
+    target_date = target.isoformat()
+    if target.year != EXPECTED_TARGET_SEASON:
+        raise ShadowPredictionError(
+            "Saison cible invalide pour une reservation fantome v2 : "
+            f"{target.year}, attendu {EXPECTED_TARGET_SEASON}."
+        )
+    if target < EXPECTED_SHADOW_PROTOCOL_REGISTERED_ON:
+        raise ShadowPredictionError(
+            "La date cible ne peut pas preceder l'enregistrement du "
+            "protocole fantome v2."
+        )
+
+    reserved_at = _require_utc_timestamp(
+        reserved_at_utc,
+        field="reserved_at_utc",
+    )
+    if target_date < reserved_at[:10]:
+        raise ShadowPredictionError(
+            "target_official_date ne peut pas preceder la date UTC de "
+            "reserved_at_utc."
+        )
+    runtime_commit = _require_git_commit(
+        runtime_code_commit,
+        field="runtime_code_commit",
+    )
+    protocol_hash = _require_sha256(
+        shadow_protocol_sha256,
+        field="shadow_protocol_sha256",
+    )
+    if protocol_hash != EXPECTED_SHADOW_PROTOCOL_SHA256:
+        raise ShadowPredictionError(
+            "La reservation exige l'empreinte du protocole fantome v2 "
+            "fige."
+        )
+    manifest_hash = _require_sha256(
+        execution_manifest_sha256,
+        field="execution_manifest_sha256",
+    )
+    model_hash = _require_sha256(
+        model_artifact_sha256,
+        field="model_artifact_sha256",
+    )
+    if model_hash != EXPECTED_MODEL_ARTIFACT_SHA256:
+        raise ShadowPredictionError(
+            "La reservation exige l'empreinte du modele valide et fige."
+        )
+
+    # L'inspection est volontairement la premiere operation sur l'arbre de
+    # resultats. Elle derive aussi les identifiants attendus du slot et du lot.
+    inspected = inspect_shadow_prediction_slot(
+        target_date,
+        shadow_protocol_sha256=protocol_hash,
+        execution_manifest_sha256=manifest_hash,
+        model_artifact_sha256=model_hash,
+        project_directory=project_directory,
+    )
+    if inspected.state is not ShadowPredictionSlotState.ABSENT:
+        raise ShadowPredictionSlotConsumedError(
+            "Le slot fantome est deja consomme et ne peut jamais etre "
+            f"reserve de nouveau : {inspected.state.value}."
+        )
+
+    reserved_marker: dict[str, Any] = {
+        "marker_schema_version": 1,
+        "batch_id": inspected.batch_id,
+        "slot_key": inspected.slot_key,
+        "target_official_date": target_date,
+        "reserved_at_utc": reserved_at,
+        "shadow_protocol_sha256": protocol_hash,
+        "execution_manifest_sha256": manifest_hash,
+        "runtime_code_commit": runtime_commit,
+    }
+    reserved_bytes = _canonical_json_file_bytes(reserved_marker)
+
+    result_root = _require_shadow_result_root(
+        project_directory=inspected.slot_path.parents[
+            len(SHADOW_RESULT_ROOT_RELATIVE_PATH.parts)
+        ],
+    )
+    if result_root != inspected.slot_path.parent:
+        raise ShadowPredictionError(
+            "Le repertoire derive du slot fantome est incoherent."
+        )
+
+    try:
+        inspected.slot_path.mkdir(exist_ok=False)
+    except FileExistsError as error:
+        raise ShadowPredictionSlotConsumedError(
+            "Le slot fantome a ete reserve par une autre execution."
+        ) from error
+    except OSError as error:
+        raise ShadowPredictionError(
+            "Impossible de creer le slot fantome de facon exclusive."
+        ) from error
+
+    # A partir de mkdir, le slot est consomme meme si une synchronisation ou
+    # la publication de RESERVED echoue. Il ne doit donc jamais etre nettoye.
+    confirmed_result_root = _require_shadow_result_root(
+        project_directory=inspected.slot_path.parents[
+            len(SHADOW_RESULT_ROOT_RELATIVE_PATH.parts)
+        ],
+    )
+    if confirmed_result_root != result_root:
+        raise ShadowPredictionError(
+            "La racine du slot a change pendant sa reservation."
+        )
+    slot_mode = _lstat_mode(inspected.slot_path)
+    if not isinstance(slot_mode, int) or not stat.S_ISDIR(slot_mode):
+        raise ShadowPredictionError(
+            "Le slot reserve n'est pas un repertoire local non symbolique."
+        )
+    _fsync_parent_directory(inspected.slot_path.parent)
+    marker_sha256 = _publish_exclusive_verified(
+        inspected.slot_path / "RESERVED",
+        reserved_bytes,
+    )
+
+    return ShadowPredictionSlotReservation(
+        slot_path=inspected.slot_path,
+        slot_key=inspected.slot_key,
+        batch_id=inspected.batch_id,
+        reserved_marker=reserved_marker,
+        reserved_marker_sha256=marker_sha256,
+    )
 
 
 def _read_frozen_protocol(

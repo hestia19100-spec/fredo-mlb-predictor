@@ -9,9 +9,12 @@ ou de modele.
 from __future__ import annotations
 
 import argparse
+import csv
 from dataclasses import asdict, dataclass
 from datetime import date, datetime
+import gzip
 import hashlib
+import io
 import json
 import math
 from pathlib import Path, PurePosixPath
@@ -169,6 +172,159 @@ def _canonical_json_bytes(value: object) -> bytes:
         raise ShadowPredictionError(
             "Valeur impossible a canonicaliser en JSON UTF-8."
         ) from error
+
+
+def _canonical_json_file_bytes(value: object) -> bytes:
+    """Ajoute l'unique LF terminal impose aux fichiers JSON v2."""
+    return _canonical_json_bytes(value) + b"\n"
+
+
+def _csv_field_text(value: object, *, row_index: int, column: str) -> str:
+    """Convertit uniquement les scalaires dont le rendu CSV est explicite."""
+    if value is None:
+        return ""
+    if type(value) is str:
+        text = value
+    elif type(value) is int:
+        text = str(value)
+    else:
+        raise ShadowPredictionError(
+            "Valeur CSV non canonique a la ligne "
+            f"{row_index}, colonne {column!r} : "
+            f"{type(value).__name__}."
+        )
+    if "\r" in text:
+        raise ShadowPredictionError(
+            "Retour chariot interdit dans une valeur CSV canonique a la "
+            f"ligne {row_index}, colonne {column!r}."
+        )
+    return text
+
+
+def _canonical_csv_bytes(
+    columns: Sequence[str],
+    rows: Sequence[Sequence[object]],
+) -> bytes:
+    """Serialise un tableau deja ordonne en CSV UTF-8/LF a largeur fixe."""
+    if type(columns) not in (list, tuple) or not columns:
+        raise ShadowPredictionError(
+            "Les colonnes CSV doivent etre une liste ordonnee non vide."
+        )
+    canonical_columns: list[str] = []
+    for index, column in enumerate(columns):
+        if type(column) is not str or not column or "\r" in column:
+            raise ShadowPredictionError(
+                f"Nom de colonne CSV invalide a l'index {index}."
+            )
+        canonical_columns.append(column)
+    if len(set(canonical_columns)) != len(canonical_columns):
+        raise ShadowPredictionError(
+            "Les noms de colonnes CSV doivent etre uniques."
+        )
+
+    if type(rows) not in (list, tuple):
+        raise ShadowPredictionError(
+            "Les lignes CSV doivent etre une liste ordonnee."
+        )
+
+    canonical_rows: list[list[str]] = []
+    for row_index, row in enumerate(rows, start=1):
+        if type(row) not in (list, tuple):
+            raise ShadowPredictionError(
+                f"La ligne CSV {row_index} doit etre une sequence ordonnee."
+            )
+        if len(row) != len(canonical_columns):
+            raise ShadowPredictionError(
+                f"Largeur CSV invalide a la ligne {row_index} : "
+                f"{len(row)}, attendu {len(canonical_columns)}."
+            )
+        canonical_rows.append(
+            [
+                _csv_field_text(
+                    value,
+                    row_index=row_index,
+                    column=canonical_columns[column_index],
+                )
+                for column_index, value in enumerate(row)
+            ]
+        )
+
+    destination = io.StringIO(newline="")
+    writer = csv.writer(
+        destination,
+        delimiter=",",
+        quotechar='"',
+        quoting=csv.QUOTE_MINIMAL,
+        lineterminator="\n",
+    )
+    try:
+        writer.writerow(canonical_columns)
+        writer.writerows(canonical_rows)
+        return destination.getvalue().encode("utf-8")
+    except (csv.Error, UnicodeEncodeError) as error:
+        raise ShadowPredictionError(
+            "Valeur impossible a serialiser en CSV UTF-8 canonique."
+        ) from error
+
+
+def _canonical_gzip_bytes(payload: bytes) -> bytes:
+    """Compresse des octets en memoire avec l'en-tete gzip fige v2."""
+    if type(payload) is not bytes:
+        raise ShadowPredictionError(
+            "Le contenu gzip canonique doit etre fourni en octets exacts."
+        )
+    destination = io.BytesIO()
+    with gzip.GzipFile(
+        filename="",
+        mode="wb",
+        compresslevel=9,
+        fileobj=destination,
+        mtime=0,
+    ) as gzip_file:
+        gzip_file.write(payload)
+    return destination.getvalue()
+
+
+def _format_feature_rate(value: object) -> str:
+    """Formate un taux fini non negatif avec exactement six decimales."""
+    if type(value) not in (int, float):
+        raise ShadowPredictionError(
+            "Un taux de variable doit etre un nombre JSON, hors booleen."
+        )
+    if type(value) is float and not math.isfinite(value):
+        raise ShadowPredictionError(
+            "Un taux de variable doit etre fini."
+        )
+    if value < 0:
+        raise ShadowPredictionError(
+            "Un taux de variable doit etre non negatif."
+        )
+    rendered = format(value, ".6f")
+    if not _FIXED_6_PATTERN.fullmatch(rendered):
+        raise ShadowPredictionError(
+            "Un taux de variable doit avoir un rendu decimal non negatif."
+        )
+    return rendered
+
+
+def _format_probability_float(value: object) -> str:
+    """Formate une probabilite finie de [0, 1] avec la regle .17g."""
+    if type(value) not in (int, float):
+        raise ShadowPredictionError(
+            "Une probabilite doit etre un nombre JSON, hors booleen."
+        )
+    if type(value) is float and not math.isfinite(value):
+        raise ShadowPredictionError("Une probabilite doit etre finie.")
+    if value < 0 or value > 1:
+        raise ShadowPredictionError(
+            "Une probabilite doit appartenir a l'intervalle [0, 1]."
+        )
+    rendered = format(value, ".17g")
+    if rendered.startswith("-"):
+        raise ShadowPredictionError(
+            "Une probabilite ne peut pas utiliser un zero negatif."
+        )
+    return rendered
 
 
 def _sha256_identifier(preimage: object) -> str:

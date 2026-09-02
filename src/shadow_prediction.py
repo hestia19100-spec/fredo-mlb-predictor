@@ -130,6 +130,21 @@ _RESERVED_MARKER_KEYS = frozenset(
         "runtime_code_commit",
     }
 )
+_FAILED_MARKER_KEYS = frozenset(
+    {
+        "marker_schema_version",
+        "batch_id",
+        "slot_key",
+        "target_official_date",
+        "failed_at_utc",
+        "stage",
+        "error_type",
+        "error_message",
+        "shadow_protocol_sha256",
+        "execution_manifest_sha256",
+        "runtime_code_commit",
+    }
+)
 _COMPLETED_MARKER_KEYS = frozenset(
     {
         "marker_schema_version",
@@ -355,6 +370,15 @@ class ShadowPredictionSlotReservation:
     batch_id: str
     reserved_marker: dict[str, Any]
     reserved_marker_sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class ShadowPredictionSlotFailure:
+    """Preuve locale retournee apres publication exclusive de FAILED.json."""
+
+    slot_path: Path
+    failed_marker: dict[str, Any]
+    failed_marker_sha256: str
 
 
 def _validate_json_value(
@@ -704,6 +728,14 @@ def _require_git_commit(value: object, *, field: str) -> str:
         raise ShadowPredictionError(
             f"{field} doit contenir exactement 40 caracteres hexadecimaux "
             "ASCII minuscules."
+        )
+    return value
+
+
+def _require_nonempty_text(value: object, *, field: str) -> str:
+    if type(value) is not str or not value.strip():
+        raise ShadowPredictionError(
+            f"{field} doit etre une chaine non vide."
         )
     return value
 
@@ -1602,6 +1634,211 @@ def reserve_shadow_prediction_slot(
         batch_id=inspected.batch_id,
         reserved_marker=reserved_marker,
         reserved_marker_sha256=marker_sha256,
+    )
+
+
+def fail_shadow_prediction_slot(
+    reservation: ShadowPredictionSlotReservation,
+    *,
+    failed_at_utc: str,
+    stage: str,
+    error_type: str,
+    error_message: str,
+    project_directory: Path = PROJECT_DIRECTORY,
+) -> ShadowPredictionSlotFailure:
+    """Ferme definitivement un slot deja reserve avec FAILED.json.
+
+    La primitive n'ecrit que dans le repertoire exact porte par la preuve de
+    reservation. Elle exige que RESERVED soit encore canonique et identique,
+    puis publie FAILED.json sans remplacement. Aucun fichier du slot n'est
+    supprime, y compris si la publication ou sa verification echoue.
+    """
+    if type(reservation) is not ShadowPredictionSlotReservation:
+        raise ShadowPredictionError(
+            "Une preuve de reservation fantome exacte est requise."
+        )
+    if not isinstance(reservation.slot_path, Path):
+        raise ShadowPredictionError(
+            "Le chemin du slot reserve doit etre un objet Path."
+        )
+
+    failed_at = _require_utc_timestamp(
+        failed_at_utc,
+        field="failed_at_utc",
+    )
+    failure_stage = _require_nonempty_text(stage, field="stage")
+    failure_type = _require_nonempty_text(
+        error_type,
+        field="error_type",
+    )
+    failure_message = _require_nonempty_text(
+        error_message,
+        field="error_message",
+    )
+    slot_key = _require_sha256(reservation.slot_key, field="slot_key")
+    batch_id = _require_sha256(reservation.batch_id, field="batch_id")
+    reserved_sha256 = _require_sha256(
+        reservation.reserved_marker_sha256,
+        field="reserved_marker_sha256",
+    )
+
+    reserved = reservation.reserved_marker
+    if not _has_exact_keys(reserved, _RESERVED_MARKER_KEYS):
+        raise ShadowPredictionError(
+            "La preuve de reservation ne contient pas un marqueur RESERVED "
+            "exact."
+        )
+    assert isinstance(reserved, dict)
+    target_date = _require_date_string(
+        reserved.get("target_official_date"),
+        field="RESERVED.target_official_date",
+    )
+    target = _parse_target_official_date(target_date)
+    if (
+        target.year != EXPECTED_TARGET_SEASON
+        or target < EXPECTED_SHADOW_PROTOCOL_REGISTERED_ON
+    ):
+        raise ShadowPredictionError(
+            "La preuve RESERVED ne vise pas une date admissible du "
+            "protocole fantome v2."
+        )
+    reserved_at = _require_utc_timestamp(
+        reserved.get("reserved_at_utc"),
+        field="RESERVED.reserved_at_utc",
+    )
+    protocol_hash = _require_sha256(
+        reserved.get("shadow_protocol_sha256"),
+        field="RESERVED.shadow_protocol_sha256",
+    )
+    manifest_hash = _require_sha256(
+        reserved.get("execution_manifest_sha256"),
+        field="RESERVED.execution_manifest_sha256",
+    )
+    runtime_commit = _require_git_commit(
+        reserved.get("runtime_code_commit"),
+        field="RESERVED.runtime_code_commit",
+    )
+    if protocol_hash != EXPECTED_SHADOW_PROTOCOL_SHA256:
+        raise ShadowPredictionError(
+            "FAILED.json exige l'empreinte du protocole fantome v2 fige."
+        )
+    expected_slot_key = build_slot_key(
+        shadow_protocol_sha256=protocol_hash,
+        target_official_date=target_date,
+    )
+    expected_batch_id = build_batch_id(
+        slot_key=expected_slot_key,
+        execution_manifest_sha256=manifest_hash,
+        model_artifact_sha256=EXPECTED_MODEL_ARTIFACT_SHA256,
+    )
+    expected_reserved: dict[str, Any] = {
+        "marker_schema_version": 1,
+        "batch_id": expected_batch_id,
+        "slot_key": expected_slot_key,
+        "target_official_date": target_date,
+        "reserved_at_utc": reserved_at,
+        "shadow_protocol_sha256": protocol_hash,
+        "execution_manifest_sha256": manifest_hash,
+        "runtime_code_commit": runtime_commit,
+    }
+    if (
+        not _valid_reserved_marker(
+            reserved,
+            batch_id=expected_batch_id,
+            slot_key=expected_slot_key,
+            target_official_date=target_date,
+            shadow_protocol_sha256=protocol_hash,
+            execution_manifest_sha256=manifest_hash,
+        )
+        or reserved != expected_reserved
+        or slot_key != expected_slot_key
+        or batch_id != expected_batch_id
+    ):
+        raise ShadowPredictionError(
+            "La preuve de reservation ne correspond pas aux identifiants "
+            "figes du slot."
+        )
+    reserved_bytes = _canonical_json_file_bytes(expected_reserved)
+    if hashlib.sha256(reserved_bytes).hexdigest() != reserved_sha256:
+        raise ShadowPredictionError(
+            "L'empreinte de la preuve RESERVED est incoherente."
+        )
+    if failed_at < reserved_at:
+        raise ShadowPredictionError(
+            "failed_at_utc ne peut pas preceder RESERVED.reserved_at_utc."
+        )
+
+    failed_marker: dict[str, Any] = {
+        "marker_schema_version": 1,
+        "batch_id": batch_id,
+        "slot_key": slot_key,
+        "target_official_date": target_date,
+        "failed_at_utc": failed_at,
+        "stage": failure_stage,
+        "error_type": failure_type,
+        "error_message": failure_message,
+        "shadow_protocol_sha256": protocol_hash,
+        "execution_manifest_sha256": manifest_hash,
+        "runtime_code_commit": runtime_commit,
+    }
+    if not _has_exact_keys(failed_marker, _FAILED_MARKER_KEYS):
+        raise AssertionError("Schema interne FAILED.json incoherent.")
+    failed_bytes = _canonical_json_file_bytes(failed_marker)
+
+    result_root = _require_shadow_result_root(
+        project_directory=project_directory,
+    )
+    expected_slot_path = result_root / target_date
+    if reservation.slot_path != expected_slot_path:
+        raise ShadowPredictionError(
+            "La preuve de reservation ne vise pas le slot attendu."
+        )
+    slot_mode = _lstat_mode(expected_slot_path)
+    if not isinstance(slot_mode, int) or not stat.S_ISDIR(slot_mode):
+        raise ShadowPredictionError(
+            "Le slot reserve doit rester un repertoire local non "
+            "symbolique."
+        )
+
+    for terminal_name in ("COMPLETED", "FAILED.json"):
+        if _lstat_mode(expected_slot_path / terminal_name) is not _PATH_MISSING:
+            raise ShadowPredictionSlotConsumedError(
+                "Le slot fantome possede deja un marqueur terminal et ne "
+                "peut pas etre modifie."
+            )
+
+    persisted_reserved = _read_canonical_json_object(
+        expected_slot_path / "RESERVED"
+    )
+    if persisted_reserved is None:
+        raise ShadowPredictionError(
+            "Le slot ne contient pas la preuve RESERVED canonique attendue."
+        )
+    persisted_marker, persisted_bytes = persisted_reserved
+    if (
+        persisted_marker != expected_reserved
+        or persisted_bytes != reserved_bytes
+        or hashlib.sha256(persisted_bytes).hexdigest() != reserved_sha256
+    ):
+        raise ShadowPredictionError(
+            "La preuve RESERVED persistee ne correspond pas a la "
+            "reservation fournie."
+        )
+
+    try:
+        failed_sha256 = _publish_exclusive_verified(
+            expected_slot_path / "FAILED.json",
+            failed_bytes,
+        )
+    except ShadowPublicationConflictError as error:
+        raise ShadowPredictionSlotConsumedError(
+            "Le slot fantome a deja ete ferme par une autre execution."
+        ) from error
+
+    return ShadowPredictionSlotFailure(
+        slot_path=expected_slot_path,
+        failed_marker=failed_marker,
+        failed_marker_sha256=failed_sha256,
     )
 
 

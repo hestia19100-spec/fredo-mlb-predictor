@@ -1,17 +1,19 @@
-"""Fondations locales et inertes de la prediction fantome MLB v2.
+"""Fondations controlees de la prediction fantome MLB v2.
 
 Ce module ne sait volontairement ni activer ni executer une prediction. Il
-valide l'apercu statique, construit les formats canoniques et inspecte en
-lecture seule un eventuel creneau deja consomme. Il n'importe aucun composant
-d'ingestion, de base de donnees ou de modele.
+valide l'apercu statique, construit les formats canoniques, inspecte les
+creneaux et prepare la seule preuve GitHub prevue avant leur reservation. Il
+n'importe aucun composant d'ingestion, de base de donnees ou de modele.
 """
 
 from __future__ import annotations
 
 import argparse
+import base64
 import csv
 from dataclasses import asdict, dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timezone
+from email.utils import format_datetime, parsedate_to_datetime
 from enum import Enum
 import gzip
 import hashlib
@@ -23,7 +25,10 @@ from pathlib import Path, PurePosixPath
 import re
 import stat
 import tempfile
+from types import MappingProxyType
 from typing import Any, Mapping, Sequence
+
+import requests
 
 
 PROJECT_DIRECTORY = Path(__file__).resolve().parents[1]
@@ -59,6 +64,23 @@ SHADOW_SLOT_SUCCESS_FILENAMES = (
     "receipt.json",
     "COMPLETED",
 )
+
+ACTIVATION_REVERIFICATION_FILENAME = (
+    "activation_reverification.remote.json.gz"
+)
+GITHUB_COMPARE_URL_TEMPLATE = (
+    "https://api.github.com/repos/hestia19100-spec/"
+    "fredo-mlb-predictor/compare/{expected_commit}...main"
+)
+GITHUB_REMOTE_REF = "refs/heads/main"
+GITHUB_REQUEST_HEADERS = MappingProxyType(
+    {
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "fredo-mlb-predictor-shadow-v2/1.0",
+    }
+)
+GITHUB_REQUEST_TIMEOUT_SECONDS = 30
 
 EXPECTED_SERVICE_MODULE_PATH = "src/shadow_prediction.py"
 EXPECTED_MODEL_ARTIFACT_PATH = (
@@ -145,6 +167,28 @@ _FAILED_MARKER_KEYS = frozenset(
         "runtime_code_commit",
     }
 )
+_RAW_REMOTE_EVIDENCE_KEYS = frozenset(
+    {
+        "evidence_schema_version",
+        "request_url",
+        "request_method",
+        "application_request_headers",
+        "effective_url",
+        "response_status_code",
+        "response_redirect_count",
+        "selected_response_headers",
+        "response_received_at_utc",
+        "response_body_base64",
+        "response_body_sha256",
+    }
+)
+_SELECTED_REMOTE_RESPONSE_HEADER_KEYS = (
+    "date",
+    "content-type",
+    "etag",
+    "x-github-request-id",
+)
+_GITHUB_COMPARE_STATUS_VALUES = frozenset({"ahead", "identical"})
 _COMPLETED_MARKER_KEYS = frozenset(
     {
         "marker_schema_version",
@@ -379,6 +423,36 @@ class ShadowPredictionSlotFailure:
     slot_path: Path
     failed_marker: dict[str, Any]
     failed_marker_sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class ShadowActivationReverificationEvidence:
+    """Preuve GitHub canonique entierement construite avant reservation."""
+
+    activation_introduction_commit: str
+    activation_remote_ref: str
+    activation_remote_reverified_at_utc: str
+    response_received_at_utc: str
+    response_body_sha256: str
+    raw_evidence: dict[str, Any]
+    canonical_json_bytes: bytes
+    canonical_gzip_bytes: bytes
+    canonical_gzip_sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class ShadowActivationReverificationPublication:
+    """Preuve locale de publication du deuxieme fichier d'un slot v2."""
+
+    slot_path: Path
+    evidence_path: Path
+    evidence_relative_path: str
+    evidence_sha256: str
+    activation_introduction_commit: str
+    activation_remote_ref: str
+    activation_remote_reverified_at_utc: str
+    response_received_at_utc: str
+    response_body_sha256: str
 
 
 def _validate_json_value(
@@ -785,6 +859,367 @@ def _require_utc_timestamp(value: object, *, field: str) -> str:
             f"{field} n'est pas un instant UTC valide : {value!r}."
         ) from error
     return value
+
+
+def _utc_now() -> datetime:
+    """Retourne l'instant local UTC; remplace uniquement en test."""
+    return datetime.now(timezone.utc)
+
+
+def _format_utc_seconds(value: object, *, field: str) -> str:
+    """Canonise un datetime UTC en RFC3339_SECONDS_Z."""
+    if type(value) is not datetime:
+        raise ShadowPredictionError(
+            f"{field} doit etre un datetime UTC conscient."
+        )
+    try:
+        offset = value.utcoffset()
+    except (OverflowError, ValueError) as error:
+        raise ShadowPredictionError(
+            f"{field} n'est pas un datetime UTC valide."
+        ) from error
+    if offset is None or offset.total_seconds() != 0:
+        raise ShadowPredictionError(
+            f"{field} doit utiliser explicitement le fuseau UTC."
+        )
+    rendered = value.astimezone(timezone.utc).replace(
+        microsecond=0
+    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return _require_utc_timestamp(rendered, field=field)
+
+
+def _parse_imf_fixdate_gmt(value: object, *, field: str) -> str:
+    """Parse strictement un en-tete HTTP Date au format IMF-fixdate GMT."""
+    if type(value) is not str or not value:
+        raise ShadowPredictionError(
+            f"{field} doit etre un en-tete HTTP Date IMF-fixdate GMT."
+        )
+    try:
+        parsed = parsedate_to_datetime(value)
+    except (TypeError, ValueError, OverflowError) as error:
+        raise ShadowPredictionError(
+            f"{field} n'est pas un en-tete HTTP Date valide."
+        ) from error
+    if parsed is None or parsed.utcoffset() is None:
+        raise ShadowPredictionError(
+            f"{field} doit porter explicitement le fuseau GMT."
+        )
+    parsed_utc = parsed.astimezone(timezone.utc).replace(microsecond=0)
+    if format_datetime(parsed_utc, usegmt=True) != value:
+        raise ShadowPredictionError(
+            f"{field} doit respecter exactement IMF-fixdate GMT."
+        )
+    return parsed_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _optional_response_header(value: object, *, field: str) -> str | None:
+    if value is None:
+        return None
+    if type(value) is not str or not value:
+        raise ShadowPredictionError(
+            f"{field} doit etre une chaine non vide ou JSON null."
+        )
+    return value
+
+
+def _validate_github_compare_payload(
+    raw_content: bytes,
+    *,
+    expected_commit: str,
+) -> None:
+    """Exige que GitHub nomme le commit attendu comme base et merge-base."""
+    if type(raw_content) is not bytes or not raw_content:
+        raise ShadowPredictionError(
+            "GitHub a renvoye une preuve distante vide ou non binaire."
+        )
+    try:
+        payload = json.loads(
+            raw_content.decode("utf-8"),
+            object_pairs_hook=_reject_duplicate_keys,
+        )
+    except (
+        UnicodeError,
+        ValueError,
+        ShadowPredictionError,
+        RecursionError,
+    ) as error:
+        raise ShadowPredictionError(
+            "La preuve distante GitHub n'est pas un JSON non ambigu."
+        ) from error
+    if type(payload) is not dict:
+        raise ShadowPredictionError(
+            "La preuve distante GitHub doit etre un objet JSON."
+        )
+    for key in ("base_commit", "merge_base_commit"):
+        commit_object = payload.get(key)
+        if (
+            type(commit_object) is not dict
+            or type(commit_object.get("sha")) is not str
+            or commit_object["sha"] != expected_commit
+        ):
+            raise ShadowPredictionError(
+                "La reponse GitHub ne nomme pas le commit d'activation "
+                f"attendu dans {key}.sha."
+            )
+    status_value = payload.get("status")
+    if (
+        type(status_value) is not str
+        or status_value not in _GITHUB_COMPARE_STATUS_VALUES
+    ):
+        raise ShadowPredictionError(
+            "Le statut de comparaison GitHub doit etre ahead ou identical."
+        )
+
+
+def _validate_activation_reverification_evidence(
+    evidence: ShadowActivationReverificationEvidence,
+) -> tuple[dict[str, Any], bytes, bytes]:
+    """Revérifie toutes les liaisons d'une preuve preparee en memoire."""
+    if type(evidence) is not ShadowActivationReverificationEvidence:
+        raise ShadowPredictionError(
+            "Une preuve de reverification d'activation exacte est requise."
+        )
+    expected_commit = _require_git_commit(
+        evidence.activation_introduction_commit,
+        field="activation_introduction_commit",
+    )
+    if evidence.activation_remote_ref != GITHUB_REMOTE_REF:
+        raise ShadowPredictionError(
+            "La preuve distante doit viser exactement refs/heads/main."
+        )
+    reverified_at = _require_utc_timestamp(
+        evidence.activation_remote_reverified_at_utc,
+        field="activation_remote_reverified_at_utc",
+    )
+    received_at = _require_utc_timestamp(
+        evidence.response_received_at_utc,
+        field="response_received_at_utc",
+    )
+    body_sha256 = _require_sha256(
+        evidence.response_body_sha256,
+        field="response_body_sha256",
+    )
+    gzip_sha256 = _require_sha256(
+        evidence.canonical_gzip_sha256,
+        field="canonical_gzip_sha256",
+    )
+    raw = evidence.raw_evidence
+    if not _has_exact_keys(raw, _RAW_REMOTE_EVIDENCE_KEYS):
+        raise ShadowPredictionError(
+            "La preuve distante ne respecte pas le schema exact v2."
+        )
+    assert isinstance(raw, dict)
+
+    request_url = GITHUB_COMPARE_URL_TEMPLATE.format(
+        expected_commit=expected_commit
+    )
+    exact_values: dict[str, object] = {
+        "evidence_schema_version": 1,
+        "request_url": request_url,
+        "request_method": "GET",
+        "application_request_headers": dict(GITHUB_REQUEST_HEADERS),
+        "effective_url": request_url,
+        "response_status_code": 200,
+        "response_redirect_count": 0,
+        "response_received_at_utc": received_at,
+        "response_body_sha256": body_sha256,
+    }
+    for field, expected in exact_values.items():
+        actual = raw.get(field)
+        if type(actual) is not type(expected) or actual != expected:
+            raise ShadowPredictionError(
+                f"Valeur distante invalide pour {field}."
+            )
+
+    selected_headers = raw.get("selected_response_headers")
+    if (
+        type(selected_headers) is not dict
+        or frozenset(selected_headers)
+        != frozenset(_SELECTED_REMOTE_RESPONSE_HEADER_KEYS)
+    ):
+        raise ShadowPredictionError(
+            "Les en-tetes GitHub selectionnes ne respectent pas l'ordre "
+            "et le schema exacts."
+        )
+    date_header = _optional_response_header(
+        selected_headers.get("date"),
+        field="selected_response_headers.date",
+    )
+    if date_header is None:
+        raise ShadowPredictionError(
+            "La preuve GitHub doit contenir un en-tete Date."
+        )
+    parsed_date = _parse_imf_fixdate_gmt(
+        date_header,
+        field="selected_response_headers.date",
+    )
+    if parsed_date != reverified_at:
+        raise ShadowPredictionError(
+            "L'instant de reverification ne correspond pas a l'en-tete "
+            "Date de GitHub."
+        )
+    for header_name in _SELECTED_REMOTE_RESPONSE_HEADER_KEYS[1:]:
+        _optional_response_header(
+            selected_headers.get(header_name),
+            field=f"selected_response_headers.{header_name}",
+        )
+
+    encoded_body = raw.get("response_body_base64")
+    if type(encoded_body) is not str or not encoded_body:
+        raise ShadowPredictionError(
+            "Le corps GitHub doit etre conserve en base64 non vide."
+        )
+    try:
+        raw_content = base64.b64decode(
+            encoded_body.encode("ascii"),
+            validate=True,
+        )
+    except (UnicodeError, ValueError) as error:
+        raise ShadowPredictionError(
+            "Le corps GitHub conserve n'est pas un base64 canonique."
+        ) from error
+    if base64.b64encode(raw_content).decode("ascii") != encoded_body:
+        raise ShadowPredictionError(
+            "Le corps GitHub doit utiliser l'encodage base64 canonique."
+        )
+    if hashlib.sha256(raw_content).hexdigest() != body_sha256:
+        raise ShadowPredictionError(
+            "L'empreinte du corps GitHub conserve est incoherente."
+        )
+    _validate_github_compare_payload(
+        raw_content,
+        expected_commit=expected_commit,
+    )
+
+    canonical_json = _canonical_json_file_bytes(raw)
+    if (
+        type(evidence.canonical_json_bytes) is not bytes
+        or evidence.canonical_json_bytes != canonical_json
+    ):
+        raise ShadowPredictionError(
+            "Les octets JSON de la preuve distante ne sont pas canoniques."
+        )
+    canonical_gzip = _canonical_gzip_bytes(canonical_json)
+    if (
+        type(evidence.canonical_gzip_bytes) is not bytes
+        or evidence.canonical_gzip_bytes != canonical_gzip
+        or hashlib.sha256(canonical_gzip).hexdigest() != gzip_sha256
+    ):
+        raise ShadowPredictionError(
+            "L'archive gzip de reverification n'est pas canonique."
+        )
+    return raw, canonical_json, canonical_gzip
+
+
+def fetch_activation_reverification_evidence(
+    activation_introduction_commit: str,
+) -> ShadowActivationReverificationEvidence:
+    """Obtient et fige en memoire la preuve GitHub avant reservation.
+
+    Cette fonction n'effectue qu'un GET HTTPS anonyme vers l'URL GitHub
+    exacte du protocole. Elle ne lit ni MLB, ni SQLite, ni modele, ni fichier
+    du projet et ne publie aucun octet.
+    """
+    expected_commit = _require_git_commit(
+        activation_introduction_commit,
+        field="activation_introduction_commit",
+    )
+    request_url = GITHUB_COMPARE_URL_TEMPLATE.format(
+        expected_commit=expected_commit
+    )
+    try:
+        response = requests.get(
+            request_url,
+            headers=dict(GITHUB_REQUEST_HEADERS),
+            timeout=GITHUB_REQUEST_TIMEOUT_SECONDS,
+            allow_redirects=False,
+            verify=True,
+        )
+    except requests.RequestException as error:
+        raise ShadowPredictionError(
+            "Impossible d'obtenir la preuve distante d'activation GitHub."
+        ) from error
+    response_received_at = _format_utc_seconds(
+        _utc_now(),
+        field="response_received_at_utc",
+    )
+
+    status_code = getattr(response, "status_code", None)
+    if type(status_code) is not int or status_code != 200:
+        raise ShadowPredictionError(
+            "GitHub doit repondre exactement avec le statut HTTP 200."
+        )
+    history = getattr(response, "history", None)
+    if type(history) is not list or history:
+        raise ShadowPredictionError(
+            "La preuve GitHub ne doit contenir aucune redirection."
+        )
+    effective_url = getattr(response, "url", None)
+    if type(effective_url) is not str or effective_url != request_url:
+        raise ShadowPredictionError(
+            "L'URL GitHub effective doit etre identique a l'URL demandee."
+        )
+    raw_content = getattr(response, "content", None)
+    if type(raw_content) is not bytes or not raw_content:
+        raise ShadowPredictionError(
+            "GitHub a renvoye une preuve distante vide ou non binaire."
+        )
+    _validate_github_compare_payload(
+        raw_content,
+        expected_commit=expected_commit,
+    )
+
+    headers = getattr(response, "headers", None)
+    if not isinstance(headers, Mapping):
+        raise ShadowPredictionError(
+            "La reponse GitHub ne contient pas de table d'en-tetes."
+        )
+    selected_headers: dict[str, str | None] = {}
+    for header_name in _SELECTED_REMOTE_RESPONSE_HEADER_KEYS:
+        selected_headers[header_name] = _optional_response_header(
+            headers.get(header_name),
+            field=f"selected_response_headers.{header_name}",
+        )
+    date_header = selected_headers["date"]
+    if date_header is None:
+        raise ShadowPredictionError(
+            "La reponse GitHub doit contenir un en-tete Date."
+        )
+    reverified_at = _parse_imf_fixdate_gmt(
+        date_header,
+        field="selected_response_headers.date",
+    )
+    body_sha256 = hashlib.sha256(raw_content).hexdigest()
+    raw_evidence: dict[str, Any] = {
+        "evidence_schema_version": 1,
+        "request_url": request_url,
+        "request_method": "GET",
+        "application_request_headers": dict(GITHUB_REQUEST_HEADERS),
+        "effective_url": effective_url,
+        "response_status_code": status_code,
+        "response_redirect_count": len(history),
+        "selected_response_headers": selected_headers,
+        "response_received_at_utc": response_received_at,
+        "response_body_base64": base64.b64encode(raw_content).decode(
+            "ascii"
+        ),
+        "response_body_sha256": body_sha256,
+    }
+    canonical_json = _canonical_json_file_bytes(raw_evidence)
+    canonical_gzip = _canonical_gzip_bytes(canonical_json)
+    prepared = ShadowActivationReverificationEvidence(
+        activation_introduction_commit=expected_commit,
+        activation_remote_ref=GITHUB_REMOTE_REF,
+        activation_remote_reverified_at_utc=reverified_at,
+        response_received_at_utc=response_received_at,
+        response_body_sha256=body_sha256,
+        raw_evidence=raw_evidence,
+        canonical_json_bytes=canonical_json,
+        canonical_gzip_bytes=canonical_gzip,
+        canonical_gzip_sha256=hashlib.sha256(canonical_gzip).hexdigest(),
+    )
+    _validate_activation_reverification_evidence(prepared)
+    return prepared
 
 
 def _require_fixed_6_string(value: object, *, field: str) -> str:
@@ -1634,6 +2069,260 @@ def reserve_shadow_prediction_slot(
         batch_id=inspected.batch_id,
         reserved_marker=reserved_marker,
         reserved_marker_sha256=marker_sha256,
+    )
+
+
+def _validate_reservation_proof_without_disk(
+    reservation: ShadowPredictionSlotReservation,
+) -> tuple[str, str, str, str, str, bytes]:
+    """Valide une preuve RESERVED en memoire sans toucher au slot."""
+    if type(reservation) is not ShadowPredictionSlotReservation:
+        raise ShadowPredictionError(
+            "Une preuve de reservation fantome exacte est requise."
+        )
+    if not isinstance(reservation.slot_path, Path):
+        raise ShadowPredictionError(
+            "Le chemin du slot reserve doit etre un objet Path."
+        )
+    slot_key = _require_sha256(reservation.slot_key, field="slot_key")
+    batch_id = _require_sha256(reservation.batch_id, field="batch_id")
+    reserved_sha256 = _require_sha256(
+        reservation.reserved_marker_sha256,
+        field="reserved_marker_sha256",
+    )
+    marker = reservation.reserved_marker
+    if not _has_exact_keys(marker, _RESERVED_MARKER_KEYS):
+        raise ShadowPredictionError(
+            "La preuve de reservation ne contient pas un marqueur "
+            "RESERVED exact."
+        )
+    assert isinstance(marker, dict)
+    target_date = _require_date_string(
+        marker.get("target_official_date"),
+        field="RESERVED.target_official_date",
+    )
+    target = _parse_target_official_date(target_date)
+    if (
+        target.year != EXPECTED_TARGET_SEASON
+        or target < EXPECTED_SHADOW_PROTOCOL_REGISTERED_ON
+    ):
+        raise ShadowPredictionError(
+            "La preuve RESERVED ne vise pas une date admissible du "
+            "protocole fantome v2."
+        )
+    reserved_at = _require_utc_timestamp(
+        marker.get("reserved_at_utc"),
+        field="RESERVED.reserved_at_utc",
+    )
+    protocol_hash = _require_sha256(
+        marker.get("shadow_protocol_sha256"),
+        field="RESERVED.shadow_protocol_sha256",
+    )
+    manifest_hash = _require_sha256(
+        marker.get("execution_manifest_sha256"),
+        field="RESERVED.execution_manifest_sha256",
+    )
+    runtime_commit = _require_git_commit(
+        marker.get("runtime_code_commit"),
+        field="RESERVED.runtime_code_commit",
+    )
+    if protocol_hash != EXPECTED_SHADOW_PROTOCOL_SHA256:
+        raise ShadowPredictionError(
+            "La preuve RESERVED exige le protocole fantome v2 fige."
+        )
+    expected_slot_key = build_slot_key(
+        shadow_protocol_sha256=protocol_hash,
+        target_official_date=target_date,
+    )
+    expected_batch_id = build_batch_id(
+        slot_key=expected_slot_key,
+        execution_manifest_sha256=manifest_hash,
+        model_artifact_sha256=EXPECTED_MODEL_ARTIFACT_SHA256,
+    )
+    expected_marker: dict[str, Any] = {
+        "marker_schema_version": 1,
+        "batch_id": expected_batch_id,
+        "slot_key": expected_slot_key,
+        "target_official_date": target_date,
+        "reserved_at_utc": reserved_at,
+        "shadow_protocol_sha256": protocol_hash,
+        "execution_manifest_sha256": manifest_hash,
+        "runtime_code_commit": runtime_commit,
+    }
+    if (
+        marker != expected_marker
+        or slot_key != expected_slot_key
+        or batch_id != expected_batch_id
+    ):
+        raise ShadowPredictionError(
+            "La preuve RESERVED ne correspond pas aux identifiants "
+            "figes du slot."
+        )
+    marker_bytes = _canonical_json_file_bytes(expected_marker)
+    if hashlib.sha256(marker_bytes).hexdigest() != reserved_sha256:
+        raise ShadowPredictionError(
+            "L'empreinte de la preuve RESERVED est incoherente."
+        )
+    return (
+        target_date,
+        reserved_at,
+        protocol_hash,
+        manifest_hash,
+        runtime_commit,
+        marker_bytes,
+    )
+
+
+def publish_activation_reverification_evidence(
+    reservation: ShadowPredictionSlotReservation,
+    evidence: ShadowActivationReverificationEvidence,
+    *,
+    project_directory: Path = PROJECT_DIRECTORY,
+) -> ShadowActivationReverificationPublication:
+    """Publie la preuve GitHub exclusivement juste apres RESERVED.
+
+    La preuve HTTP doit deja etre entierement construite en memoire. Cette
+    primitive ne fait aucun appel reseau et refuse tout slot contenant autre
+    chose que son marqueur RESERVED canonique.
+    """
+    _, _, canonical_gzip = _validate_activation_reverification_evidence(
+        evidence
+    )
+    (
+        target_date,
+        reserved_at,
+        _protocol_hash,
+        _manifest_hash,
+        _runtime_commit,
+        reserved_bytes,
+    ) = _validate_reservation_proof_without_disk(reservation)
+    if not isinstance(project_directory, Path):
+        raise ShadowPredictionError(
+            "project_directory doit etre un chemin Path."
+        )
+    if evidence.response_received_at_utc > reserved_at:
+        raise ShadowPredictionError(
+            "La reponse GitHub doit etre recue avant la reservation."
+        )
+    if evidence.activation_remote_reverified_at_utc > reserved_at:
+        raise ShadowPredictionError(
+            "La date distante GitHub ne peut pas suivre la reservation."
+        )
+    if target_date < evidence.activation_remote_reverified_at_utc[:10]:
+        raise ShadowPredictionError(
+            "La date cible ne peut pas preceder la date UTC de la preuve "
+            "GitHub."
+        )
+
+    result_root = _require_shadow_result_root(
+        project_directory=project_directory,
+    )
+    expected_slot_path = result_root / target_date
+    if reservation.slot_path != expected_slot_path:
+        raise ShadowPredictionError(
+            "La preuve de reservation ne vise pas le slot attendu."
+        )
+    slot_mode = _lstat_mode(expected_slot_path)
+    if not isinstance(slot_mode, int) or not stat.S_ISDIR(slot_mode):
+        raise ShadowPredictionError(
+            "Le slot reserve doit rester un repertoire local non "
+            "symbolique."
+        )
+
+    try:
+        with os.scandir(expected_slot_path) as entries:
+            entry_names = frozenset(entry.name for entry in entries)
+    except OSError as error:
+        raise ShadowPredictionError(
+            "Impossible de controler l'ordre d'ecriture du slot."
+        ) from error
+    if entry_names != frozenset({"RESERVED"}):
+        raise ShadowPredictionSlotConsumedError(
+            "La preuve d'activation doit etre le premier fichier publie "
+            "apres RESERVED."
+        )
+
+    persisted_reserved = _read_canonical_json_object(
+        expected_slot_path / "RESERVED"
+    )
+    if persisted_reserved is None:
+        raise ShadowPredictionError(
+            "Le slot ne contient pas la preuve RESERVED canonique attendue."
+        )
+    persisted_marker, persisted_bytes = persisted_reserved
+    if (
+        persisted_marker != reservation.reserved_marker
+        or persisted_bytes != reserved_bytes
+        or hashlib.sha256(persisted_bytes).hexdigest()
+        != reservation.reserved_marker_sha256
+    ):
+        raise ShadowPredictionError(
+            "La preuve RESERVED persistee ne correspond pas a la "
+            "reservation fournie."
+        )
+
+    # Recontrole immediatement l'ordre apres la lecture de RESERVED. En cas
+    # de concurrence, le lien exclusif de publication decide ensuite du seul
+    # gagnant sans aucun remplacement ni nettoyage du slot.
+    try:
+        with os.scandir(expected_slot_path) as entries:
+            confirmed_names = frozenset(entry.name for entry in entries)
+    except OSError as error:
+        raise ShadowPredictionError(
+            "Impossible de reconfirmer l'ordre d'ecriture du slot."
+        ) from error
+    if confirmed_names != frozenset({"RESERVED"}):
+        raise ShadowPredictionSlotConsumedError(
+            "Le slot a ete modifie avant la publication de la preuve."
+        )
+
+    evidence_path = expected_slot_path / ACTIVATION_REVERIFICATION_FILENAME
+    try:
+        persisted_sha256 = _publish_exclusive_verified(
+            evidence_path,
+            canonical_gzip,
+        )
+    except ShadowPublicationConflictError as error:
+        raise ShadowPredictionSlotConsumedError(
+            "La preuve d'activation du slot a deja ete publiee."
+        ) from error
+    if persisted_sha256 != evidence.canonical_gzip_sha256:
+        raise ShadowPredictionError(
+            "L'empreinte publiee de la preuve d'activation est incoherente."
+        )
+
+    try:
+        relative_path = evidence_path.relative_to(
+            project_directory
+        ).as_posix()
+    except ValueError as error:
+        raise ShadowPredictionError(
+            "Le chemin de preuve publie doit rester dans le projet."
+        ) from error
+    expected_relative_path = (
+        SHADOW_RESULT_ROOT_RELATIVE_PATH
+        / target_date
+        / ACTIVATION_REVERIFICATION_FILENAME
+    ).as_posix()
+    if relative_path != expected_relative_path:
+        raise ShadowPredictionError(
+            "Le chemin relatif de la preuve d'activation est incoherent."
+        )
+
+    return ShadowActivationReverificationPublication(
+        slot_path=expected_slot_path,
+        evidence_path=evidence_path,
+        evidence_relative_path=relative_path,
+        evidence_sha256=persisted_sha256,
+        activation_introduction_commit=(
+            evidence.activation_introduction_commit
+        ),
+        activation_remote_ref=evidence.activation_remote_ref,
+        activation_remote_reverified_at_utc=(
+            evidence.activation_remote_reverified_at_utc
+        ),
+        response_received_at_utc=evidence.response_received_at_utc,
+        response_body_sha256=evidence.response_body_sha256,
     )
 
 

@@ -1,9 +1,9 @@
-"""Apercu local et inerte du protocole de prediction fantome MLB v2.
+"""Fondations locales et inertes de la prediction fantome MLB v2.
 
-Ce premier jalon ne sait volontairement ni activer ni executer une
-prediction. Il ne lit que le protocole JSON fige, puis valide statiquement
-une date cible. Il n'importe aucun composant d'ingestion, de base de donnees
-ou de modele.
+Ce module ne sait volontairement ni activer ni executer une prediction. Il
+valide l'apercu statique, construit les formats canoniques et inspecte en
+lecture seule un eventuel creneau deja consomme. Il n'importe aucun composant
+d'ingestion, de base de donnees ou de modele.
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ import argparse
 import csv
 from dataclasses import asdict, dataclass
 from datetime import date, datetime
+from enum import Enum
 import gzip
 import hashlib
 import io
@@ -20,6 +21,7 @@ import math
 import os
 from pathlib import Path, PurePosixPath
 import re
+import stat
 import tempfile
 from typing import Any, Mapping, Sequence
 
@@ -44,6 +46,20 @@ EXPECTED_SHADOW_PROTOCOL_REGISTERED_ON = date(2026, 8, 31)
 EXPECTED_TARGET_SEASON = 2026
 EXPECTED_PREVIEW_MODE = "PREVIEW_WITHOUT_MODEL_OR_PREDICTIONS"
 
+SHADOW_RESULT_ROOT_RELATIVE_PATH = PurePosixPath(
+    "shadow_results/logistic_team_form_v1_platt_shadow_v2"
+)
+SHADOW_SLOT_SUCCESS_FILENAMES = (
+    "RESERVED",
+    "activation_reverification.remote.json.gz",
+    "source_snapshot.json.gz",
+    "candidate_ledger.csv",
+    "features.csv",
+    "predictions.csv",
+    "receipt.json",
+    "COMPLETED",
+)
+
 EXPECTED_SERVICE_MODULE_PATH = "src/shadow_prediction.py"
 EXPECTED_MODEL_ARTIFACT_PATH = (
     "models/logistic_team_form_v1_platt.joblib"
@@ -67,6 +83,7 @@ EXPECTED_MODEL_PROTOCOL_SHA256 = (
 
 _CANONICAL_DATE_PATTERN = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}\Z")
 _SHA256_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
+_GIT_COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}\Z")
 _UTC_TIMESTAMP_PATTERN = re.compile(
     r"([0-9]{4})-([0-9]{2})-([0-9]{2})T"
     r"([0-9]{2}):([0-9]{2}):([0-9]{2})Z\Z"
@@ -101,6 +118,200 @@ _FEATURE_ROW_DATE_INDEXES = (5, 9, 10, 11)
 _FEATURE_ROW_TIMESTAMP_INDEX = 8
 _FEATURE_ROW_FIXED_6_INDEXES = (13, 14, 15, 17, 18, 19)
 
+_RESERVED_MARKER_KEYS = frozenset(
+    {
+        "marker_schema_version",
+        "batch_id",
+        "slot_key",
+        "target_official_date",
+        "reserved_at_utc",
+        "shadow_protocol_sha256",
+        "execution_manifest_sha256",
+        "runtime_code_commit",
+    }
+)
+_COMPLETED_MARKER_KEYS = frozenset(
+    {
+        "marker_schema_version",
+        "batch_id",
+        "receipt_path",
+        "receipt_sha256",
+        "completed_at_utc",
+    }
+)
+_RECEIPT_TOP_LEVEL_KEYS = frozenset(
+    {
+        "receipt_schema_version",
+        "batch",
+        "activation",
+        "times",
+        "schedule_http_response",
+        "lineage",
+        "source",
+        "counts",
+        "output_hashes",
+        "model_invariants",
+        "negative_attestations",
+        "runtime_versions",
+    }
+)
+_RECEIPT_SECTION_KEYS = {
+    "batch": frozenset(
+        {
+            "batch_id",
+            "slot_key",
+            "target_official_date",
+            "status",
+            "earliest_predicted_scheduled_start_utc",
+        }
+    ),
+    "activation": frozenset(
+        {
+            "execution_manifest_introduction_commit",
+            "activation_introduction_commit",
+            "activation_path",
+            "activation_sha256",
+            "activation_verified_at_utc",
+            "activation_remote_reverified_at_utc",
+            "activation_remote_ref",
+            "activation_remote_reverification_query_url",
+            "activation_remote_reverification_effective_url",
+            "activation_remote_reverification_status_code",
+            "activation_remote_reverification_redirect_count",
+            "activation_remote_reverification_response_received_at_utc",
+            "activation_remote_reverification_response_body_sha256",
+            "activation_remote_reverification_evidence_path",
+            "activation_remote_reverification_evidence_sha256",
+            "minimum_target_official_date",
+        }
+    ),
+    "times": frozenset(
+        {
+            "started_at_utc",
+            "reserved_at_utc",
+            "schedule_observed_at_utc",
+            "information_cutoff_utc",
+            "issued_at_utc",
+            "receipt_finalized_at_utc",
+            "mlb_http_date_utc",
+            "mlb_http_response_received_at_utc",
+            "clock_skew_seconds",
+            "schedule_age_seconds",
+        }
+    ),
+    "schedule_http_response": frozenset(
+        {
+            "effective_url",
+            "status_code",
+            "redirect_count",
+            "date_header_raw",
+            "date_header_utc",
+            "received_at_utc",
+            "body_sha256",
+        }
+    ),
+    "lineage": frozenset(
+        {
+            "runtime_code_commit",
+            "shadow_service_module_sha256",
+            "shadow_protocol_sha256",
+            "execution_manifest_sha256",
+            "model_artifact_sha256",
+            "artifact_manifest_sha256",
+            "model_protocol_sha256",
+            "evaluation_protocol_sha256",
+            "evaluation_report_sha256",
+            "evaluation_results_commit",
+        }
+    ),
+    "source": frozenset(
+        {
+            "sqlite_snapshot_sha256",
+            "sqlite_snapshot_size_bytes",
+            "source_snapshot_path",
+            "source_snapshot_sha256",
+            "schedule_ingestion_run_id",
+            "schedule_source",
+            "schedule_requested_start_date",
+            "schedule_requested_end_date",
+            "schedule_game_types",
+            "schedule_request_parameters_json",
+            "schedule_ingestion_completed_at_utc",
+            "schedule_raw_archive_path",
+            "schedule_raw_archive_sha256",
+        }
+    ),
+    "counts": frozenset(
+        {
+            "schedule_games",
+            "eligible_games",
+            "predicted_games",
+            "excluded_games_by_reason",
+        }
+    ),
+    "output_hashes": frozenset(
+        {
+            "activation_reverification_evidence_sha256",
+            "candidate_ledger_sha256",
+            "features_sha256",
+            "predictions_sha256",
+        }
+    ),
+    "model_invariants": frozenset(
+        {
+            "fit_calls",
+            "partial_fit_calls",
+            "recalibration_calls",
+            "threshold_tuning_calls",
+            "feature_selection_calls",
+            "predict_proba_calls",
+            "artifact_state_sha256_before",
+            "artifact_state_sha256_after",
+            "artifact_state_unchanged",
+            "warning_policy_id",
+            "approved_compatibility_warning_count",
+            "unexpected_warning_count",
+        }
+    ),
+    "negative_attestations": frozenset(
+        {
+            "ALL_TARGET_GAMES_UNSTARTED_AT_INFORMATION_CUTOFF",
+            "TARGET_OUTCOMES_NOT_AVAILABLE_AT_INFORMATION_CUTOFF",
+            "TARGET_SCORE_VALUES_REDACTED_FROM_TRACKED_TARGET_ROWS",
+            "TARGET_SCORES_NOT_USED_AS_FEATURES",
+            "ODDS_NOT_READ",
+            "BETTING_RECOMMENDATIONS_NOT_COMPUTED",
+            "SEASON_2026_METRICS_NOT_COMPUTED",
+        }
+    ),
+    "runtime_versions": frozenset(
+        {
+            "python",
+            "numpy",
+            "pandas",
+            "scipy",
+            "scikit_learn",
+            "joblib",
+        }
+    ),
+}
+_EXCLUDED_GAMES_BY_REASON_KEYS = frozenset(
+    {
+        "POSTPONED",
+        "CANCELLED",
+        "START_TIME_MISSING",
+        "INSUFFICIENT_BOTH_HISTORY",
+        "INSUFFICIENT_AWAY_HISTORY",
+        "INSUFFICIENT_HOME_HISTORY",
+    }
+)
+_BATCH_STATUS_DOMAIN = frozenset(
+    {
+        "COMPLETED_WITH_PREDICTIONS",
+        "COMPLETED_NO_ELIGIBLE_GAMES",
+    }
+)
+
 
 class ShadowPredictionError(RuntimeError):
     """Erreur qui interdit de produire meme un apercu fiable."""
@@ -108,6 +319,27 @@ class ShadowPredictionError(RuntimeError):
 
 class ShadowPublicationConflictError(ShadowPredictionError):
     """Refus attendu lorsqu'un chemin append-only est deja consomme."""
+
+
+class ShadowPredictionSlotState(str, Enum):
+    """Etats fermes d'un creneau journalier v2 deja inspecte."""
+
+    ABSENT = "ABSENT"
+    COMPLETED_EXACT = "COMPLETED_EXACT"
+    COMPLETED_MISMATCH = "COMPLETED_MISMATCH"
+    FAILED_CONSUMED = "FAILED_CONSUMED"
+    INCOMPLETE_CONSUMED = "INCOMPLETE_CONSUMED"
+
+
+@dataclass(frozen=True, slots=True)
+class ShadowPredictionSlotInspection:
+    """Resultat local d'inspection; seul un doublon exact rend son recu."""
+
+    state: ShadowPredictionSlotState
+    slot_path: Path
+    slot_key: str
+    batch_id: str
+    receipt: dict[str, Any] | None
 
 
 def _validate_json_value(
@@ -733,6 +965,457 @@ def _require_exact(
             f"Valeur v2 invalide pour {context}.{key} : "
             f"{actual!r}, attendu {expected!r}."
         )
+
+
+_PATH_MISSING = object()
+_PATH_UNREADABLE = object()
+
+
+def _lstat_mode(path: Path) -> int | object:
+    """Retourne le mode sans accepter lien ou reparse point Windows."""
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return _PATH_MISSING
+    except (OSError, ValueError):
+        return _PATH_UNREADABLE
+    reparse_attribute = getattr(
+        stat,
+        "FILE_ATTRIBUTE_REPARSE_POINT",
+        0x0400,
+    )
+    if getattr(metadata, "st_file_attributes", 0) & reparse_attribute:
+        return _PATH_UNREADABLE
+    return metadata.st_mode
+
+
+def _has_exact_keys(
+    value: object,
+    expected_keys: frozenset[str],
+) -> bool:
+    return type(value) is dict and frozenset(value) == expected_keys
+
+
+def _read_canonical_json_object(
+    path: Path,
+) -> tuple[dict[str, Any], bytes] | None:
+    """Lit un fichier JSON regulier, canonique et sans cle dupliquee."""
+    mode = _lstat_mode(path)
+    if not isinstance(mode, int) or not stat.S_ISREG(mode):
+        return None
+    try:
+        content = path.read_bytes()
+        payload = json.loads(
+            content.decode("utf-8"),
+            object_pairs_hook=_reject_duplicate_keys,
+        )
+        if type(payload) is not dict:
+            return None
+        if _canonical_json_file_bytes(payload) != content:
+            return None
+    except (
+        OSError,
+        UnicodeError,
+        ValueError,
+        ShadowPredictionError,
+        RecursionError,
+    ):
+        return None
+    return payload, content
+
+
+def _valid_reserved_marker(
+    marker: Mapping[str, Any],
+    *,
+    batch_id: str,
+    slot_key: str,
+    target_official_date: str,
+    shadow_protocol_sha256: str,
+    execution_manifest_sha256: str,
+) -> bool:
+    if not _has_exact_keys(marker, _RESERVED_MARKER_KEYS):
+        return False
+    expected_values = {
+        "marker_schema_version": 1,
+        "batch_id": batch_id,
+        "slot_key": slot_key,
+        "target_official_date": target_official_date,
+        "shadow_protocol_sha256": shadow_protocol_sha256,
+        "execution_manifest_sha256": execution_manifest_sha256,
+    }
+    if any(
+        type(marker.get(key)) is not type(expected)
+        or marker.get(key) != expected
+        for key, expected in expected_values.items()
+    ):
+        return False
+    runtime_code_commit = marker.get("runtime_code_commit")
+    if (
+        type(runtime_code_commit) is not str
+        or not _GIT_COMMIT_PATTERN.fullmatch(runtime_code_commit)
+    ):
+        return False
+    try:
+        _require_utc_timestamp(
+            marker.get("reserved_at_utc"),
+            field="RESERVED.reserved_at_utc",
+        )
+    except ShadowPredictionError:
+        return False
+    return True
+
+
+def _valid_receipt(
+    receipt: Mapping[str, Any],
+    *,
+    reserved: Mapping[str, Any],
+    batch_id: str,
+    slot_key: str,
+    target_official_date: str,
+    shadow_protocol_sha256: str,
+    execution_manifest_sha256: str,
+    model_artifact_sha256: str,
+) -> bool:
+    if not _has_exact_keys(receipt, _RECEIPT_TOP_LEVEL_KEYS):
+        return False
+    if type(receipt.get("receipt_schema_version")) is not int:
+        return False
+    if receipt.get("receipt_schema_version") != 1:
+        return False
+    for section_name, expected_keys in _RECEIPT_SECTION_KEYS.items():
+        if not _has_exact_keys(receipt.get(section_name), expected_keys):
+            return False
+
+    batch = receipt["batch"]
+    lineage = receipt["lineage"]
+    times = receipt["times"]
+    counts = receipt["counts"]
+    output_hashes = receipt["output_hashes"]
+    source = receipt["source"]
+    negative_attestations = receipt["negative_attestations"]
+    assert isinstance(batch, dict)
+    assert isinstance(lineage, dict)
+    assert isinstance(times, dict)
+    assert isinstance(counts, dict)
+    assert isinstance(output_hashes, dict)
+    assert isinstance(source, dict)
+    assert isinstance(negative_attestations, dict)
+
+    exact_identity_values = {
+        ("batch", "batch_id"): batch_id,
+        ("batch", "slot_key"): slot_key,
+        ("batch", "target_official_date"): target_official_date,
+        (
+            "lineage",
+            "shadow_protocol_sha256",
+        ): shadow_protocol_sha256,
+        (
+            "lineage",
+            "execution_manifest_sha256",
+        ): execution_manifest_sha256,
+        ("lineage", "model_artifact_sha256"): model_artifact_sha256,
+    }
+    sections = {"batch": batch, "lineage": lineage}
+    for (section_name, field), expected in exact_identity_values.items():
+        actual = sections[section_name].get(field)
+        if type(actual) is not type(expected) or actual != expected:
+            return False
+
+    runtime_code_commit = lineage.get("runtime_code_commit")
+    if (
+        type(runtime_code_commit) is not str
+        or not _GIT_COMMIT_PATTERN.fullmatch(runtime_code_commit)
+        or runtime_code_commit != reserved.get("runtime_code_commit")
+    ):
+        return False
+    if times.get("reserved_at_utc") != reserved.get("reserved_at_utc"):
+        return False
+
+    status = batch.get("status")
+    if type(status) is not str or status not in _BATCH_STATUS_DOMAIN:
+        return False
+    excluded = counts.get("excluded_games_by_reason")
+    if not _has_exact_keys(excluded, _EXCLUDED_GAMES_BY_REASON_KEYS):
+        return False
+    assert isinstance(excluded, dict)
+    count_values = [
+        counts.get("schedule_games"),
+        counts.get("eligible_games"),
+        counts.get("predicted_games"),
+        *excluded.values(),
+    ]
+    if any(type(value) is not int or value < 0 for value in count_values):
+        return False
+    if counts["predicted_games"] != counts["eligible_games"]:
+        return False
+    if counts["schedule_games"] != (
+        counts["eligible_games"] + sum(excluded.values())
+    ):
+        return False
+    predicted_games = counts["predicted_games"]
+    expected_status = (
+        "COMPLETED_WITH_PREDICTIONS"
+        if predicted_games > 0
+        else "COMPLETED_NO_ELIGIBLE_GAMES"
+    )
+    if status != expected_status:
+        return False
+    earliest_start = batch.get("earliest_predicted_scheduled_start_utc")
+    if predicted_games == 0:
+        if earliest_start is not None:
+            return False
+    else:
+        try:
+            _require_utc_timestamp(
+                earliest_start,
+                field=(
+                    "receipt.batch."
+                    "earliest_predicted_scheduled_start_utc"
+                ),
+            )
+        except ShadowPredictionError:
+            return False
+
+    for field in _RECEIPT_SECTION_KEYS["output_hashes"]:
+        try:
+            _require_sha256(
+                output_hashes.get(field),
+                field=f"receipt.output_hashes.{field}",
+            )
+        except ShadowPredictionError:
+            return False
+    for field in (
+        "sqlite_snapshot_sha256",
+        "source_snapshot_sha256",
+        "schedule_raw_archive_sha256",
+    ):
+        try:
+            _require_sha256(
+                source.get(field),
+                field=f"receipt.source.{field}",
+            )
+        except ShadowPredictionError:
+            return False
+    if any(value is not True for value in negative_attestations.values()):
+        return False
+    try:
+        _require_utc_timestamp(
+            times.get("receipt_finalized_at_utc"),
+            field="receipt.times.receipt_finalized_at_utc",
+        )
+    except ShadowPredictionError:
+        return False
+    return True
+
+
+def _valid_completed_marker(
+    marker: Mapping[str, Any],
+    *,
+    receipt: Mapping[str, Any],
+    receipt_bytes: bytes,
+    receipt_path: str,
+    batch_id: str,
+) -> bool:
+    if not _has_exact_keys(marker, _COMPLETED_MARKER_KEYS):
+        return False
+    expected_values = {
+        "marker_schema_version": 1,
+        "batch_id": batch_id,
+        "receipt_path": receipt_path,
+        "receipt_sha256": hashlib.sha256(receipt_bytes).hexdigest(),
+    }
+    if any(
+        type(marker.get(key)) is not type(expected)
+        or marker.get(key) != expected
+        for key, expected in expected_values.items()
+    ):
+        return False
+    receipt_batch = receipt.get("batch")
+    receipt_times = receipt.get("times")
+    if not isinstance(receipt_batch, dict) or not isinstance(
+        receipt_times,
+        dict,
+    ):
+        return False
+    if marker.get("batch_id") != receipt_batch.get("batch_id"):
+        return False
+    try:
+        completed_at = _require_utc_timestamp(
+            marker.get("completed_at_utc"),
+            field="COMPLETED.completed_at_utc",
+        )
+        receipt_finalized_at = _require_utc_timestamp(
+            receipt_times.get("receipt_finalized_at_utc"),
+            field="receipt.times.receipt_finalized_at_utc",
+        )
+    except ShadowPredictionError:
+        return False
+    return receipt_finalized_at <= completed_at
+
+
+def inspect_shadow_prediction_slot(
+    target_official_date: date | str,
+    *,
+    shadow_protocol_sha256: str,
+    execution_manifest_sha256: str,
+    model_artifact_sha256: str,
+    project_directory: Path = PROJECT_DIRECTORY,
+) -> ShadowPredictionSlotInspection:
+    """Inspecte un slot v2 local sans reserver, ecrire ni lire ses donnees.
+
+    Les identifiants attendus sont derives ici a partir des valeurs runtime.
+    Les CSV et gzip ne sont jamais ouverts : leur presence comme fichiers
+    reguliers suffit a cette inspection d'idempotence.
+    """
+    target_date = _parse_target_official_date(
+        target_official_date
+    ).isoformat()
+    protocol_hash = _require_sha256(
+        shadow_protocol_sha256,
+        field="shadow_protocol_sha256",
+    )
+    manifest_hash = _require_sha256(
+        execution_manifest_sha256,
+        field="execution_manifest_sha256",
+    )
+    model_hash = _require_sha256(
+        model_artifact_sha256,
+        field="model_artifact_sha256",
+    )
+    slot_key = build_slot_key(
+        shadow_protocol_sha256=protocol_hash,
+        target_official_date=target_date,
+    )
+    batch_id = build_batch_id(
+        slot_key=slot_key,
+        execution_manifest_sha256=manifest_hash,
+        model_artifact_sha256=model_hash,
+    )
+
+    try:
+        project_input = Path(project_directory).expanduser()
+        project = Path(os.path.abspath(os.fspath(project_input)))
+    except (TypeError, OSError, RuntimeError) as error:
+        raise ShadowPredictionError(
+            "Dossier du projet invalide pour l'inspection du slot."
+        ) from error
+    project_mode = _lstat_mode(project)
+    if not isinstance(project_mode, int) or not stat.S_ISDIR(project_mode):
+        raise ShadowPredictionError(
+            "Le dossier du projet doit etre un repertoire local non "
+            "symbolique."
+        )
+
+    slot_path = project.joinpath(
+        *SHADOW_RESULT_ROOT_RELATIVE_PATH.parts,
+        target_date,
+    )
+
+    def inspection(
+        state: ShadowPredictionSlotState,
+        receipt: dict[str, Any] | None = None,
+    ) -> ShadowPredictionSlotInspection:
+        return ShadowPredictionSlotInspection(
+            state=state,
+            slot_path=slot_path,
+            slot_key=slot_key,
+            batch_id=batch_id,
+            receipt=receipt,
+        )
+
+    current = project
+    for component in SHADOW_RESULT_ROOT_RELATIVE_PATH.parts:
+        current = current / component
+        mode = _lstat_mode(current)
+        if mode is _PATH_MISSING:
+            return inspection(ShadowPredictionSlotState.ABSENT)
+        if not isinstance(mode, int) or not stat.S_ISDIR(mode):
+            return inspection(
+                ShadowPredictionSlotState.INCOMPLETE_CONSUMED
+            )
+
+    slot_mode = _lstat_mode(slot_path)
+    if slot_mode is _PATH_MISSING:
+        return inspection(ShadowPredictionSlotState.ABSENT)
+    if not isinstance(slot_mode, int) or not stat.S_ISDIR(slot_mode):
+        return inspection(ShadowPredictionSlotState.INCOMPLETE_CONSUMED)
+
+    completed_path = slot_path / "COMPLETED"
+    completed_mode = _lstat_mode(completed_path)
+    if completed_mode is _PATH_MISSING:
+        failed_mode = _lstat_mode(slot_path / "FAILED.json")
+        if isinstance(failed_mode, int) and stat.S_ISREG(failed_mode):
+            return inspection(ShadowPredictionSlotState.FAILED_CONSUMED)
+        return inspection(ShadowPredictionSlotState.INCOMPLETE_CONSUMED)
+
+    mismatch = ShadowPredictionSlotState.COMPLETED_MISMATCH
+    if not isinstance(completed_mode, int) or not stat.S_ISREG(
+        completed_mode
+    ):
+        return inspection(mismatch)
+
+    try:
+        entries = list(slot_path.iterdir())
+    except OSError:
+        return inspection(mismatch)
+    expected_names = frozenset(SHADOW_SLOT_SUCCESS_FILENAMES)
+    if len(entries) != len(expected_names):
+        return inspection(mismatch)
+    if frozenset(entry.name for entry in entries) != expected_names:
+        return inspection(mismatch)
+    if any(
+        not isinstance(mode := _lstat_mode(entry), int)
+        or not stat.S_ISREG(mode)
+        for entry in entries
+    ):
+        return inspection(mismatch)
+
+    reserved_result = _read_canonical_json_object(slot_path / "RESERVED")
+    receipt_result = _read_canonical_json_object(slot_path / "receipt.json")
+    completed_result = _read_canonical_json_object(completed_path)
+    if (
+        reserved_result is None
+        or receipt_result is None
+        or completed_result is None
+    ):
+        return inspection(mismatch)
+    reserved, _reserved_bytes = reserved_result
+    receipt, receipt_bytes = receipt_result
+    completed, _completed_bytes = completed_result
+    if not _valid_reserved_marker(
+        reserved,
+        batch_id=batch_id,
+        slot_key=slot_key,
+        target_official_date=target_date,
+        shadow_protocol_sha256=protocol_hash,
+        execution_manifest_sha256=manifest_hash,
+    ):
+        return inspection(mismatch)
+    if not _valid_receipt(
+        receipt,
+        reserved=reserved,
+        batch_id=batch_id,
+        slot_key=slot_key,
+        target_official_date=target_date,
+        shadow_protocol_sha256=protocol_hash,
+        execution_manifest_sha256=manifest_hash,
+        model_artifact_sha256=model_hash,
+    ):
+        return inspection(mismatch)
+    expected_receipt_path = (
+        SHADOW_RESULT_ROOT_RELATIVE_PATH
+        / target_date
+        / "receipt.json"
+    ).as_posix()
+    if not _valid_completed_marker(
+        completed,
+        receipt=receipt,
+        receipt_bytes=receipt_bytes,
+        receipt_path=expected_receipt_path,
+        batch_id=batch_id,
+    ):
+        return inspection(mismatch)
+    return inspection(ShadowPredictionSlotState.COMPLETED_EXACT, receipt)
 
 
 def _read_frozen_protocol(

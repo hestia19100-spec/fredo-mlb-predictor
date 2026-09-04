@@ -18,6 +18,7 @@ import tarfile
 import tempfile
 from typing import Any, BinaryIO
 import uuid
+import zlib
 
 from src.database import DATABASE_PATH
 
@@ -467,6 +468,7 @@ def _validate_raw_gzip(path: Path) -> None:
         EOFError,
         UnicodeDecodeError,
         json.JSONDecodeError,
+        zlib.error,
     ) as error:
         raise BackupError(
             f"Archive raw gzip invalide : {path}"
@@ -970,6 +972,7 @@ def verify_backup_bundle(
         OSError,
         EOFError,
         tarfile.TarError,
+        zlib.error,
     ) as error:
         raise BackupError(
             "Vérification de l'archive "

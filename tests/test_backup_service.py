@@ -9,7 +9,10 @@ import sqlite3
 import tarfile
 from tempfile import TemporaryDirectory
 import unittest
+from unittest import mock
+import zlib
 
+from src import backup_service
 from src.backup_service import (
     BackupError,
     create_backup_bundle,
@@ -251,6 +254,107 @@ class BackupServiceTests(unittest.TestCase):
             "encore en cours",
         ):
             self.create_backup()
+
+    def test_zlib_error_during_member_listing_is_wrapped(self) -> None:
+        """L'erreur observee dans getmembers devient toujours BackupError."""
+        result = self.create_backup()
+        content = result.absolute_path.read_bytes()
+        error = zlib.error("invalid distance too far back")
+        with (
+            mock.patch.object(tarfile.TarFile, "getmembers", side_effect=error) as members,
+            mock.patch.object(backup_service, "_inspect_database") as inspect_database,
+        ):
+            with self.assertRaisesRegex(BackupError, "Vérification de l'archive") as caught:
+                verify_backup_bundle(result.absolute_path)
+            members.assert_called_once()
+            inspect_database.assert_not_called()
+        self.assertIs(caught.exception.__cause__, error)
+        self.assertEqual(result.absolute_path.read_bytes(), content)
+
+    def test_zlib_error_during_manifest_read_is_wrapped(self) -> None:
+        """La meme erreur tardive dans le manifeste reste controlee."""
+        result = self.create_backup()
+        error = zlib.error("invalid block type")
+        with mock.patch.object(backup_service, "_load_manifest", side_effect=error) as read:
+            with self.assertRaises(BackupError) as caught:
+                verify_backup_bundle(result.absolute_path)
+            read.assert_called_once()
+        self.assertIs(caught.exception.__cause__, error)
+
+    def test_zlib_error_during_member_stream_read_is_wrapped(self) -> None:
+        """La lecture des donnees ne laisse pas echapper une erreur zlib."""
+        result = self.create_backup()
+        content = result.absolute_path.read_bytes()
+        original_hash_stream = backup_service._hash_stream
+        error = zlib.error("invalid distance code")
+        member_streams = []
+
+        def hash_stream(stream, destination=None):
+            if isinstance(stream, tarfile.ExFileObject):
+                member_streams.append(stream)
+                raise error
+            return original_hash_stream(stream, destination)
+
+        with mock.patch.object(backup_service, "_hash_stream", side_effect=hash_stream):
+            with self.assertRaises(BackupError) as caught:
+                verify_backup_bundle(result.absolute_path)
+        self.assertIs(caught.exception.__cause__, error)
+        self.assertEqual(len(member_streams), 1)
+        self.assertTrue(member_streams[0].closed)
+        self.assertEqual(result.absolute_path.read_bytes(), content)
+
+    def test_real_invalid_deflate_backup_is_rejected(self) -> None:
+        """Un bloc DEFLATE de type reserve fournit une corruption deterministe."""
+        # En-tete gzip valide, bloc BFINAL=1/BTYPE=3 interdit, trailer factice.
+        corrupt = b"\x1f\x8b\x08\x00\x00\x00\x00\x00\x00\xff\x07" + b"\x00" * 8
+        with self.assertRaises(zlib.error):
+            gzip.decompress(corrupt)
+        self.backup_directory.mkdir(parents=True)
+        path = self.backup_directory / "invalid-deflate.tar.gz"
+        path.write_bytes(corrupt)
+        with self.assertRaises(BackupError):
+            verify_backup_bundle(path)
+        self.assertEqual(path.read_bytes(), corrupt)
+
+    def test_real_invalid_deflate_raw_is_rejected_without_publication(self) -> None:
+        """Une archive raw avec en-tete valide mais flux casse reste refusee."""
+        corrupt = b"\x1f\x8b\x08\x00\x00\x00\x00\x00\x00\xff\x07" + b"\x00" * 8
+        path = self.raw_directory / "invalid-deflate.json.gz"
+        path.write_bytes(corrupt)
+        with self.assertRaisesRegex(BackupError, "gzip invalide") as caught:
+            self.create_backup()
+        self.assertIsInstance(caught.exception.__cause__, zlib.error)
+        self.assertEqual(path.read_bytes(), corrupt)
+        self.assertEqual(list(self.backup_directory.glob("*.tar.gz")), [])
+
+    def test_existing_backup_error_is_not_rewrapped(self) -> None:
+        """La correction conserve les erreurs metier existantes."""
+        result = self.create_backup()
+        error = BackupError("synthetic validation error")
+        with mock.patch.object(tarfile.TarFile, "getmembers", side_effect=error):
+            with self.assertRaises(BackupError) as caught:
+                verify_backup_bundle(result.absolute_path)
+        self.assertIs(caught.exception, error)
+
+    def test_unrelated_programming_errors_are_not_hidden(self) -> None:
+        """L'interception reste ciblee : pas de except Exception general."""
+        result = self.create_backup()
+        error = RuntimeError("synthetic programming error")
+        with mock.patch.object(tarfile.TarFile, "getmembers", side_effect=error):
+            with self.assertRaises(RuntimeError) as caught:
+                verify_backup_bundle(result.absolute_path)
+        self.assertIs(caught.exception, error)
+
+    def test_interruptions_are_not_converted_to_backup_errors(self) -> None:
+        """Une interruption utilisateur n'est ni masquee ni retentee."""
+        result = self.create_backup()
+        for error in (KeyboardInterrupt(), SystemExit(1)):
+            with self.subTest(error=type(error).__name__):
+                with mock.patch.object(tarfile.TarFile, "getmembers", side_effect=error) as members:
+                    with self.assertRaises(type(error)) as caught:
+                        verify_backup_bundle(result.absolute_path)
+                    members.assert_called_once()
+                self.assertIs(caught.exception, error)
 
     def test_invalid_raw_gzip_is_rejected(
         self,

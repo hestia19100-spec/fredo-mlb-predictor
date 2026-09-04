@@ -4,6 +4,8 @@ Ce module ne sait volontairement ni activer ni executer une prediction. Il
 valide l'apercu statique, construit les formats canoniques, inspecte les
 creneaux, fige leurs preuves distantes et publie leur sous-ensemble source,
 puis le registre des candidats et leurs variables J-1 canoniques.
+Une primitive separee controle les fichiers figes du modele et les versions
+installees sans deserialisation et sans autoriser une execution.
 Les chemins d'apercu restent sans lecture officielle et aucun composant de
 modele n'est importe ni charge.
 """
@@ -14,18 +16,20 @@ import argparse
 import base64
 from contextlib import closing, contextmanager
 import csv
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from email.utils import format_datetime, parsedate_to_datetime
 from enum import Enum
 import errno
 import gzip
 import hashlib
+from importlib import metadata as distribution_metadata
 import io
 import json
 import math
 import os
 from pathlib import Path, PurePosixPath
+import platform
 import re
 import sqlite3
 import stat
@@ -140,6 +144,26 @@ EXPECTED_MODEL_PROTOCOL_SHA256 = (
     "c4cb1af750619967514d37ae3a5a47a6"
     "a04255aeaccb20c5e94533dc4d138451"
 )
+EXPECTED_MODEL_ARTIFACT_SIZE_BYTES = 1589
+EXPECTED_MODEL_ARTIFACT_CODE_COMMIT = (
+    "1d13f8f361de0865f722a8560f1efda8e95badbc"
+)
+_MODEL_RUNTIME_DISTRIBUTIONS = (
+    ("numpy", "numpy"),
+    ("pandas", "pandas"),
+    ("scipy", "scipy"),
+    ("scikit_learn", "scikit-learn"),
+    ("joblib", "joblib"),
+)
+_MODEL_RUNTIME_KEYS = frozenset(
+    {"python", *(key for key, _ in _MODEL_RUNTIME_DISTRIBUTIONS)}
+)
+_MODEL_PREREQUISITE_PATHS = frozenset({
+    SHADOW_PROTOCOL_RELATIVE_PATH.as_posix(),
+    EXPECTED_ARTIFACT_MANIFEST_PATH,
+    EXPECTED_MODEL_PROTOCOL_PATH,
+    EXPECTED_MODEL_ARTIFACT_PATH,
+})
 
 _CANONICAL_DATE_PATTERN = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}\Z")
 _SHA256_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
@@ -618,6 +642,37 @@ class ShadowCandidateFeaturesPublication:
     eligible_game_count: int
     excluded_games_by_reason: tuple[tuple[str, int], ...]
     earliest_eligible_scheduled_start_utc: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class ShadowModelPrerequisites:
+    """Octets controles, pas une autorisation d'execution ou de chargement.
+
+    Le futur orchestrateur doit encore verifier le manifeste d'execution,
+    l'activation, le slot et son environnement au moment du chargement.
+    Aucun objet pickle n'est interprete pour obtenir cette preuve.
+    """
+
+    artifact_path: Path
+    artifact_relative_path: str
+    artifact_sha256: str
+    artifact_size_bytes: int
+    artifact_bytes: bytes = field(repr=False)
+    artifact_manifest_sha256: str
+    model_protocol_sha256: str
+    shadow_protocol_sha256: str
+    runtime_versions: tuple[tuple[str, str], ...]
+    validation_scope: str = field(
+        default="FROZEN_MODEL_FILES_AND_INSTALLED_RUNTIME_ONLY", init=False
+    )
+    runtime_versions_source: str = field(
+        default="PYTHON_AND_INSTALLED_DISTRIBUTION_METADATA", init=False
+    )
+    execution_manifest_verified: bool = field(default=False, init=False)
+    activation_verified: bool = field(default=False, init=False)
+    model_deserialized: bool = field(default=False, init=False)
+    predictions_computed: bool = field(default=False, init=False)
+    execution_ready: bool = field(default=False, init=False)
 
 
 def _validate_json_value(
@@ -4145,6 +4200,220 @@ def build_and_publish_candidate_ledger_and_features(
             excluded_games_by_reason=tuple(exclusions.items()),
             earliest_eligible_scheduled_start_utc=(features[0][8] if features else None),
         )
+
+
+def _require_model_prerequisite_path(
+    project_directory: Path, relative_path: str,
+) -> Path:
+    """Accepte seulement les quatre chemins figes, sans lien observe."""
+    if (
+        not isinstance(project_directory, Path)
+        or not project_directory.is_absolute()
+        or ".." in project_directory.parts
+        or relative_path not in _MODEL_PREREQUISITE_PATHS
+    ):
+        raise ShadowPredictionError("Chemin de controle du modele non autorise.")
+    path = project_directory.joinpath(*PurePosixPath(relative_path).parts)
+    # Controler aussi les parents du projet, pas seulement le dernier fichier.
+    for directory in reversed(path.parents):
+        mode = _lstat_mode(directory)
+        if not isinstance(mode, int) or not stat.S_ISDIR(mode):
+            raise ShadowPredictionError(
+                "Un parent des fichiers du modele est absent ou symbolique."
+            )
+    mode = _lstat_mode(path)
+    if not isinstance(mode, int) or not stat.S_ISREG(mode):
+        raise ShadowPredictionError(
+            f"Fichier du modele absent, non regulier ou symbolique : {relative_path}."
+        )
+    return path
+
+
+def _read_pinned_model_prerequisite_file(
+    project_directory: Path,
+    relative_path: str,
+    expected_sha256: str,
+    *,
+    expected_size: int | None = None,
+) -> bytes:
+    """Verifie les octets avant toute interpretation, sans deserialisation."""
+    _require_sha256(expected_sha256, field="expected_sha256")
+    if expected_size is not None:
+        _require_positive_integer(expected_size, field="expected_size")
+    path = _require_model_prerequisite_path(project_directory, relative_path)
+    try:
+        before = path.stat(follow_symlinks=False)
+        if expected_size is not None and before.st_size != expected_size:
+            raise ShadowPredictionError(
+                f"Taille du modele incorrecte : {relative_path}."
+            )
+        content = path.read_bytes()
+        _require_model_prerequisite_path(project_directory, relative_path)
+        after = path.stat(follow_symlinks=False)
+    except OSError as error:
+        raise ShadowPredictionError(
+            f"Lecture du fichier fige impossible : {relative_path}."
+        ) from error
+    identity = lambda metadata: (
+        metadata.st_dev, metadata.st_ino, metadata.st_size, metadata.st_mtime_ns
+    )
+    if (
+        identity(before) != identity(after)
+        or type(content) is not bytes
+        or len(content) != before.st_size
+        or (expected_size is not None and len(content) != expected_size)
+        or hashlib.sha256(content).hexdigest() != expected_sha256
+    ):
+        raise ShadowPredictionError(
+            f"Fichier fige modifie ou empreinte incorrecte : {relative_path}."
+        )
+    return content
+
+
+def _decode_pinned_model_json(content: bytes, *, name: str) -> dict[str, Any]:
+    try:
+        payload = json.loads(
+            content.decode("utf-8"), object_pairs_hook=_reject_duplicate_keys
+        )
+        _validate_json_value(payload)
+    except (UnicodeError, ValueError, RecursionError) as error:
+        raise ShadowPredictionError(f"JSON du modele invalide : {name}.") from error
+    if type(payload) is not dict:
+        raise ShadowPredictionError(f"Objet JSON requis : {name}.")
+    return payload
+
+
+def _validate_model_prerequisite_contracts(
+    shadow: dict[str, Any],
+    manifest: dict[str, Any],
+    model_protocol: dict[str, Any],
+) -> dict[str, str]:
+    """Reverifie les liaisons des trois documents dont les hashes sont fixes."""
+    _validate_protocol_contract(shadow)
+    artifact = _require_mapping(manifest.get("artifact"), description="manifest.artifact")
+    model = _require_mapping(manifest.get("model"), description="manifest.model")
+    protocol_link = _require_mapping(manifest.get("protocol"), description="manifest.protocol")
+    policy = _require_mapping(manifest.get("loading_policy"), description="manifest.loading_policy")
+    base_model = _require_mapping(model_protocol.get("model"), description="model_protocol.model")
+    lineage = shadow["validated_lineage"]["model_artifact"]
+    feature_columns = list(_FEATURE_ROW_FIELD_NAMES[12:20])
+    for mapping, pairs, context in (
+        (manifest, (("manifest_version", 1),
+                    ("status", "FROZEN_BEFORE_SEALED_TEST")), "manifest"),
+        (artifact, (("path", EXPECTED_MODEL_ARTIFACT_PATH),
+                    ("sha256", EXPECTED_MODEL_ARTIFACT_SHA256),
+                    ("size_bytes", EXPECTED_MODEL_ARTIFACT_SIZE_BYTES),
+                    ("code_version", EXPECTED_MODEL_ARTIFACT_CODE_COMMIT),
+                    ("serializer", "joblib"), ("compression_level", 3),
+                    ("artifact_format_version", 1),
+                    ("round_trip_verified_after_write", True)), "manifest.artifact"),
+        (lineage, (("size_bytes", EXPECTED_MODEL_ARTIFACT_SIZE_BYTES),
+                   ("code_commit", EXPECTED_MODEL_ARTIFACT_CODE_COMMIT),
+                   ("model_version", "logistic_team_form_v1_platt")), "shadow.model_artifact"),
+        (model, (("calibrated_model_version", "logistic_team_form_v1_platt"),
+                 ("base_model_version", "logistic_team_form_v1"),
+                 ("calibration_method", "sigmoid"),
+                 ("base_model_unchanged_during_calibration", True),
+                 ("feature_columns", feature_columns)), "manifest.model"),
+        (protocol_link, (("path", EXPECTED_MODEL_PROTOCOL_PATH),
+                         ("sha256", EXPECTED_MODEL_PROTOCOL_SHA256)), "manifest.protocol"),
+        (policy, (("pickle_based_format", True),
+                  ("verify_sha256_before_deserialization", True),
+                  ("accept_untrusted_artifact", False)), "manifest.loading_policy"),
+        (model_protocol, (("protocol_version", 1),
+                          ("status", "REGISTERED_BEFORE_SEALED_TEST"),
+                          ("features", feature_columns)), "model_protocol"),
+        (base_model, (("model_version", "logistic_team_form_v1"),),
+         "model_protocol.model"),
+    ):
+        for key, value in pairs:
+            _require_exact(mapping, key, value, context=context)
+    runtime = manifest.get("runtime")
+    if type(runtime) is not dict or frozenset(runtime) != _MODEL_RUNTIME_KEYS:
+        raise ShadowPredictionError("Le manifeste doit nommer les six versions exactes.")
+    for key, value in runtime.items():
+        _require_nonempty_text(value, field=f"runtime.{key}")
+        if value != value.strip():
+            raise ShadowPredictionError("Une version du manifeste est non canonique.")
+    return dict(runtime)
+
+
+def _installed_model_runtime_versions() -> dict[str, str]:
+    """Lit les metadonnees installees sans importer les bibliotheques ML."""
+    versions = {"python": platform.python_version()}
+    for key, distribution in _MODEL_RUNTIME_DISTRIBUTIONS:
+        try:
+            versions[key] = distribution_metadata.version(distribution)
+        except (distribution_metadata.PackageNotFoundError, OSError, ValueError) as error:
+            raise ShadowPredictionError(
+                f"Version installee introuvable pour {distribution}."
+            ) from error
+    for key, value in versions.items():
+        _require_nonempty_text(value, field=f"installed_runtime.{key}")
+    return versions
+
+
+def verify_frozen_model_prerequisites(
+    *, project_directory: Path = PROJECT_DIRECTORY,
+) -> ShadowModelPrerequisites:
+    """Controle l'artefact en lecture seule, sans charger aucun objet modele.
+
+    Primitive non branchee sur l'apercu ou un mode d'execution. Les quatre
+    chemins et leurs empreintes sont imposes par le protocole deja fige.
+    Les octets renvoyes sont immuables et devront etre utilises tels quels
+    par un futur chargeur, apres ses controles d'execution supplementaires.
+    Le manifeste d'execution et l'activation ne sont PAS certifies ici.
+    """
+    metadata_specs = (
+        (SHADOW_PROTOCOL_RELATIVE_PATH.as_posix(), EXPECTED_SHADOW_PROTOCOL_SHA256),
+        (EXPECTED_ARTIFACT_MANIFEST_PATH, EXPECTED_ARTIFACT_MANIFEST_SHA256),
+        (EXPECTED_MODEL_PROTOCOL_PATH, EXPECTED_MODEL_PROTOCOL_SHA256),
+    )
+    # Verifier tous les hashes avant de decoder le premier JSON.
+    metadata_bytes = tuple(
+        _read_pinned_model_prerequisite_file(project_directory, path, digest)
+        for path, digest in metadata_specs
+    )
+    shadow, manifest, protocol = (
+        _decode_pinned_model_json(content, name=spec[0])
+        for spec, content in zip(metadata_specs, metadata_bytes)
+    )
+    expected_runtime = _validate_model_prerequisite_contracts(shadow, manifest, protocol)
+    runtime = _installed_model_runtime_versions()
+    if runtime != expected_runtime:
+        differences = "; ".join(
+            f"{key} : installe {runtime[key]}, attendu {value}"
+            for key, value in expected_runtime.items() if runtime[key] != value
+        )
+        raise ShadowPredictionError(f"Environnement du modele incompatible : {differences}.")
+    artifact_bytes = _read_pinned_model_prerequisite_file(
+        project_directory, EXPECTED_MODEL_ARTIFACT_PATH,
+        EXPECTED_MODEL_ARTIFACT_SHA256, expected_size=EXPECTED_MODEL_ARTIFACT_SIZE_BYTES,
+    )
+    # Recontroler les fichiers et versions pour refuser les changements observes.
+    # Ceci n'est pas un verrou global : seuls les octets verifies ci-dessous
+    # font foi, pas une promesse que le disque restera inchange apres le retour.
+    for (path, digest), original in zip(metadata_specs, metadata_bytes):
+        if _read_pinned_model_prerequisite_file(project_directory, path, digest) != original:
+            raise ShadowPredictionError("Les metadonnees du modele ont change.")
+    if _installed_model_runtime_versions() != runtime:
+        raise ShadowPredictionError("L'environnement a change pendant les controles.")
+    if _read_pinned_model_prerequisite_file(
+        project_directory, EXPECTED_MODEL_ARTIFACT_PATH,
+        EXPECTED_MODEL_ARTIFACT_SHA256, expected_size=EXPECTED_MODEL_ARTIFACT_SIZE_BYTES,
+    ) != artifact_bytes:
+        raise ShadowPredictionError("Les octets du modele ont change.")
+    return ShadowModelPrerequisites(
+        artifact_path=project_directory.joinpath(*PurePosixPath(EXPECTED_MODEL_ARTIFACT_PATH).parts),
+        artifact_relative_path=EXPECTED_MODEL_ARTIFACT_PATH,
+        artifact_sha256=EXPECTED_MODEL_ARTIFACT_SHA256,
+        artifact_size_bytes=len(artifact_bytes),
+        artifact_bytes=artifact_bytes,
+        artifact_manifest_sha256=EXPECTED_ARTIFACT_MANIFEST_SHA256,
+        model_protocol_sha256=EXPECTED_MODEL_PROTOCOL_SHA256,
+        shadow_protocol_sha256=EXPECTED_SHADOW_PROTOCOL_SHA256,
+        runtime_versions=tuple(sorted(runtime.items())),
+    )
 
 
 def fail_shadow_prediction_slot(

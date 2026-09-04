@@ -738,6 +738,34 @@ class ShadowModelStateVerification:
     execution_ready: bool = field(default=False, init=False)
 
 
+@dataclass(frozen=True, slots=True)
+class ShadowModelProbabilities:
+    """Resultat interne en memoire, ni CSV officiel ni autorisation de slot.
+
+    Les paires suivent les lignes figees : (p_away, p_home). L'orchestrateur
+    devra encore prouver leur origine, l'activation, les delais et l'unicite
+    du lot. Aucun de ces faits n'est atteste par cette primitive.
+    """
+
+    feature_rows: tuple[tuple[object, ...], ...]
+    probabilities: tuple[tuple[float, float], ...]
+    artifact_sha256: str
+    artifact_state_sha256_before: str
+    artifact_state_sha256_after: str
+    runtime_versions: tuple[tuple[str, str], ...]
+    approved_deserialization_warning_count: int
+    approved_state_serialization_warning_count: int
+    approved_compatibility_warning_count: int
+    predict_proba_calls: int = field(default=1, init=False)
+    artifact_state_unchanged: bool = field(default=True, init=False)
+    unexpected_warning_count: int = field(default=0, init=False)
+    warning_policy_id: str = field(default=_MODEL_WARNING_POLICY_ID, init=False)
+    execution_manifest_verified: bool = field(default=False, init=False)
+    activation_verified: bool = field(default=False, init=False)
+    official_prediction_created: bool = field(default=False, init=False)
+    execution_ready: bool = field(default=False, init=False)
+
+
 def _validate_json_value(
     value: object,
     *,
@@ -4746,64 +4774,9 @@ def _snapshot_frozen_shadow_model_state(
     if not _MODEL_LOADING_LOCK.acquire(blocking=False):
         raise ShadowPredictionError("Une operation sur le modele shadow est deja en cours.")
     try:
-        with warnings.catch_warnings():
-            warnings.simplefilter("error")
-            _validate_shadow_state_loaded_envelope(loaded_model)
-            specs = (
-                (SHADOW_PROTOCOL_RELATIVE_PATH.as_posix(), EXPECTED_SHADOW_PROTOCOL_SHA256),
-                (EXPECTED_ARTIFACT_MANIFEST_PATH, EXPECTED_ARTIFACT_MANIFEST_SHA256),
-                (EXPECTED_MODEL_PROTOCOL_PATH, EXPECTED_MODEL_PROTOCOL_SHA256),
-            )
-            documents = tuple(
-                _read_pinned_model_prerequisite_file(project_directory, path, digest)
-                for path, digest in specs
-            )
-            shadow, manifest, protocol = (
-                _decode_pinned_model_json(content, name=spec[0])
-                for spec, content in zip(specs, documents)
-            )
-            runtime = _validate_model_prerequisite_contracts(shadow, manifest, protocol)
-            if (
-                loaded_model.runtime_versions != tuple(sorted(runtime.items()))
-                or _installed_model_runtime_versions() != runtime
-            ):
-                raise ShadowPredictionError("Environnement incompatible avant empreinte d'etat.")
-            modules = _import_shadow_model_runtime(runtime)
-            artifact = loaded_model.artifact
-            _validate_loaded_shadow_model_metadata(artifact, manifest, modules)
-            # Ce filtre approuve uniquement ARTIFACT_STATE_SERIALIZATION.
-            # Aucune autre operation n'est incluse dans son contexte.
-            with io.BytesIO() as buffer:
-                with warnings.catch_warnings(record=True) as recorded:
-                    warnings.simplefilter("error")
-                    warnings.filterwarnings(
-                        "always", message=_MODEL_WARNING_MESSAGE,
-                        category=DeprecationWarning, module=_MODEL_WARNING_MODULE,
-                        append=False,
-                    )
-                    modules["joblib"].dump(artifact, buffer, compress=3)
-                content = buffer.getvalue()
-                if not content:
-                    raise ShadowPredictionError("Serialisation d'etat vide.")
-                digest = hashlib.sha256(content).hexdigest()
-            _validate_shadow_state_loaded_envelope(loaded_model)
-            if loaded_model.artifact is not artifact:
-                raise ShadowPredictionError("Objet modele remplace pendant la serialisation.")
-            _validate_loaded_shadow_model_metadata(artifact, manifest, modules)
-            if (
-                _shadow_imported_runtime_versions(modules) != runtime
-                or _installed_model_runtime_versions() != runtime
-                or loaded_model.runtime_versions != tuple(sorted(runtime.items()))
-            ):
-                raise ShadowPredictionError("L'environnement a change pendant l'empreinte d'etat.")
-            for (path, expected), original in zip(specs, documents):
-                if _read_pinned_model_prerequisite_file(project_directory, path, expected) != original:
-                    raise ShadowPredictionError("Les documents figes ont change pendant l'empreinte.")
-            return ShadowModelStateSnapshot(
-                loaded_model=loaded_model, artifact_state_sha256=digest,
-                runtime_versions=tuple(sorted(runtime.items())),
-                approved_state_serialization_warning_count=len(recorded),
-            )
+        return _snapshot_frozen_shadow_model_state_under_lock(
+            loaded_model, project_directory=project_directory,
+        )
     except ShadowPredictionError:
         raise
     except Exception as error:
@@ -4812,6 +4785,77 @@ def _snapshot_frozen_shadow_model_state(
         ) from error
     finally:
         _MODEL_LOADING_LOCK.release()
+
+
+def _snapshot_frozen_shadow_model_state_under_lock(
+    loaded_model: ShadowLoadedModel,
+    *, project_directory: Path,
+) -> ShadowModelStateSnapshot:
+    """Corps du controle existant ; seul un appelant detenant le verrou l'utilise.
+
+    locked() est un garde defensif, pas une preuve de proprietaire de thread.
+    Ce helper prive ne remplace jamais l'entree autonome verrouillee.
+    """
+    if not _MODEL_LOADING_LOCK.locked():
+        raise ShadowPredictionError("Le controle d'etat exige le verrou du modele.")
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        _validate_shadow_state_loaded_envelope(loaded_model)
+        specs = (
+            (SHADOW_PROTOCOL_RELATIVE_PATH.as_posix(), EXPECTED_SHADOW_PROTOCOL_SHA256),
+            (EXPECTED_ARTIFACT_MANIFEST_PATH, EXPECTED_ARTIFACT_MANIFEST_SHA256),
+            (EXPECTED_MODEL_PROTOCOL_PATH, EXPECTED_MODEL_PROTOCOL_SHA256),
+        )
+        documents = tuple(
+            _read_pinned_model_prerequisite_file(project_directory, path, digest)
+            for path, digest in specs
+        )
+        shadow, manifest, protocol = (
+            _decode_pinned_model_json(content, name=spec[0])
+            for spec, content in zip(specs, documents)
+        )
+        runtime = _validate_model_prerequisite_contracts(shadow, manifest, protocol)
+        if (
+            loaded_model.runtime_versions != tuple(sorted(runtime.items()))
+            or _installed_model_runtime_versions() != runtime
+        ):
+            raise ShadowPredictionError("Environnement incompatible avant empreinte d'etat.")
+        modules = _import_shadow_model_runtime(runtime)
+        artifact = loaded_model.artifact
+        _validate_loaded_shadow_model_metadata(artifact, manifest, modules)
+        # Ce filtre approuve uniquement ARTIFACT_STATE_SERIALIZATION.
+        # Aucune autre operation n'est incluse dans son contexte.
+        with io.BytesIO() as buffer:
+            with warnings.catch_warnings(record=True) as recorded:
+                warnings.simplefilter("error")
+                warnings.filterwarnings(
+                    "always", message=_MODEL_WARNING_MESSAGE,
+                    category=DeprecationWarning, module=_MODEL_WARNING_MODULE,
+                    append=False,
+                )
+                modules["joblib"].dump(artifact, buffer, compress=3)
+            content = buffer.getvalue()
+            if not content:
+                raise ShadowPredictionError("Serialisation d'etat vide.")
+            digest = hashlib.sha256(content).hexdigest()
+        _validate_shadow_state_loaded_envelope(loaded_model)
+        if loaded_model.artifact is not artifact:
+            raise ShadowPredictionError("Objet modele remplace pendant la serialisation.")
+        _validate_loaded_shadow_model_metadata(artifact, manifest, modules)
+        if (
+            _shadow_imported_runtime_versions(modules) != runtime
+            or _installed_model_runtime_versions() != runtime
+            or loaded_model.runtime_versions != tuple(sorted(runtime.items()))
+        ):
+            raise ShadowPredictionError("L'environnement a change pendant l'empreinte d'etat.")
+        for (path, expected), original in zip(specs, documents):
+            if _read_pinned_model_prerequisite_file(project_directory, path, expected) != original:
+                raise ShadowPredictionError("Les documents figes ont change pendant l'empreinte.")
+        return ShadowModelStateSnapshot(
+            loaded_model=loaded_model, artifact_state_sha256=digest,
+            runtime_versions=tuple(sorted(runtime.items())),
+            approved_state_serialization_warning_count=len(recorded),
+        )
 
 
 def _verify_frozen_shadow_model_state_unchanged(
@@ -4852,6 +4896,166 @@ def _verify_frozen_shadow_model_state_unchanged(
             + after.approved_state_serialization_warning_count
         ),
     )
+
+
+def _validate_shadow_prediction_feature_rows(
+    feature_rows: object,
+) -> tuple[tuple[object, ...], ...]:
+    """Copie figee des 21 champs types, sans tri, imputation ou arrondi nouveau.
+
+    Verifie la coherence des lignes, pas leur provenance depuis un fichier
+    officiel. L'orchestrateur doit fournir les lignes du jalon deja verifie.
+    """
+    if type(feature_rows) not in (list, tuple) or not feature_rows:
+        raise ShadowPredictionError("Un lot non vide de lignes de variables est requis.")
+    rows = []
+    previous = None
+    game_ids: set[int] = set()
+    batch = target = None
+    for raw in feature_rows:
+        if type(raw) not in (list, tuple) or len(raw) != len(_FEATURES_COLUMNS):
+            raise ShadowPredictionError("Une ligne doit contenir les 21 champs exacts.")
+        row = tuple(raw)
+        expected_hash = build_feature_row_sha256(
+            feature_row_values_in_features_columns_exact_order_excluding_feature_row_sha256=list(row[:-1]),
+        )
+        if _require_sha256(row[20], field="feature_row_sha256") != expected_hash:
+            raise ShadowPredictionError("L'empreinte de la ligne de variables est incoherente.")
+        game_id, season, official, away, home = row[2], row[4], row[5], row[6], row[7]
+        if (
+            game_id <= 0 or away <= 0 or home <= 0 or away == home
+            or season != EXPECTED_TARGET_SEASON
+            or date.fromisoformat(official).year != season
+            or date.fromisoformat(official) < EXPECTED_SHADOW_PROTOCOL_REGISTERED_ON
+            or row[9] != (date.fromisoformat(official) - timedelta(days=1)).isoformat()
+            or any(not f"{season}-01-01" <= row[i] < official for i in (10, 11))
+            or any(row[i] < _MINIMUM_HISTORY_GAMES_PER_TEAM for i in (12, 16))
+            or (batch is not None and (row[1] != batch or official != target))
+        ):
+            raise ShadowPredictionError("Identites, dates J-1 ou historique de variables invalides.")
+        if row[0] != build_prediction_id(
+            shadow_protocol_sha256=EXPECTED_SHADOW_PROTOCOL_SHA256,
+            game_id=game_id, official_date_at_snapshot=official,
+            scheduled_start_utc_at_snapshot=row[8],
+        ) or row[3] != build_occurrence_key(
+            game_id=game_id, official_date_at_snapshot=official,
+            scheduled_start_utc_at_snapshot_or_null=row[8],
+        ):
+            raise ShadowPredictionError("Identifiants de prediction ou d'occurrence incoherents.")
+        for index in _FEATURE_ROW_FIXED_6_INDEXES:
+            value = float(row[index])
+            if not math.isfinite(value) or (index in (13, 17) and value > 1):
+                raise ShadowPredictionError("Taux non fini ou proportion de victoires invalide.")
+        key = (row[8], game_id)
+        if game_id in game_ids or (previous is not None and key <= previous):
+            raise ShadowPredictionError("Lignes dupliquees ou hors ordre canonique.")
+        game_ids.add(game_id)
+        previous, batch, target = key, row[1], official
+        rows.append(row)
+    return tuple(rows)
+
+
+def _predict_frozen_shadow_model_once(
+    loaded_model: ShadowLoadedModel,
+    feature_rows: list[list[object]] | tuple[tuple[object, ...], ...],
+    *, project_directory: Path = PROJECT_DIRECTORY,
+) -> ShadowModelProbabilities:
+    """Un seul appel pour un lot NON VIDE, sans chargement, reseau ou ecriture.
+
+    Meme verrou pendant preparation/empreinte/predict_proba/empreinte/validation.
+    Toute erreur est terminale pour cet appel, sans retry ni resultat partiel.
+    Un lot vide doit eviter le chargeur et cette primitive. Le futur
+    orchestrateur garantit l'unicite durable du slot et ses preconditions ;
+    cette fonction interne ne constitue ni ce journal ni une autorisation.
+    """
+    if not _MODEL_LOADING_LOCK.acquire(blocking=False):
+        raise ShadowPredictionError("Une operation sur le modele shadow est deja en cours.")
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            _validate_shadow_state_loaded_envelope(loaded_model)
+            rows = _validate_shadow_prediction_feature_rows(feature_rows)
+            runtime = dict(loaded_model.runtime_versions)
+            if _installed_model_runtime_versions() != runtime:
+                raise ShadowPredictionError("Environnement incompatible avant preparation de matrice.")
+            modules = _import_shadow_model_runtime(runtime)
+            np = modules["numpy"]
+            # Seules les huit colonnes autorisees, deja quantifiees en .6f,
+            # sont converties. Aucun identifiant, horaire ou score cible.
+            matrix = np.asarray([
+                [row[i] if i in (12, 16) else float(row[i]) for i in range(12, 20)]
+                for row in rows
+            ], dtype=np.float64)
+            if matrix.shape != (len(rows), 8) or not np.isfinite(matrix).all():
+                raise ShadowPredictionError("Matrice de variables non finie ou mal dimensionnee.")
+            for row, values in zip(rows, matrix):
+                if int(values[0]) != row[12] or int(values[4]) != row[16]:
+                    raise ShadowPredictionError("Nombre de matchs non representable exactement en float64.")
+            matrix.setflags(write=False)
+            matrix_bytes = matrix.tobytes()
+            artifact = loaded_model.artifact
+            load_warning_count = loaded_model.approved_deserialization_warning_count
+            before = _snapshot_frozen_shadow_model_state_under_lock(
+                loaded_model, project_directory=project_directory,
+            )
+            # L'exception de compatibilite du dump est deja fermee : MEME
+            # l'avertissement approuve est une erreur pendant predict_proba.
+            raw = artifact.calibrated_classifier.predict_proba(matrix)
+            after = _snapshot_frozen_shadow_model_state_under_lock(
+                loaded_model, project_directory=project_directory,
+            )
+            if (
+                before.artifact_state_sha256 != after.artifact_state_sha256
+                or loaded_model.artifact is not artifact
+                or before.runtime_versions != after.runtime_versions
+                or loaded_model.approved_deserialization_warning_count != load_warning_count
+            ):
+                raise ShadowPredictionError("Le modele ou son enveloppe a change pendant la prediction.")
+            if (
+                type(matrix) is not np.ndarray or matrix.dtype != np.dtype(np.float64)
+                or matrix.shape != (len(rows), 8) or matrix.flags.writeable
+                or matrix.tobytes() != matrix_bytes
+            ):
+                raise ShadowPredictionError("La matrice de variables a ete modifiee.")
+            if (
+                type(raw) is not np.ndarray or raw.shape != (len(rows), 2)
+                or raw.dtype.kind != "f" or not np.isfinite(raw).all()
+                or (raw < 0).any() or (raw > 1).any()
+            ):
+                raise ShadowPredictionError("Sortie predict_proba invalide : tableau fini N x 2 requis.")
+            probabilities = []
+            for away_raw, home_raw in raw:
+                away_column, p_home = float(away_raw), float(home_raw)
+                _format_probability_float(away_column)
+                _format_probability_float(p_home)
+                if abs(away_column + p_home - 1.0) > 1e-12:
+                    raise ShadowPredictionError("Les colonnes de probabilites ne somment pas a un.")
+                p_away = 1.0 - p_home
+                # Aucun clipping, renormalisation, calibrage ou arrondi.
+                _format_probability_float(p_away)
+                probabilities.append((p_away, p_home))
+            state_warning_count = (
+                before.approved_state_serialization_warning_count
+                + after.approved_state_serialization_warning_count
+            )
+            return ShadowModelProbabilities(
+                feature_rows=rows, probabilities=tuple(probabilities),
+                artifact_sha256=loaded_model.artifact_sha256,
+                artifact_state_sha256_before=before.artifact_state_sha256,
+                artifact_state_sha256_after=after.artifact_state_sha256,
+                runtime_versions=before.runtime_versions,
+                approved_deserialization_warning_count=load_warning_count,
+                approved_state_serialization_warning_count=state_warning_count,
+                approved_compatibility_warning_count=load_warning_count + state_warning_count,
+            )
+    except ShadowPredictionError:
+        raise
+    except Exception as error:
+        raise ShadowPredictionError(
+            f"Prediction interne refusee : {type(error).__name__}: {error}"
+        ) from error
+    finally:
+        _MODEL_LOADING_LOCK.release()
 
 
 def fail_shadow_prediction_slot(

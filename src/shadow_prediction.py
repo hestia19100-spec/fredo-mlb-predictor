@@ -7,6 +7,8 @@ puis le registre des candidats et leurs variables J-1 canoniques.
 Une primitive separee controle les fichiers figes du modele et les versions
 installees sans deserialisation et sans autoriser une execution.
 Un chargeur interne peut ensuite deserialiser ces octets sans predire.
+Deux primitives internes empreintent son etat en memoire et refusent une
+mutation entre deux prises d'empreinte, sans appeler le modele.
 Les chemins d'apercu restent sans lecture officielle, import ou chargement
 de modele. Aucune de ces primitives n'autorise une execution officielle.
 """
@@ -698,6 +700,39 @@ class ShadowLoadedModel:
     warning_policy_id: str = field(default=_MODEL_WARNING_POLICY_ID, init=False)
     model_deserialized: bool = field(default=True, init=False)
     predictions_computed: bool = field(default=False, init=False)
+    execution_manifest_verified: bool = field(default=False, init=False)
+    activation_verified: bool = field(default=False, init=False)
+    execution_ready: bool = field(default=False, init=False)
+
+
+@dataclass(frozen=True, slots=True)
+class ShadowModelStateSnapshot:
+    """Mesure interne liee a une instance, pas une preuve d'execution.
+
+    La reference retient l'objet d'origine ; elle n'en fait pas une copie.
+    Seule l'empreinte est une photographie de l'etat serialise a cet instant.
+    """
+
+    loaded_model: ShadowLoadedModel = field(repr=False, compare=False)
+    artifact_state_sha256: str
+    runtime_versions: tuple[tuple[str, str], ...]
+    approved_state_serialization_warning_count: int
+    warning_policy_id: str = field(default=_MODEL_WARNING_POLICY_ID, init=False)
+
+
+@dataclass(frozen=True, slots=True)
+class ShadowModelStateVerification:
+    """Comparaison de deux etats, sans attester un appel de prediction.
+
+    Le compteur concerne uniquement les deux serialisations d'etat.
+    Celui de la deserialisation reste sur ShadowLoadedModel, sans doublon.
+    """
+
+    artifact_state_sha256_before: str
+    artifact_state_sha256_after: str
+    approved_state_serialization_warning_count: int
+    artifact_state_unchanged: bool = field(default=True, init=False)
+    warning_policy_id: str = field(default=_MODEL_WARNING_POLICY_ID, init=False)
     execution_manifest_verified: bool = field(default=False, init=False)
     activation_verified: bool = field(default=False, init=False)
     execution_ready: bool = field(default=False, init=False)
@@ -4661,6 +4696,162 @@ def _load_frozen_shadow_model(
         ) from error
     finally:
         _MODEL_LOADING_LOCK.release()
+
+
+def _validate_shadow_state_loaded_envelope(loaded: ShadowLoadedModel) -> None:
+    """Refuse une enveloppe incompatible avant imports et serialisation.
+
+    Les objets internes ne sont pas une frontiere de securite contre du code
+    Python arbitraire. L'appelant doit provenir du chargeur controle ; cette
+    validation ne prouve pas l'origine d'un estimateur fabrique en memoire.
+    """
+    if type(loaded) is not ShadowLoadedModel:
+        raise ShadowPredictionError("Objet ShadowLoadedModel exact requis.")
+    for key, expected in (
+        ("artifact_sha256", EXPECTED_MODEL_ARTIFACT_SHA256),
+        ("warning_policy_id", _MODEL_WARNING_POLICY_ID),
+        ("model_deserialized", True), ("predictions_computed", False),
+        ("execution_manifest_verified", False), ("activation_verified", False),
+        ("execution_ready", False),
+    ):
+        _require_exact({key: getattr(loaded, key)}, key, expected, context="loaded_model")
+    count = loaded.approved_deserialization_warning_count
+    if type(count) is not int or count < 0:
+        raise ShadowPredictionError("Compteur d'avertissements du chargement invalide.")
+    versions = loaded.runtime_versions
+    if (
+        type(versions) is not tuple
+        or any(type(pair) is not tuple or len(pair) != 2
+               or any(type(value) is not str for value in pair) for pair in versions)
+        or tuple(sorted(dict(versions).items())) != versions
+        or frozenset(dict(versions)) != _MODEL_RUNTIME_KEYS
+        or any(not value or value != value.strip() for _, value in versions)
+    ):
+        raise ShadowPredictionError("Versions de l'objet charge non canoniques.")
+
+
+def _snapshot_frozen_shadow_model_state(
+    loaded_model: ShadowLoadedModel,
+    *, project_directory: Path = PROJECT_DIRECTORY,
+) -> ShadowModelStateSnapshot:
+    """Un seul joblib.dump de l'artefact ENTIER dans BytesIO, compress=3.
+
+    Aucun chargement, fit, predict, fichier modele ou sortie officielle.
+    Le verrou du chargeur est partage car les filtres d'avertissement sont
+    communs. Il couvre cette operation, pas l'intervalle entre deux mesures.
+    Le futur orchestrateur doit posseder exclusivement le modele pendant
+    toute la sequence mesure/prediction/mesure, aux versions du manifeste
+    d'execution. Aucun de ces controles d'autorisation n'est atteste ici.
+    """
+    if not _MODEL_LOADING_LOCK.acquire(blocking=False):
+        raise ShadowPredictionError("Une operation sur le modele shadow est deja en cours.")
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            _validate_shadow_state_loaded_envelope(loaded_model)
+            specs = (
+                (SHADOW_PROTOCOL_RELATIVE_PATH.as_posix(), EXPECTED_SHADOW_PROTOCOL_SHA256),
+                (EXPECTED_ARTIFACT_MANIFEST_PATH, EXPECTED_ARTIFACT_MANIFEST_SHA256),
+                (EXPECTED_MODEL_PROTOCOL_PATH, EXPECTED_MODEL_PROTOCOL_SHA256),
+            )
+            documents = tuple(
+                _read_pinned_model_prerequisite_file(project_directory, path, digest)
+                for path, digest in specs
+            )
+            shadow, manifest, protocol = (
+                _decode_pinned_model_json(content, name=spec[0])
+                for spec, content in zip(specs, documents)
+            )
+            runtime = _validate_model_prerequisite_contracts(shadow, manifest, protocol)
+            if (
+                loaded_model.runtime_versions != tuple(sorted(runtime.items()))
+                or _installed_model_runtime_versions() != runtime
+            ):
+                raise ShadowPredictionError("Environnement incompatible avant empreinte d'etat.")
+            modules = _import_shadow_model_runtime(runtime)
+            artifact = loaded_model.artifact
+            _validate_loaded_shadow_model_metadata(artifact, manifest, modules)
+            # Ce filtre approuve uniquement ARTIFACT_STATE_SERIALIZATION.
+            # Aucune autre operation n'est incluse dans son contexte.
+            with io.BytesIO() as buffer:
+                with warnings.catch_warnings(record=True) as recorded:
+                    warnings.simplefilter("error")
+                    warnings.filterwarnings(
+                        "always", message=_MODEL_WARNING_MESSAGE,
+                        category=DeprecationWarning, module=_MODEL_WARNING_MODULE,
+                        append=False,
+                    )
+                    modules["joblib"].dump(artifact, buffer, compress=3)
+                content = buffer.getvalue()
+                if not content:
+                    raise ShadowPredictionError("Serialisation d'etat vide.")
+                digest = hashlib.sha256(content).hexdigest()
+            _validate_shadow_state_loaded_envelope(loaded_model)
+            if loaded_model.artifact is not artifact:
+                raise ShadowPredictionError("Objet modele remplace pendant la serialisation.")
+            _validate_loaded_shadow_model_metadata(artifact, manifest, modules)
+            if (
+                _shadow_imported_runtime_versions(modules) != runtime
+                or _installed_model_runtime_versions() != runtime
+                or loaded_model.runtime_versions != tuple(sorted(runtime.items()))
+            ):
+                raise ShadowPredictionError("L'environnement a change pendant l'empreinte d'etat.")
+            for (path, expected), original in zip(specs, documents):
+                if _read_pinned_model_prerequisite_file(project_directory, path, expected) != original:
+                    raise ShadowPredictionError("Les documents figes ont change pendant l'empreinte.")
+            return ShadowModelStateSnapshot(
+                loaded_model=loaded_model, artifact_state_sha256=digest,
+                runtime_versions=tuple(sorted(runtime.items())),
+                approved_state_serialization_warning_count=len(recorded),
+            )
+    except ShadowPredictionError:
+        raise
+    except Exception as error:
+        raise ShadowPredictionError(
+            f"Empreinte de l'etat du modele refusee : {type(error).__name__}: {error}"
+        ) from error
+    finally:
+        _MODEL_LOADING_LOCK.release()
+
+
+def _verify_frozen_shadow_model_state_unchanged(
+    loaded_model: ShadowLoadedModel,
+    before: ShadowModelStateSnapshot,
+    *, project_directory: Path = PROJECT_DIRECTORY,
+) -> ShadowModelStateVerification:
+    """Recalcule le second etat ; une difference est une erreur, sans reparation.
+
+    Ne prend ni fonction de prediction ni empreinte apres fournie par l'appelant.
+    Ne garantit pas qu'une prediction a eu lieu, ni l'absence d'une mutation
+    transitoire annulee entre deux mesures. Les objets sont internes au moteur.
+    """
+    if type(before) is not ShadowModelStateSnapshot:
+        raise ShadowPredictionError("Mesure initiale d'etat exacte requise.")
+    _validate_shadow_state_loaded_envelope(loaded_model)
+    if (
+        before.loaded_model is not loaded_model
+        or type(before.runtime_versions) is not tuple
+        or before.runtime_versions != loaded_model.runtime_versions
+        or type(before.warning_policy_id) is not str
+        or before.warning_policy_id != _MODEL_WARNING_POLICY_ID
+        or type(before.approved_state_serialization_warning_count) is not int
+        or before.approved_state_serialization_warning_count < 0
+    ):
+        raise ShadowPredictionError("Mesure initiale et modele incompatibles.")
+    _require_sha256(before.artifact_state_sha256, field="artifact_state_sha256_before")
+    after = _snapshot_frozen_shadow_model_state(
+        loaded_model, project_directory=project_directory,
+    )
+    if before.artifact_state_sha256 != after.artifact_state_sha256:
+        raise ShadowPredictionError("L'etat serialise du modele a change ; execution refusee.")
+    return ShadowModelStateVerification(
+        artifact_state_sha256_before=before.artifact_state_sha256,
+        artifact_state_sha256_after=after.artifact_state_sha256,
+        approved_state_serialization_warning_count=(
+            before.approved_state_serialization_warning_count
+            + after.approved_state_serialization_warning_count
+        ),
+    )
 
 
 def fail_shadow_prediction_slot(

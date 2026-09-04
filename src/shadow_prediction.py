@@ -2,7 +2,8 @@
 
 Ce module ne sait volontairement ni activer ni executer une prediction. Il
 valide l'apercu statique, construit les formats canoniques, inspecte les
-creneaux, fige leurs preuves distantes et publie leur sous-ensemble source.
+creneaux, fige leurs preuves distantes et publie leur sous-ensemble source,
+puis le registre des candidats et leurs variables J-1 canoniques.
 Les chemins d'apercu restent sans lecture officielle et aucun composant de
 modele n'est importe ni charge.
 """
@@ -14,7 +15,7 @@ import base64
 from contextlib import closing, contextmanager
 import csv
 from dataclasses import asdict, dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from email.utils import format_datetime, parsedate_to_datetime
 from enum import Enum
 import errno
@@ -33,6 +34,7 @@ import time
 from types import MappingProxyType
 from typing import Any, Iterator, Mapping, Sequence
 from urllib.parse import parse_qsl, urlsplit
+import zlib
 
 import requests
 
@@ -86,6 +88,24 @@ ACTIVATION_REVERIFICATION_FILENAME = (
     "activation_reverification.remote.json.gz"
 )
 SOURCE_SNAPSHOT_FILENAME = "source_snapshot.json.gz"
+CANDIDATE_LEDGER_FILENAME = "candidate_ledger.csv"
+FEATURES_FILENAME = "features.csv"
+
+_CANDIDATE_LEDGER_COLUMNS = (
+    "batch_id",
+    "game_id",
+    "occurrence_key",
+    "season",
+    "official_date",
+    "away_team_id",
+    "home_team_id",
+    "scheduled_start_utc",
+    "status_code",
+    "abstract_state",
+    "detailed_state",
+    "eligibility_status",
+    "exclusion_reason",
+)
 GITHUB_COMPARE_URL_TEMPLATE = (
     "https://api.github.com/repos/hestia19100-spec/"
     "fredo-mlb-predictor/compare/{expected_commit}...main"
@@ -161,6 +181,93 @@ _FEATURE_ROW_INTEGER_INDEXES = (2, 4, 6, 7, 12, 16)
 _FEATURE_ROW_DATE_INDEXES = (5, 9, 10, 11)
 _FEATURE_ROW_TIMESTAMP_INDEX = 8
 _FEATURE_ROW_FIXED_6_INDEXES = (13, 14, 15, 17, 18, 19)
+_FEATURES_COLUMNS = (*_FEATURE_ROW_FIELD_NAMES, "feature_row_sha256")
+
+_SOURCE_SNAPSHOT_KEYS = frozenset(
+    {
+        "schema_version",
+        "batch_id",
+        "target_official_date",
+        "created_at_utc",
+        "information_cutoff_utc",
+        "schedule_ingestion",
+        "sqlite_snapshot",
+        "teams",
+        "target_schedule",
+        "source_final_games",
+    }
+)
+_SOURCE_SCHEDULE_INGESTION_KEYS = frozenset(
+    {
+        "run_id",
+        "source",
+        "requested_start_date",
+        "requested_end_date",
+        "game_types",
+        "request_parameters_json",
+        "completed_at_utc",
+        "raw_archive_path",
+        "raw_archive_sha256",
+        "response_effective_url",
+        "response_status_code",
+        "response_redirect_count",
+        "mlb_http_date_header_raw",
+        "mlb_http_date_utc",
+        "mlb_http_response_received_at_utc",
+        "response_body_sha256",
+    }
+)
+_SOURCE_SQLITE_SNAPSHOT_KEYS = frozenset(
+    {
+        "source_database_path",
+        "sha256",
+        "size_bytes",
+        "foreign_key_violation_count",
+        "active_ingestion_count",
+    }
+)
+_SOURCE_TEAM_KEYS = frozenset({"team_id", "name", "abbreviation"})
+_SOURCE_TARGET_SCHEDULE_KEYS = frozenset(
+    {
+        "game_id",
+        "season",
+        "official_date",
+        "game_datetime_utc",
+        "game_type",
+        "status_code",
+        "abstract_state",
+        "detailed_state",
+        "away_team_id",
+        "home_team_id",
+        "doubleheader",
+        "game_number",
+    }
+)
+_SOURCE_FINAL_GAME_KEYS = frozenset(
+    {
+        "game_id",
+        "season",
+        "official_date",
+        "game_type",
+        "status_code",
+        "status_detail",
+        "away_team_id",
+        "home_team_id",
+        "away_score",
+        "home_score",
+    }
+)
+_POSTPONED_STATUS_CODES = frozenset({"D", "DI", "DR"})
+_CANCELLED_STATUS_CODES = frozenset({"C", "CI", "CR"})
+_ALLOWED_CANDIDATE_EXCLUSION_REASONS = (
+    "POSTPONED",
+    "CANCELLED",
+    "START_TIME_MISSING",
+    "INSUFFICIENT_BOTH_HISTORY",
+    "INSUFFICIENT_AWAY_HISTORY",
+    "INSUFFICIENT_HOME_HISTORY",
+)
+_MINIMUM_HISTORY_GAMES_PER_TEAM = 10
 
 _RESERVED_MARKER_KEYS = frozenset(
     {
@@ -491,6 +598,26 @@ class ShadowSourceSnapshotPublication:
     schedule_ingestion_run_id: int
     schedule_attempts: int
     information_cutoff_utc: str
+
+
+@dataclass(frozen=True, slots=True)
+class ShadowCandidateFeaturesPublication:
+    """Preuve des quatrieme et cinquieme fichiers officiels du slot."""
+
+    slot_path: Path
+    candidate_ledger_path: Path
+    candidate_ledger_relative_path: str
+    candidate_ledger_sha256: str
+    candidate_ledger_size_bytes: int
+    candidate_row_count: int
+    features_path: Path
+    features_relative_path: str
+    features_sha256: str
+    features_size_bytes: int
+    feature_row_count: int
+    eligible_game_count: int
+    excluded_games_by_reason: tuple[tuple[str, int], ...]
+    earliest_eligible_scheduled_start_utc: str | None
 
 
 def _validate_json_value(
@@ -2369,8 +2496,16 @@ def _validate_source_snapshot_predecessors(
     activation_publication: ShadowActivationReverificationPublication,
     *,
     project_directory: Path,
+    expected_additional_filenames: frozenset[str] = frozenset(),
 ) -> tuple[str, str, str]:
-    """Valide les deux premiers fichiers avant toute source officielle."""
+    """Reverifie les deux preuves et l'ensemble exact des fichiers attendus."""
+    if type(expected_additional_filenames) is not frozenset or not all(
+        type(name) is str and name
+        for name in expected_additional_filenames
+    ):
+        raise ShadowPredictionError(
+            "Les fichiers additionnels attendus doivent etre explicites."
+        )
     (
         target_date,
         reserved_at,
@@ -2450,9 +2585,9 @@ def _validate_source_snapshot_predecessors(
         ) from error
     expected_names = frozenset(
         {"RESERVED", ACTIVATION_REVERIFICATION_FILENAME}
-    )
+    ) | expected_additional_filenames
     if (
-        len(entries) != 2
+        len(entries) != len(expected_names)
         or frozenset(entry.name for entry in entries) != expected_names
         or any(
             not isinstance(mode := _lstat_mode(entry), int)
@@ -2461,7 +2596,7 @@ def _validate_source_snapshot_predecessors(
         )
     ):
         raise ShadowPredictionSlotConsumedError(
-            "Le snapshot source doit etre exactement le troisieme fichier."
+            "Le slot ne contient pas exactement les predecesseurs attendus."
         )
 
     persisted_reserved = _read_canonical_json_object(
@@ -2597,11 +2732,11 @@ def _hold_source_snapshot_stage_lock(
             if os.name == "nt":
                 import msvcrt
 
-                # Un verrou Windows interdit aussi au proprietaire de relire
-                # la zone verrouillee via un autre handle. L'octet situe
-                # juste apres l'EOF est donc reserve au verrou et laisse les
-                # octets immuables de RESERVED entierement verifiables.
-                reserved_file.seek(0, os.SEEK_END)
+                # read_bytes() peut tenter une lecture au-dela de l'EOF :
+                # un verrou a EOF bloque alors aussi son proprietaire.
+                # Tous les concurrents verrouillent le meme octet lointain,
+                # sans ecrire ni agrandir le petit marqueur canonique.
+                reserved_file.seek(0x7fffffff, os.SEEK_SET)
                 msvcrt.locking(
                     reserved_file.fileno(),
                     msvcrt.LK_NBLCK,
@@ -3546,6 +3681,469 @@ def capture_and_publish_source_snapshot(
             database_path=database_path,
             data_directory=data_directory,
             project_directory=project_directory,
+        )
+
+
+def _require_exact_source_object(
+    value: object,
+    keys: frozenset[str],
+    *,
+    field: str,
+) -> dict[str, Any]:
+    """Refuse toute extension ou omission dans le snapshot deja fige."""
+    if type(value) is not dict or frozenset(value) != keys:
+        raise ShadowPredictionError(f"Schema exact requis pour {field}.")
+    return value
+
+
+def _validate_candidate_source_proof(
+    reservation: ShadowPredictionSlotReservation,
+    source_publication: ShadowSourceSnapshotPublication,
+    *,
+    project_directory: Path,
+) -> tuple[str, str]:
+    """Controle les identites de source sans lire ni remplacer de fichier."""
+    target, reserved_at, _, _, _, _ = (
+        _validate_reservation_proof_without_disk(reservation)
+    )
+    if type(source_publication) is not ShadowSourceSnapshotPublication:
+        raise ShadowPredictionError("Une preuve exacte de snapshot est requise.")
+    if not isinstance(project_directory, Path):
+        raise ShadowPredictionError("project_directory doit etre un Path.")
+    expected_slot = project_directory.joinpath(
+        *SHADOW_RESULT_ROOT_RELATIVE_PATH.parts, target
+    )
+    expected_path = expected_slot / SOURCE_SNAPSHOT_FILENAME
+    expected_relative = (
+        SHADOW_RESULT_ROOT_RELATIVE_PATH / target / SOURCE_SNAPSHOT_FILENAME
+    ).as_posix()
+    if (
+        reservation.slot_path != expected_slot
+        or source_publication.slot_path != expected_slot
+        or source_publication.snapshot_path != expected_path
+        or source_publication.snapshot_relative_path != expected_relative
+    ):
+        raise ShadowPredictionError("La preuve source ne vise pas le slot exact.")
+    for field in ("snapshot_sha256", "sqlite_snapshot_sha256"):
+        _require_sha256(getattr(source_publication, field), field=field)
+    for field in (
+        "snapshot_size_bytes", "sqlite_snapshot_size_bytes",
+        "schedule_ingestion_run_id", "schedule_attempts",
+    ):
+        _require_positive_integer(getattr(source_publication, field), field=field)
+    if source_publication.schedule_attempts > 3:
+        raise ShadowPredictionError("La preuve source excede trois tentatives.")
+    cutoff = _require_utc_timestamp(
+        source_publication.information_cutoff_utc,
+        field="source_publication.information_cutoff_utc",
+    )
+    if cutoff < reserved_at:
+        raise ShadowPredictionError("Le cutoff source precede la reservation.")
+    return target, cutoff
+
+
+def _read_candidate_source_snapshot(
+    reservation: ShadowPredictionSlotReservation,
+    source_publication: ShadowSourceSnapshotPublication,
+    *,
+    project_directory: Path,
+) -> tuple[bytes, dict[str, Any]]:
+    """Relit uniquement les octets immuables du troisieme fichier officiel."""
+    target, cutoff = _validate_candidate_source_proof(
+        reservation, source_publication, project_directory=project_directory
+    )
+    snapshot_path = source_publication.snapshot_path
+    mode = _lstat_mode(snapshot_path)
+    if not isinstance(mode, int) or not stat.S_ISREG(mode):
+        raise ShadowPredictionError("Le snapshot doit etre un fichier non symbolique.")
+    try:
+        compressed = snapshot_path.read_bytes()
+        if (
+            len(compressed) != source_publication.snapshot_size_bytes
+            or hashlib.sha256(compressed).hexdigest()
+            != source_publication.snapshot_sha256
+        ):
+            raise ShadowPredictionError("L'empreinte ou la taille du snapshot a change.")
+        json_bytes = gzip.decompress(compressed)
+        payload = json.loads(
+            json_bytes.decode("utf-8"), object_pairs_hook=_reject_duplicate_keys
+        )
+        if (
+            _canonical_json_file_bytes(payload) != json_bytes
+            or _canonical_gzip_bytes(json_bytes) != compressed
+        ):
+            raise ShadowPredictionError("Le snapshot source n'est pas canonique.")
+    except (
+        OSError, EOFError, UnicodeError, ValueError, RecursionError, zlib.error
+    ) as error:
+        raise ShadowPredictionError("Le snapshot source est illisible ou ambigu.") from error
+    payload = _require_exact_source_object(
+        payload, _SOURCE_SNAPSHOT_KEYS, field="source_snapshot"
+    )
+    if (
+        type(payload["schema_version"]) is not int
+        or payload["schema_version"] != 1
+        or payload["batch_id"] != reservation.batch_id
+        or payload["target_official_date"] != target
+        or payload["information_cutoff_utc"] != cutoff
+        or payload["created_at_utc"] != cutoff
+    ):
+        raise ShadowPredictionError("L'identite du snapshot source est incoherente.")
+
+    sqlite = _require_exact_source_object(
+        payload["sqlite_snapshot"], _SOURCE_SQLITE_SNAPSHOT_KEYS,
+        field="sqlite_snapshot",
+    )
+    expected_sqlite = {
+        "source_database_path": "data/fredo_mlb.db",
+        "sha256": source_publication.sqlite_snapshot_sha256,
+        "size_bytes": source_publication.sqlite_snapshot_size_bytes,
+        "foreign_key_violation_count": 0,
+        "active_ingestion_count": 0,
+    }
+    if any(type(sqlite[k]) is not type(v) or sqlite[k] != v
+           for k, v in expected_sqlite.items()):
+        raise ShadowPredictionError("La preuve SQLite du snapshot est incoherente.")
+
+    ingestion = _require_exact_source_object(
+        payload["schedule_ingestion"], _SOURCE_SCHEDULE_INGESTION_KEYS,
+        field="schedule_ingestion",
+    )
+    parameters = build_schedule_request_parameters(
+        start_date=date.fromisoformat(target),
+        end_date=date.fromisoformat(target), game_types=("R",),
+    )
+    expected_ingestion = {
+        "run_id": source_publication.schedule_ingestion_run_id,
+        "source": INGESTION_SOURCE,
+        "requested_start_date": target,
+        "requested_end_date": target,
+        "game_types": "R",
+        "request_parameters_json": _canonical_json_bytes(parameters).decode("utf-8"),
+        "response_status_code": 200,
+        "response_redirect_count": 0,
+    }
+    if any(type(ingestion[k]) is not type(v) or ingestion[k] != v
+           for k, v in expected_ingestion.items()):
+        raise ShadowPredictionError("La collecte source ne correspond pas au lot.")
+    raw_hash = _require_sha256(ingestion["raw_archive_sha256"], field="raw_archive_sha256")
+    if ingestion["response_body_sha256"] != raw_hash:
+        raise ShadowPredictionError("Le corps HTTP et l'archive source divergent.")
+    raw_path_text = _require_nonempty_text(ingestion["raw_archive_path"], field="raw_archive_path")
+    raw_path = PurePosixPath(raw_path_text)
+    if (
+        "\\" in raw_path_text or raw_path.is_absolute()
+        or raw_path.parts[:2] != ("data", "raw")
+        or len(raw_path.parts) < 3
+        or any(part in {"", ".", ".."} for part in raw_path.parts)
+        or raw_path.as_posix() != raw_path_text
+        or not raw_path.name.endswith(".json.gz")
+    ):
+        raise ShadowPredictionError("Chemin d'archive source non canonique.")
+    effective_url = _require_nonempty_text(ingestion["response_effective_url"], field="response_effective_url")
+    try:
+        url = urlsplit(effective_url)
+        pairs = parse_qsl(url.query, keep_blank_values=True, strict_parsing=True)
+    except ValueError as error:
+        raise ShadowPredictionError("URL source MLB invalide.") from error
+    if (
+        url.scheme != "https" or url.netloc != "statsapi.mlb.com"
+        or url.path != "/api/v1/schedule" or url.fragment
+        or len(pairs) != len({key for key, _ in pairs})
+        or dict(pairs) != {str(k): str(v) for k, v in parameters.items()}
+    ):
+        raise ShadowPredictionError("URL source MLB hors contrat.")
+    http_date = _parse_imf_fixdate_gmt(
+        ingestion["mlb_http_date_header_raw"], field="mlb_http_date_header_raw"
+    )
+    received = _require_utc_timestamp(
+        ingestion["mlb_http_response_received_at_utc"], field="mlb_http_response_received_at_utc"
+    )
+    completed = _require_utc_timestamp(ingestion["completed_at_utc"], field="completed_at_utc")
+    reserved_at = reservation.reserved_marker["reserved_at_utc"]
+    if (
+        ingestion["mlb_http_date_utc"] != http_date
+        or not (reserved_at <= received <= completed <= cutoff)
+    ):
+        raise ShadowPredictionError("Ordre temporel du snapshot invalide.")
+    to_datetime = lambda value: datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if (
+        abs((to_datetime(received) - to_datetime(http_date)).total_seconds()) > 300
+        or not 0 <= (to_datetime(cutoff) - to_datetime(received)).total_seconds() <= 900
+    ):
+        raise ShadowPredictionError("Fraicheur ou horloge du snapshot invalide.")
+    for name in ("teams", "target_schedule", "source_final_games"):
+        if type(payload[name]) is not list:
+            raise ShadowPredictionError(f"{name} doit etre une liste JSON exacte.")
+    return compressed, payload
+
+
+def _build_candidate_feature_rows(
+    snapshot: dict[str, Any],
+    *,
+    shadow_protocol_sha256: str,
+) -> tuple[list[list[object]], list[list[object]], dict[str, int]]:
+    """Calcule les deux tables en memoire depuis le seul sous-ensemble fige.
+
+    Tous les cumuls sont termines avant le premier candidat. Le parcours du
+    calendrier cible ne modifie jamais l'etat d'une equipe.
+    """
+    _require_sha256(shadow_protocol_sha256, field="shadow_protocol_sha256")
+    target = _require_date_string(snapshot["target_official_date"], field="target_official_date")
+    batch_id = _require_sha256(snapshot["batch_id"], field="batch_id")
+    cutoff = _require_utc_timestamp(snapshot["information_cutoff_utc"], field="information_cutoff_utc")
+    feature_as_of = (date.fromisoformat(target) - timedelta(days=1)).isoformat()
+    # games, wins, runs_scored, runs_allowed, max_source_date
+    states: dict[int, list[Any]] = {}
+    previous_team_id = 0
+    for row in snapshot["teams"]:
+        team = _require_exact_source_object(row, _SOURCE_TEAM_KEYS, field="teams[]")
+        team_id = _require_positive_integer(team["team_id"], field="team_id")
+        _require_nonempty_text(team["name"], field="team.name")
+        if team["abbreviation"] is not None:
+            _require_nonempty_text(team["abbreviation"], field="team.abbreviation")
+        if team_id <= previous_team_id:
+            raise ShadowPredictionError("Equipes dupliquees ou hors ordre canonique.")
+        previous_team_id = team_id
+        states[team_id] = [0, 0, 0, 0, None]
+
+    source_ids: set[int] = set()
+    previous_source_key: tuple[str, int] | None = None
+    for raw in snapshot["source_final_games"]:
+        row = _require_exact_source_object(raw, _SOURCE_FINAL_GAME_KEYS, field="source_final_games[]")
+        game_id = _require_positive_integer(row["game_id"], field="source.game_id")
+        season = _require_integer(row["season"], field="source.season")
+        official = _require_date_string(row["official_date"], field="source.official_date")
+        code, _ = _require_status_text(row["status_code"], field="source.status_code")
+        _, detail = _require_status_text(row["status_detail"], field="source.status_detail")
+        away = _require_positive_integer(row["away_team_id"], field="source.away_team_id")
+        home = _require_positive_integer(row["home_team_id"], field="source.home_team_id")
+        away_score = _require_integer(row["away_score"], field="source.away_score")
+        home_score = _require_integer(row["home_score"], field="source.home_score")
+        key = (official, game_id)
+        if (
+            season != EXPECTED_TARGET_SEASON or official >= target
+            or row["game_type"] != "R" or away == home
+            or away not in states or home not in states
+            or away_score < 0 or home_score < 0 or away_score == home_score
+            or not (code == "F" or detail in {"FINAL", "GAME OVER", "COMPLETED EARLY"})
+            or game_id in source_ids
+            or (previous_source_key is not None and key <= previous_source_key)
+        ):
+            raise ShadowPredictionError("Match source malforme, non J-1 ou hors ordre.")
+        source_ids.add(game_id)
+        previous_source_key = key
+        for team_id, scored, allowed in ((away, away_score, home_score), (home, home_score, away_score)):
+            state = states[team_id]
+            state[0] += 1
+            state[1] += int(scored > allowed)
+            state[2] += scored
+            state[3] += allowed
+            state[4] = official if state[4] is None else max(state[4], official)
+
+    ledger: list[list[object]] = []
+    features: list[list[object]] = []
+    exclusions = {reason: 0 for reason in _ALLOWED_CANDIDATE_EXCLUSION_REASONS}
+    target_ids: set[int] = set()
+    occurrence_ids: set[str] = set()
+    previous_target_key: tuple[int, str, int] | None = None
+    for raw in snapshot["target_schedule"]:
+        row = _require_exact_source_object(raw, _SOURCE_TARGET_SCHEDULE_KEYS, field="target_schedule[]")
+        game_id = _require_positive_integer(row["game_id"], field="target.game_id")
+        season = _require_integer(row["season"], field="target.season")
+        official = _require_date_string(row["official_date"], field="target.official_date")
+        away = _require_positive_integer(row["away_team_id"], field="target.away_team_id")
+        home = _require_positive_integer(row["home_team_id"], field="target.home_team_id")
+        code, normalized_code = _require_status_text(row["status_code"], field="target.status_code")
+        abstract, normalized_abstract = _require_status_text(row["abstract_state"], field="target.abstract_state")
+        detail, normalized_detail = _require_status_text(row["detailed_state"], field="target.detailed_state")
+        start = row["game_datetime_utc"]
+        if start is not None:
+            start = _require_utc_timestamp(start, field="target.game_datetime_utc")
+            if start <= cutoff:
+                raise ShadowPredictionError("Un horaire cible ne suit pas le cutoff fige.")
+        if row["doubleheader"] is not None:
+            _require_nonempty_text(row["doubleheader"], field="target.doubleheader")
+        if row["game_number"] is not None:
+            _require_positive_integer(row["game_number"], field="target.game_number")
+        key = (int(start is None), start or "", game_id)
+        if (
+            season != EXPECTED_TARGET_SEASON or official != target
+            or row["game_type"] != "R" or away == home
+            or away not in states or home not in states
+            or game_id in target_ids or game_id in source_ids
+            or (previous_target_key is not None and key <= previous_target_key)
+        ):
+            raise ShadowPredictionError("Identite cible contradictoire ou ordre non canonique.")
+        target_ids.add(game_id)
+        previous_target_key = key
+        occurrence = build_occurrence_key(
+            game_id=game_id, official_date_at_snapshot=official,
+            scheduled_start_utc_at_snapshot_or_null=start,
+        )
+        if occurrence in occurrence_ids:
+            raise ShadowPredictionError("Une occurrence cible est dupliquee.")
+        occurrence_ids.add(occurrence)
+        reason: str | None = None
+        if normalized_code in _POSTPONED_STATUS_CODES and normalized_detail == "POSTPONED":
+            reason = "POSTPONED"
+        elif normalized_code in _CANCELLED_STATUS_CODES and normalized_detail == "CANCELLED":
+            reason = "CANCELLED"
+        else:
+            if normalized_abstract in {"LIVE", "FINAL"}:
+                raise ShadowPredictionError("Un candidat est deja commence ou termine.")
+            if not (
+                (normalized_code == "S" and normalized_abstract == "PREVIEW" and normalized_detail == "SCHEDULED")
+                or (normalized_code == "P" and normalized_abstract == "PREVIEW" and normalized_detail == "PRE-GAME")
+            ):
+                raise ShadowPredictionError("Un candidat possede un etat MLB inconnu.")
+            away_short = states[away][0] < _MINIMUM_HISTORY_GAMES_PER_TEAM
+            home_short = states[home][0] < _MINIMUM_HISTORY_GAMES_PER_TEAM
+            if start is None:
+                reason = "START_TIME_MISSING"
+            elif away_short and home_short:
+                reason = "INSUFFICIENT_BOTH_HISTORY"
+            elif away_short:
+                reason = "INSUFFICIENT_AWAY_HISTORY"
+            elif home_short:
+                reason = "INSUFFICIENT_HOME_HISTORY"
+        ledger.append([
+            batch_id, game_id, occurrence, season, official, away, home,
+            start, code, abstract, detail,
+            "ELIGIBLE" if reason is None else "EXCLUDED", reason,
+        ])
+        if reason is not None:
+            exclusions[reason] += 1
+            continue
+        assert start is not None
+        team_values: list[list[object]] = []
+        for team_id in (away, home):
+            games, wins, scored, allowed, max_date = states[team_id]
+            if games < _MINIMUM_HISTORY_GAMES_PER_TEAM or max_date is None or max_date >= target:
+                raise ShadowPredictionError("Historique insuffisant avant division.")
+            try:
+                values: list[object] = [games] + [
+                    _format_feature_rate(numerator / games)
+                    for numerator in (wins, scored, allowed)
+                ]
+            except (OverflowError, ValueError) as error:
+                raise ShadowPredictionError("Variable de forme non finie.") from error
+            team_values.append(values)
+        prediction_id = build_prediction_id(
+            shadow_protocol_sha256=shadow_protocol_sha256,
+            game_id=game_id, official_date_at_snapshot=official,
+            scheduled_start_utc_at_snapshot=start,
+        )
+        feature_values: list[object] = [
+            prediction_id, batch_id, game_id, occurrence, season, official,
+            away, home, start, feature_as_of, states[away][4], states[home][4],
+            *team_values[0], *team_values[1],
+        ]
+        feature_hash = build_feature_row_sha256(
+            feature_row_values_in_features_columns_exact_order_excluding_feature_row_sha256=feature_values,
+        )
+        features.append([*feature_values, feature_hash])
+    if len(ledger) != len(features) + sum(exclusions.values()):
+        raise ShadowPredictionError("Les compteurs du calendrier ne sont pas conserves.")
+    if [(r[1], r[2]) for r in ledger if r[11] == "ELIGIBLE"] != [(r[2], r[3]) for r in features]:
+        raise ShadowPredictionError("Le registre et les variables ne concordent pas.")
+    return ledger, features, exclusions
+
+
+def build_and_publish_candidate_ledger_and_features(
+    reservation: ShadowPredictionSlotReservation,
+    activation_publication: ShadowActivationReverificationPublication,
+    source_publication: ShadowSourceSnapshotPublication,
+    *,
+    project_directory: Path = PROJECT_DIRECTORY,
+) -> ShadowCandidateFeaturesPublication:
+    """Publie les fichiers 4 et 5 depuis le snapshot, sans modele ni reseau.
+
+    Toute la validation et les deux serialisations precedent le premier
+    lien. Un echec d'E/S conserve les fichiers deja publies et ne permet
+    aucune reprise. La fermeture FAILED.json appartient a l'orchestrateur.
+    """
+    target, _ = _validate_candidate_source_proof(
+        reservation, source_publication, project_directory=project_directory
+    )
+    source_names = frozenset({SOURCE_SNAPSHOT_FILENAME})
+    _validate_source_snapshot_predecessors(
+        reservation, activation_publication,
+        project_directory=project_directory,
+        expected_additional_filenames=source_names,
+    )
+    with _hold_source_snapshot_stage_lock(reservation, project_directory=project_directory):
+        _validate_source_snapshot_predecessors(
+            reservation, activation_publication,
+            project_directory=project_directory,
+            expected_additional_filenames=source_names,
+        )
+        source_bytes, snapshot = _read_candidate_source_snapshot(
+            reservation, source_publication, project_directory=project_directory
+        )
+        ledger, features, exclusions = _build_candidate_feature_rows(
+            snapshot,
+            shadow_protocol_sha256=reservation.reserved_marker["shadow_protocol_sha256"],
+        )
+        ledger_bytes = _canonical_csv_bytes(_CANDIDATE_LEDGER_COLUMNS, ledger)
+        features_bytes = _canonical_csv_bytes(_FEATURES_COLUMNS, features)
+        # Ne jamais publier le registre puis decouvrir une source changee ou
+        # une erreur de calcul/serialisation des variables.
+        _validate_source_snapshot_predecessors(
+            reservation, activation_publication,
+            project_directory=project_directory,
+            expected_additional_filenames=source_names,
+        )
+        confirmed_bytes, _ = _read_candidate_source_snapshot(
+            reservation, source_publication, project_directory=project_directory
+        )
+        if confirmed_bytes != source_bytes:
+            raise ShadowPredictionError("Le snapshot a change pendant les calculs.")
+        ledger_path = reservation.slot_path / CANDIDATE_LEDGER_FILENAME
+        features_path = reservation.slot_path / FEATURES_FILENAME
+        try:
+            ledger_hash = _publish_exclusive_verified(ledger_path, ledger_bytes)
+            _validate_source_snapshot_predecessors(
+                reservation, activation_publication,
+                project_directory=project_directory,
+                expected_additional_filenames=source_names | {CANDIDATE_LEDGER_FILENAME},
+            )
+            if ledger_path.read_bytes() != ledger_bytes or source_publication.snapshot_path.read_bytes() != source_bytes:
+                raise ShadowPredictionError("Une source ou le registre a change avant les variables.")
+            features_hash = _publish_exclusive_verified(features_path, features_bytes)
+            _validate_source_snapshot_predecessors(
+                reservation, activation_publication,
+                project_directory=project_directory,
+                expected_additional_filenames=source_names | {CANDIDATE_LEDGER_FILENAME, FEATURES_FILENAME},
+            )
+            if (
+                ledger_path.read_bytes() != ledger_bytes
+                or features_path.read_bytes() != features_bytes
+                or source_publication.snapshot_path.read_bytes() != source_bytes
+                or ledger_hash != hashlib.sha256(ledger_bytes).hexdigest()
+                or features_hash != hashlib.sha256(features_bytes).hexdigest()
+            ):
+                raise ShadowPredictionError("Les fichiers publies ne sont plus identiques.")
+        except ShadowPublicationConflictError as error:
+            raise ShadowPredictionSlotConsumedError("Le jalon candidats/variables est deja consomme.") from error
+        except OSError as error:
+            raise ShadowPredictionError("Publication incomplete; aucune reparation du slot n'est permise.") from error
+        relative_root = SHADOW_RESULT_ROOT_RELATIVE_PATH / target
+        return ShadowCandidateFeaturesPublication(
+            slot_path=reservation.slot_path,
+            candidate_ledger_path=ledger_path,
+            candidate_ledger_relative_path=(relative_root / CANDIDATE_LEDGER_FILENAME).as_posix(),
+            candidate_ledger_sha256=ledger_hash,
+            candidate_ledger_size_bytes=len(ledger_bytes),
+            candidate_row_count=len(ledger),
+            features_path=features_path,
+            features_relative_path=(relative_root / FEATURES_FILENAME).as_posix(),
+            features_sha256=features_hash,
+            features_size_bytes=len(features_bytes),
+            feature_row_count=len(features),
+            eligible_game_count=len(features),
+            excluded_games_by_reason=tuple(exclusions.items()),
+            earliest_eligible_scheduled_start_utc=(features[0][8] if features else None),
         )
 
 

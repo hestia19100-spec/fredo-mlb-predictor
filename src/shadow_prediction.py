@@ -6,8 +6,9 @@ creneaux, fige leurs preuves distantes et publie leur sous-ensemble source,
 puis le registre des candidats et leurs variables J-1 canoniques.
 Une primitive separee controle les fichiers figes du modele et les versions
 installees sans deserialisation et sans autoriser une execution.
-Les chemins d'apercu restent sans lecture officielle et aucun composant de
-modele n'est importe ni charge.
+Un chargeur interne peut ensuite deserialiser ces octets sans predire.
+Les chemins d'apercu restent sans lecture officielle, import ou chargement
+de modele. Aucune de ces primitives n'autorise une execution officielle.
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ from enum import Enum
 import errno
 import gzip
 import hashlib
-from importlib import metadata as distribution_metadata
+from importlib import import_module, metadata as distribution_metadata
 import io
 import json
 import math
@@ -33,12 +34,15 @@ import platform
 import re
 import sqlite3
 import stat
+import sys
 import tempfile
+import threading
 import time
 from types import MappingProxyType
 from typing import Any, Iterator, Mapping, Sequence
 from urllib.parse import parse_qsl, urlsplit
 import zlib
+import warnings
 
 import requests
 
@@ -158,6 +162,10 @@ _MODEL_RUNTIME_DISTRIBUTIONS = (
 _MODEL_RUNTIME_KEYS = frozenset(
     {"python", *(key for key, _ in _MODEL_RUNTIME_DISTRIBUTIONS)}
 )
+_MODEL_LOADING_LOCK = threading.Lock()
+_MODEL_WARNING_POLICY_ID = "VERIFIED_JOBLIB_NUMPY_COMPATIBILITY_V1"
+_MODEL_WARNING_MESSAGE = "Setting the shape on a NumPy array has been deprecated.*"
+_MODEL_WARNING_MODULE = r"joblib\.numpy_pickle"
 _MODEL_PREREQUISITE_PATHS = frozenset({
     SHADOW_PROTOCOL_RELATIVE_PATH.as_posix(),
     EXPECTED_ARTIFACT_MANIFEST_PATH,
@@ -672,6 +680,26 @@ class ShadowModelPrerequisites:
     activation_verified: bool = field(default=False, init=False)
     model_deserialized: bool = field(default=False, init=False)
     predictions_computed: bool = field(default=False, init=False)
+    execution_ready: bool = field(default=False, init=False)
+
+
+@dataclass(frozen=True, slots=True)
+class ShadowLoadedModel:
+    """Objet charge, sans autorisation de prediction ni garantie d'immuabilite.
+
+    L'enveloppe est figee, mais l'estimateur qu'elle contient reste un objet
+    mutable. Ses empreintes d'etat devront encadrer la future prediction.
+    """
+
+    artifact: Any = field(repr=False)
+    artifact_sha256: str
+    runtime_versions: tuple[tuple[str, str], ...]
+    approved_deserialization_warning_count: int
+    warning_policy_id: str = field(default=_MODEL_WARNING_POLICY_ID, init=False)
+    model_deserialized: bool = field(default=True, init=False)
+    predictions_computed: bool = field(default=False, init=False)
+    execution_manifest_verified: bool = field(default=False, init=False)
+    activation_verified: bool = field(default=False, init=False)
     execution_ready: bool = field(default=False, init=False)
 
 
@@ -4414,6 +4442,225 @@ def verify_frozen_model_prerequisites(
         shadow_protocol_sha256=EXPECTED_SHADOW_PROTOCOL_SHA256,
         runtime_versions=tuple(sorted(runtime.items())),
     )
+
+
+def _validate_shadow_model_loading_proof(
+    proof: ShadowModelPrerequisites, project_directory: Path,
+) -> None:
+    """Une dataclass fabriquee par l'appelant ne constitue pas une confiance."""
+    if type(proof) is not ShadowModelPrerequisites:
+        raise ShadowPredictionError("Preuve exacte des prerequis du modele requise.")
+    if (
+        not isinstance(project_directory, Path)
+        or not project_directory.is_absolute()
+        or ".." in project_directory.parts
+        or not isinstance(proof.artifact_path, Path)
+        or proof.artifact_path != project_directory.joinpath(
+            *PurePosixPath(EXPECTED_MODEL_ARTIFACT_PATH).parts
+        )
+    ):
+        raise ShadowPredictionError("La preuve du modele appartient a un autre projet.")
+    for key, expected in (
+        ("artifact_relative_path", EXPECTED_MODEL_ARTIFACT_PATH),
+        ("artifact_sha256", EXPECTED_MODEL_ARTIFACT_SHA256),
+        ("artifact_size_bytes", EXPECTED_MODEL_ARTIFACT_SIZE_BYTES),
+        ("artifact_manifest_sha256", EXPECTED_ARTIFACT_MANIFEST_SHA256),
+        ("model_protocol_sha256", EXPECTED_MODEL_PROTOCOL_SHA256),
+        ("shadow_protocol_sha256", EXPECTED_SHADOW_PROTOCOL_SHA256),
+        ("validation_scope", "FROZEN_MODEL_FILES_AND_INSTALLED_RUNTIME_ONLY"),
+        ("runtime_versions_source", "PYTHON_AND_INSTALLED_DISTRIBUTION_METADATA"),
+        ("execution_manifest_verified", False), ("activation_verified", False),
+        ("model_deserialized", False), ("predictions_computed", False),
+        ("execution_ready", False),
+    ):
+        _require_exact({key: getattr(proof, key)}, key, expected, context="prerequisites")
+    content = proof.artifact_bytes
+    if (
+        type(content) is not bytes
+        or len(content) != EXPECTED_MODEL_ARTIFACT_SIZE_BYTES
+        or hashlib.sha256(content).hexdigest() != EXPECTED_MODEL_ARTIFACT_SHA256
+    ):
+        raise ShadowPredictionError("Les octets en memoire du modele ne sont pas fiables.")
+    if (
+        type(proof.runtime_versions) is not tuple
+        or any(type(pair) is not tuple or len(pair) != 2
+               or any(type(value) is not str for value in pair)
+               for pair in proof.runtime_versions)
+    ):
+        raise ShadowPredictionError("Versions de la preuve non canoniques.")
+
+
+def _shadow_imported_runtime_versions(modules: Mapping[str, Any]) -> dict[str, str]:
+    """Les modules effectivement importes doivent aussi avoir les bonnes versions."""
+    versions = {"python": platform.python_version()}
+    for key, _ in _MODEL_RUNTIME_DISTRIBUTIONS:
+        version = getattr(modules[key], "__version__", None)
+        _require_nonempty_text(version, field=f"imported_runtime.{key}")
+        versions[key] = version
+    return versions
+
+
+def _import_shadow_model_runtime(expected_runtime: dict[str, str]) -> dict[str, Any]:
+    """Import tardif, apres verification des octets et de leurs documents figes."""
+    modules = {
+        key: import_module("sklearn" if key == "scikit_learn" else key)
+        for key, _ in _MODEL_RUNTIME_DISTRIBUTIONS
+    }
+    if _shadow_imported_runtime_versions(modules) != expected_runtime:
+        raise ShadowPredictionError("Versions des modules importes incompatibles.")
+    modules["artifact_module"] = import_module("src.calibrated_model")
+    modules["calibration_module"] = import_module("sklearn.calibration")
+    return modules
+
+
+def _deserialize_shadow_model_once(
+    content: bytes, modules: Mapping[str, Any],
+) -> tuple[Any, int]:
+    """Un seul joblib.load, avec le filtre exact du protocole et alias temporaire.
+
+    L'appelant detient _MODEL_LOADING_LOCK et a controle les versions exactes.
+    Le verrou protege nos chargeurs concurrents, pas du code Python tiers qui
+    modifierait lui-meme les filtres globaux ou __main__.
+    """
+    main_module = sys.modules.get("__main__")
+    if main_module is None:
+        raise ShadowPredictionError("Module __main__ absent pour la compatibilite.")
+    artifact_type = modules["artifact_module"].CalibratedModelArtifact
+    missing = object()
+    previous = vars(main_module).get("CalibratedModelArtifact", missing)
+    with warnings.catch_warnings(record=True) as recorded:
+        warnings.simplefilter("error")
+        warnings.filterwarnings(
+            "always", message=_MODEL_WARNING_MESSAGE,
+            category=DeprecationWarning, module=_MODEL_WARNING_MODULE, append=False,
+        )
+        vars(main_module)["CalibratedModelArtifact"] = artifact_type
+        try:
+            artifact = modules["joblib"].load(io.BytesIO(content))
+        finally:
+            if previous is missing:
+                vars(main_module).pop("CalibratedModelArtifact", None)
+            else:
+                vars(main_module)["CalibratedModelArtifact"] = previous
+    return artifact, len(recorded)
+
+
+def _validate_loaded_shadow_model_metadata(
+    artifact: Any, manifest: dict[str, Any], modules: Mapping[str, Any],
+) -> None:
+    """Controle le type, toutes les metadonnees et les classes, sans prediction."""
+    if type(artifact) is not modules["artifact_module"].CalibratedModelArtifact:
+        raise ShadowPredictionError("Type exact de CalibratedModelArtifact requis.")
+    model = manifest["model"]
+    chronology = manifest["chronology"]
+    expected_fields = {
+        "artifact_format_version": manifest["artifact"]["artifact_format_version"],
+        "calibrated_model_version": model["calibrated_model_version"],
+        "base_model_version": model["base_model_version"],
+        "code_version": manifest["artifact"]["code_version"],
+        "dataset_version": manifest["dataset"]["version"],
+        "dataset_sha256": manifest["dataset"]["sha256"],
+        "protocol_sha256": manifest["protocol"]["sha256"],
+        "feature_columns": tuple(model["feature_columns"]),
+        "base_training_seasons": tuple(chronology["base_training_seasons"]),
+        "calibration_season": chronology["calibration_season"],
+        "sealed_test_seasons": tuple(chronology["sealed_test_seasons"]),
+        "recent_seasons": tuple(chronology["recent_seasons"]),
+        "calibration_method": model["calibration_method"],
+        "sklearn_version": manifest["runtime"]["scikit_learn"],
+        "numpy_version": manifest["runtime"]["numpy"],
+    }
+    for name, expected in expected_fields.items():
+        actual = getattr(artifact, name, None)
+        _require_exact({name: actual}, name, expected, context="loaded_artifact")
+        if type(expected) is tuple and any(
+            type(item) is not type(reference) for item, reference in zip(actual, expected)
+        ):
+            raise ShadowPredictionError(f"Types de metadonnees inattendus : {name}.")
+    classifier = artifact.calibrated_classifier
+    if type(classifier) is not modules["calibration_module"].CalibratedClassifierCV:
+        raise ShadowPredictionError("Classifieur calibre exact requis.")
+    if getattr(classifier, "method", None) != "sigmoid":
+        raise ShadowPredictionError("Le classifieur ne declare pas la calibration sigmoid.")
+    np = modules["numpy"]
+    classes = getattr(classifier, "classes_", None)
+    if (
+        type(classes) is not np.ndarray or classes.shape != (2,)
+        or classes.dtype.kind not in "iu" or classes.tolist() != [0, 1]
+    ):
+        raise ShadowPredictionError("Les classes doivent etre exactement les entiers [0, 1].")
+    n_features = getattr(classifier, "n_features_in_", None)
+    if (
+        isinstance(n_features, (bool, np.bool_))
+        or not isinstance(n_features, (int, np.integer))
+        or n_features != len(model["feature_columns"])
+    ):
+        raise ShadowPredictionError("Le classifieur doit attendre les huit variables figees.")
+
+
+def _load_frozen_shadow_model(
+    prerequisites: ShadowModelPrerequisites,
+    *, project_directory: Path = PROJECT_DIRECTORY,
+) -> ShadowLoadedModel:
+    """Brique interne de chargement, pas un point d'entree d'execution officielle.
+
+    Ne relit jamais le fichier joblib : seul le tampon immuable reverifie est
+    transmis au deserialiseur. L'orchestrateur devra verifier auparavant les
+    autorisations d'execution/activation, le creneau et l'egalite des versions
+    avec le manifeste d'execution. Ces controles restent hors de ce lot.
+    """
+    if not _MODEL_LOADING_LOCK.acquire(blocking=False):
+        raise ShadowPredictionError("Un chargement shadow est deja en cours dans ce processus.")
+    try:
+        # Hors de joblib.load, aucun avertissement n'est autorise, y compris
+        # pendant les controles de fichiers et de provenance avant/apres lui.
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            _validate_shadow_model_loading_proof(prerequisites, project_directory)
+            specs = (
+                (SHADOW_PROTOCOL_RELATIVE_PATH.as_posix(), EXPECTED_SHADOW_PROTOCOL_SHA256),
+                (EXPECTED_ARTIFACT_MANIFEST_PATH, EXPECTED_ARTIFACT_MANIFEST_SHA256),
+                (EXPECTED_MODEL_PROTOCOL_PATH, EXPECTED_MODEL_PROTOCOL_SHA256),
+            )
+            documents = tuple(
+                _read_pinned_model_prerequisite_file(project_directory, path, digest)
+                for path, digest in specs
+            )
+            shadow, manifest, protocol = (
+                _decode_pinned_model_json(content, name=spec[0])
+                for spec, content in zip(specs, documents)
+            )
+            runtime = _validate_model_prerequisite_contracts(shadow, manifest, protocol)
+            if prerequisites.runtime_versions != tuple(sorted(runtime.items())):
+                raise ShadowPredictionError("Les versions de la preuve different du manifeste.")
+            if _installed_model_runtime_versions() != runtime:
+                raise ShadowPredictionError("L'environnement installe a change avant chargement.")
+            modules = _import_shadow_model_runtime(runtime)
+            artifact, warning_count = _deserialize_shadow_model_once(
+                prerequisites.artifact_bytes, modules
+            )
+            _validate_loaded_shadow_model_metadata(artifact, manifest, modules)
+            if (
+                _shadow_imported_runtime_versions(modules) != runtime
+                or _installed_model_runtime_versions() != runtime
+            ):
+                raise ShadowPredictionError("L'environnement a change pendant le chargement.")
+            for (path, digest), original in zip(specs, documents):
+                if _read_pinned_model_prerequisite_file(project_directory, path, digest) != original:
+                    raise ShadowPredictionError("Les documents figes ont change pendant le chargement.")
+            return ShadowLoadedModel(
+                artifact=artifact, artifact_sha256=EXPECTED_MODEL_ARTIFACT_SHA256,
+                runtime_versions=tuple(sorted(runtime.items())),
+                approved_deserialization_warning_count=warning_count,
+            )
+    except ShadowPredictionError:
+        raise
+    except Exception as error:
+        raise ShadowPredictionError(
+            f"Chargement du modele fige refuse : {type(error).__name__}: {error}"
+        ) from error
+    finally:
+        _MODEL_LOADING_LOCK.release()
 
 
 def fail_shadow_prediction_slot(

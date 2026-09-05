@@ -21,8 +21,9 @@ ferme le creneau par FAILED.json, et un lot vide n'ouvre jamais le modele.
 Un point d'entree public impose desormais l'inspection avant tout preflight,
 retourne un doublon exact sans nouvel horodatage et construit lui-meme toutes
 les autorisations d'une nouvelle execution sans accepter de valeur runtime.
-Les chemins d'apercu restent sans lecture officielle, import ou chargement
-de modele.
+La commande exige le drapeau explicite ``--execute-shadow`` pour appeler ce
+point d'entree et rend le recu canonique ; sans ce drapeau, l'apercu reste sans
+lecture officielle, import ou chargement de modele.
 """
 
 from __future__ import annotations
@@ -9313,15 +9314,50 @@ def preview_shadow_prediction(
 
 def _build_argument_parser() -> argparse.ArgumentParser:
     return argparse.ArgumentParser(
+        prog="python -m src.shadow_prediction",
         description=(
             "Valide localement le protocole fantome MLB v2 et une date "
-            "cible. Ce jalon est un apercu sans modele ni prediction."
+            "cible. Le mode par defaut reste un apercu sans modele ni "
+            "prediction ; --execute-shadow demande explicitement le lot "
+            "officiel."
         )
     )
 
 
+def _canonical_execution_receipt_bytes(
+    result: dict[str, Any] | ShadowCompletionPublication,
+) -> bytes:
+    """Produit l'unique sortie CLI d'une execution ou d'un doublon exact."""
+    if type(result) is dict:
+        return _canonical_json_file_bytes(result)
+    if type(result) is not ShadowCompletionPublication:
+        raise ShadowPredictionError(
+            "L'execution shadow n'a pas produit une preuve terminale exacte."
+        )
+
+    receipt_path = result.slot_path / RECEIPT_FILENAME
+    receipt_result = _read_canonical_json_object(receipt_path)
+    if receipt_result is None:
+        raise ShadowPredictionError(
+            "Le recu terminal ne peut pas etre relu pour la sortie CLI."
+        )
+    receipt, receipt_bytes = receipt_result
+    receipt_sha256 = hashlib.sha256(receipt_bytes).hexdigest()
+    batch = receipt.get("batch")
+    if (
+        receipt_sha256 != result.receipt_sha256
+        or type(batch) is not dict
+        or batch.get("batch_id") != result.batch_id
+        or batch.get("status") != result.batch_status
+    ):
+        raise ShadowPredictionError(
+            "Le recu terminal diverge de la preuve de completion."
+        )
+    return receipt_bytes
+
+
 def main(argv: Sequence[str] | None = None) -> int:
-    """Affiche un JSON deterministe; aucun mode d'execution n'existe ici."""
+    """Affiche l'apercu ou, sur demande explicite, le recu shadow exact."""
     parser = _build_argument_parser()
     parser.add_argument(
         "--target-official-date",
@@ -9329,12 +9365,25 @@ def main(argv: Sequence[str] | None = None) -> int:
         metavar="YYYY-MM-DD",
         help="Date officielle MLB cible, obligatoirement en saison 2026.",
     )
+    parser.add_argument(
+        "--execute-shadow",
+        action="store_true",
+        help=(
+            "Execute le lot fantome officiel pour la date cible. Sans ce "
+            "drapeau, seul l'apercu statique est produit."
+        ),
+    )
     arguments = parser.parse_args(argv)
     try:
-        preview = preview_shadow_prediction(arguments.target_official_date)
+        if arguments.execute_shadow:
+            result = execute_shadow_prediction(arguments.target_official_date)
+            output = _canonical_execution_receipt_bytes(result).decode("utf-8")
+        else:
+            preview = preview_shadow_prediction(arguments.target_official_date)
+            output = preview.to_canonical_json() + "\n"
     except ShadowPredictionError as error:
         parser.error(str(error))
-    print(preview.to_canonical_json())
+    sys.stdout.write(output)
     return 0
 
 

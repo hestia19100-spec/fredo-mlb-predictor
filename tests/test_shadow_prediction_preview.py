@@ -222,19 +222,17 @@ class ShadowPredictionPreviewTests(unittest.TestCase):
             ).to_dict(),
         )
 
-    def test_cli_has_no_activation_or_execution_mode(self) -> None:
-        for forbidden_flag in ("--activate-shadow", "--execute-shadow"):
-            with self.subTest(flag=forbidden_flag):
-                stderr = io.StringIO()
-                with redirect_stderr(stderr), self.assertRaises(SystemExit):
-                    shadow_prediction.main(
-                        [
-                            "--target-official-date",
-                            "2026-09-01",
-                            forbidden_flag,
-                        ]
-                    )
-                self.assertIn("unrecognized arguments", stderr.getvalue())
+    def test_cli_still_has_no_activation_mode(self) -> None:
+        stderr = io.StringIO()
+        with redirect_stderr(stderr), self.assertRaises(SystemExit):
+            shadow_prediction.main(
+                [
+                    "--target-official-date",
+                    "2026-09-01",
+                    "--activate-shadow",
+                ]
+            )
+        self.assertIn("unrecognized arguments", stderr.getvalue())
 
     @staticmethod
     def _filesystem_snapshot(root: Path) -> tuple[tuple[str, bool, bytes], ...]:

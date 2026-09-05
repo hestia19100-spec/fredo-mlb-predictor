@@ -1,4 +1,4 @@
-"""Fondations controlees de la prediction fantome MLB v2.
+"""Moteur controle de la prediction fantome MLB v2.
 
 Ce module ne sait volontairement ni activer ni executer une prediction. Il
 valide l'apercu statique, construit les formats canoniques, inspecte les
@@ -15,6 +15,9 @@ Une primitive interne distincte relit les six fichiers, verifie un contexte
 d'execution deja autorise et publie le septieme fichier receipt.json.
 Une derniere primitive interne relit les sept preuves, controle la limite
 temporelle et publie exclusivement le marqueur terminal COMPLETED.
+Le coeur d'orchestration reserve enchaine maintenant ces primitives sans
+permettre de reprise partielle : toute erreur controlee apres reservation
+ferme le creneau par FAILED.json, et un lot vide n'ouvre jamais le modele.
 Les chemins d'apercu restent sans lecture officielle, import ou chargement
 de modele.
 """
@@ -109,6 +112,16 @@ FEATURES_FILENAME = "features.csv"
 PREDICTIONS_FILENAME = "predictions.csv"
 RECEIPT_FILENAME = "receipt.json"
 COMPLETED_FILENAME = "COMPLETED"
+_EXECUTION_STAGE_AUTHORIZATION = "EXECUTION_AUTHORIZATION"
+_EXECUTION_STAGE_SOURCE = "SOURCE_SNAPSHOT"
+_EXECUTION_STAGE_CANDIDATES = "CANDIDATE_FEATURES"
+_EXECUTION_STAGE_FEATURE_REVALIDATION = "FEATURE_REVALIDATION"
+_EXECUTION_STAGE_MODEL_PREREQUISITES = "MODEL_PREREQUISITES"
+_EXECUTION_STAGE_MODEL_LOADING = "MODEL_LOADING"
+_EXECUTION_STAGE_MODEL_PREDICTION = "MODEL_PREDICTION"
+_EXECUTION_STAGE_PREDICTIONS = "PREDICTIONS_PUBLICATION"
+_EXECUTION_STAGE_RECEIPT = "RECEIPT_PUBLICATION"
+_EXECUTION_STAGE_COMPLETION = "COMPLETION_PUBLICATION"
 EXPECTED_CALIBRATED_MODEL_VERSION = "logistic_team_form_v1_platt"
 ACTIVATION_RELATIVE_PATH = PurePosixPath(
     "shadow_activations/logistic_team_form_v1_platt_shadow_v2/activation.json"
@@ -7344,6 +7357,295 @@ def fail_shadow_prediction_slot(
         failed_marker=failed_marker,
         failed_marker_sha256=failed_sha256,
     )
+
+
+def _validate_reserved_execution_authorization(
+    reservation: ShadowPredictionSlotReservation,
+    activation_publication: ShadowActivationReverificationPublication,
+    execution_context: ShadowReceiptExecutionContext,
+) -> tuple[tuple[str, str], ...]:
+    """Ferme les valeurs d'autorisation avant toute lecture MLB ou SQLite.
+
+    Le futur preflight public construira ces trois preuves depuis les fichiers
+    immuables et Git. Le coeur refuse deja toute enveloppe fabriquee avec des
+    types, dates, identifiants ou versions non canoniques afin qu'une erreur
+    d'autorisation ne puisse jamais atteindre une source ou le modele.
+    """
+    (
+        target_date,
+        reserved_at,
+        _protocol_sha256,
+        _manifest_sha256,
+        _runtime_commit,
+        _reserved_bytes,
+    ) = _validate_reservation_proof_without_disk(reservation)
+    if type(activation_publication) is not (
+        ShadowActivationReverificationPublication
+    ):
+        raise ShadowPredictionError(
+            "Une preuve publiee de reverification d'activation exacte est "
+            "requise."
+        )
+    if type(execution_context) is not ShadowReceiptExecutionContext:
+        raise ShadowPredictionError(
+            "Un contexte d'execution exact est requis."
+        )
+    for name in (
+        "execution_manifest_verified",
+        "activation_verified",
+        "execution_ready",
+    ):
+        if getattr(execution_context, name) is not True:
+            raise ShadowPredictionError(
+                f"Le contexte d'execution diverge pour {name}."
+            )
+
+    started_at = _require_utc_timestamp(
+        execution_context.started_at_utc,
+        field="context.started_at_utc",
+    )
+    _require_git_commit(
+        execution_context.execution_manifest_introduction_commit,
+        field="context.execution_manifest_introduction_commit",
+    )
+    _require_sha256(
+        execution_context.activation_sha256,
+        field="context.activation_sha256",
+    )
+    activation_verified_at = _require_utc_timestamp(
+        execution_context.activation_verified_at_utc,
+        field="context.activation_verified_at_utc",
+    )
+    minimum_date = _require_date_string(
+        execution_context.minimum_target_official_date,
+        field="context.minimum_target_official_date",
+    )
+    _require_sha256(
+        execution_context.shadow_service_module_sha256,
+        field="context.shadow_service_module_sha256",
+    )
+
+    _require_git_commit(
+        activation_publication.activation_introduction_commit,
+        field="activation_publication.activation_introduction_commit",
+    )
+    _require_sha256(
+        activation_publication.evidence_sha256,
+        field="activation_publication.evidence_sha256",
+    )
+    _require_sha256(
+        activation_publication.response_body_sha256,
+        field="activation_publication.response_body_sha256",
+    )
+    activation_reverified_at = _require_utc_timestamp(
+        activation_publication.activation_remote_reverified_at_utc,
+        field=(
+            "activation_publication.activation_remote_reverified_at_utc"
+        ),
+    )
+    response_received_at = _require_utc_timestamp(
+        activation_publication.response_received_at_utc,
+        field="activation_publication.response_received_at_utc",
+    )
+    if activation_publication.activation_remote_ref != GITHUB_REMOTE_REF:
+        raise ShadowPredictionError(
+            "La preuve d'activation ne vise pas la reference distante figee."
+        )
+
+    runtime_versions = execution_context.runtime_versions
+    if (
+        type(runtime_versions) is not tuple
+        or any(
+            type(pair) is not tuple
+            or len(pair) != 2
+            or any(type(value) is not str for value in pair)
+            for pair in runtime_versions
+        )
+        or tuple(sorted(dict(runtime_versions).items())) != runtime_versions
+        or frozenset(dict(runtime_versions)) != _MODEL_RUNTIME_KEYS
+        or any(
+            not value or value != value.strip()
+            for _, value in runtime_versions
+        )
+    ):
+        raise ShadowPredictionError(
+            "Les versions runtime du contexte ne sont pas canoniques."
+        )
+    if (
+        activation_verified_at > started_at
+        or started_at > response_received_at
+        or response_received_at > reserved_at
+        or activation_reverified_at > reserved_at
+    ):
+        raise ShadowPredictionError(
+            "L'ordre temporel du contexte reserve est invalide."
+        )
+    if (
+        minimum_date < EXPECTED_SHADOW_PROTOCOL_REGISTERED_ON.isoformat()
+        or minimum_date < activation_verified_at[:10]
+        or target_date < minimum_date
+        or target_date < activation_reverified_at[:10]
+        or target_date < reserved_at[:10]
+    ):
+        raise ShadowPredictionError(
+            "La date cible precede une borne active du contexte reserve."
+        )
+    return runtime_versions
+
+
+def _execute_reserved_shadow_prediction(
+    reservation: ShadowPredictionSlotReservation,
+    activation_publication: ShadowActivationReverificationPublication,
+    execution_context: ShadowReceiptExecutionContext,
+    *,
+    database_path: Path = DATABASE_PATH,
+    data_directory: Path = DATA_DIR,
+    project_directory: Path = PROJECT_DIRECTORY,
+) -> ShadowCompletionPublication:
+    """Enchaine une unique execution deja autorisee et reservee.
+
+    Cette primitive privee ne lit ni Git, ni manifeste, ni activation locale :
+    ces controles appartiennent au preflight qui sera son seul appelant. Elle
+    impose en revanche l'ordre complet des fichiers 3 a 8, un seul appel du
+    modele pour un lot non vide, aucun chargement pour un lot vide et une
+    fermeture FAILED.json a la premiere erreur controlee apres reservation.
+    Aucun jalon deja publie n'est supprime, remplace, repare ou retente.
+    """
+    stage = _EXECUTION_STAGE_AUTHORIZATION
+    try:
+        runtime_versions = _validate_reserved_execution_authorization(
+            reservation,
+            activation_publication,
+            execution_context,
+        )
+
+        stage = _EXECUTION_STAGE_SOURCE
+        source_publication = capture_and_publish_source_snapshot(
+            reservation,
+            activation_publication,
+            database_path=database_path,
+            data_directory=data_directory,
+            project_directory=project_directory,
+        )
+
+        stage = _EXECUTION_STAGE_CANDIDATES
+        candidate_publication = (
+            build_and_publish_candidate_ledger_and_features(
+                reservation,
+                activation_publication,
+                source_publication,
+                project_directory=project_directory,
+            )
+        )
+
+        stage = _EXECUTION_STAGE_FEATURE_REVALIDATION
+        feature_rows = _read_validated_prediction_predecessors(
+            reservation,
+            activation_publication,
+            source_publication,
+            candidate_publication,
+            project_directory=project_directory,
+        )[3]
+        if len(feature_rows) != candidate_publication.eligible_game_count:
+            raise ShadowPredictionError(
+                "Le nombre de lignes a predire diverge de la preuve des "
+                "candidats."
+            )
+
+        model_probabilities: ShadowModelProbabilities | None = None
+        if feature_rows:
+            stage = _EXECUTION_STAGE_MODEL_PREREQUISITES
+            prerequisites = verify_frozen_model_prerequisites(
+                project_directory=project_directory,
+            )
+            if (
+                type(prerequisites) is not ShadowModelPrerequisites
+                or prerequisites.runtime_versions != runtime_versions
+            ):
+                raise ShadowPredictionError(
+                    "Les versions du modele et du manifeste d'execution "
+                    "divergent."
+                )
+
+            stage = _EXECUTION_STAGE_MODEL_LOADING
+            loaded_model = _load_frozen_shadow_model(
+                prerequisites,
+                project_directory=project_directory,
+            )
+            if (
+                type(loaded_model) is not ShadowLoadedModel
+                or loaded_model.runtime_versions != runtime_versions
+            ):
+                raise ShadowPredictionError(
+                    "Le modele charge ne correspond pas au runtime autorise."
+                )
+
+            stage = _EXECUTION_STAGE_MODEL_PREDICTION
+            model_probabilities = _predict_frozen_shadow_model_once(
+                loaded_model,
+                feature_rows,
+                project_directory=project_directory,
+            )
+
+        stage = _EXECUTION_STAGE_PREDICTIONS
+        predictions_publication = _build_and_publish_shadow_predictions(
+            reservation,
+            activation_publication,
+            source_publication,
+            candidate_publication,
+            model_probabilities,
+            project_directory=project_directory,
+        )
+
+        stage = _EXECUTION_STAGE_RECEIPT
+        receipt_publication = _build_and_publish_shadow_receipt(
+            reservation,
+            activation_publication,
+            source_publication,
+            candidate_publication,
+            predictions_publication,
+            execution_context,
+            project_directory=project_directory,
+        )
+
+        stage = _EXECUTION_STAGE_COMPLETION
+        return _complete_shadow_prediction_slot(
+            reservation,
+            activation_publication,
+            source_publication,
+            candidate_publication,
+            predictions_publication,
+            receipt_publication,
+            project_directory=project_directory,
+        )
+    except Exception as error:
+        error_type = type(error).__name__
+        error_message = str(error).strip() or (
+            f"{error_type} sans message."
+        )
+        try:
+            failed_at = _format_utc_seconds(
+                _utc_now(), field="failed_at_utc"
+            )
+            fail_shadow_prediction_slot(
+                reservation,
+                failed_at_utc=failed_at,
+                stage=stage,
+                error_type=error_type,
+                error_message=error_message,
+                project_directory=project_directory,
+            )
+        except ShadowPredictionSlotConsumedError:
+            # Un marqueur terminal publie par le gagnant ne doit jamais etre
+            # remplace par FAILED.json ni masquer l'erreur initiale.
+            pass
+        except Exception as failure_error:
+            raise ShadowPredictionError(
+                "L'execution a echoue et son marqueur FAILED.json n'a pas "
+                "pu etre publie sans ambiguite : "
+                f"{type(failure_error).__name__}: {failure_error}"
+            ) from error
+        raise
 
 
 def _read_frozen_protocol(

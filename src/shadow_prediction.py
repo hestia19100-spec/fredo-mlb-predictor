@@ -25,6 +25,7 @@ de modele.
 from __future__ import annotations
 
 import argparse
+import ast
 import base64
 from contextlib import closing, contextmanager
 import csv
@@ -45,6 +46,7 @@ import platform
 import re
 import sqlite3
 import stat
+import subprocess
 import sys
 import tempfile
 import threading
@@ -126,6 +128,98 @@ EXPECTED_CALIBRATED_MODEL_VERSION = "logistic_team_form_v1_platt"
 ACTIVATION_RELATIVE_PATH = PurePosixPath(
     "shadow_activations/logistic_team_form_v1_platt_shadow_v2/activation.json"
 )
+EXECUTION_MANIFEST_RELATIVE_PATH = PurePosixPath(
+    "shadow_protocols/logistic_team_form_v1_platt_shadow_v2_execution.json"
+)
+ACTIVATION_REMOTE_EVIDENCE_RELATIVE_PATH = PurePosixPath(
+    "shadow_activations/logistic_team_form_v1_platt_shadow_v2/"
+    "execution_manifest.remote.json.gz"
+)
+SHADOW_ACTIVATION_ROOT_RELATIVE_PATH = PurePosixPath(
+    "shadow_activations/logistic_team_form_v1_platt_shadow_v2"
+)
+SHADOW_CERTIFICATION_ROOT_RELATIVE_PATH = PurePosixPath(
+    "shadow_certifications/logistic_team_form_v1_platt_shadow_v2"
+)
+REQUIREMENTS_RELATIVE_PATH = PurePosixPath("requirements.txt")
+
+_EXECUTION_MANIFEST_KEYS = frozenset(
+    {
+        "execution_manifest_schema_version",
+        "status",
+        "shadow_service_code_commit",
+        "shadow_service_module_path",
+        "shadow_service_module_sha256",
+        "transitive_runtime_file_sha256_map",
+        "shadow_protocol_path",
+        "shadow_protocol_sha256",
+        "model_artifact_path",
+        "model_artifact_sha256",
+        "model_artifact_size_bytes",
+        "requirements_path",
+        "requirements_sha256",
+        "test_suite_result",
+        "runtime_versions",
+        "minimum_target_official_date",
+        "created_at_utc",
+    }
+)
+_EXECUTION_TEST_RESULT_KEYS = frozenset(
+    {
+        "command",
+        "status",
+        "tests_run",
+        "failures",
+        "errors",
+        "skipped",
+        "completed_at_utc",
+        "tested_code_commit",
+    }
+)
+_ACTIVATION_KEYS = frozenset(
+    {
+        "activation_schema_version",
+        "status",
+        "shadow_protocol_path",
+        "shadow_protocol_sha256",
+        "execution_manifest_path",
+        "execution_manifest_sha256",
+        "execution_manifest_introduction_commit",
+        "execution_manifest_remote_ref",
+        "execution_manifest_remote_query_url",
+        "execution_manifest_remote_effective_url",
+        "execution_manifest_remote_response_status_code",
+        "execution_manifest_remote_response_redirect_count",
+        "execution_manifest_remote_http_date_utc",
+        "execution_manifest_remote_response_received_at_utc",
+        "execution_manifest_remote_response_body_sha256",
+        "raw_remote_evidence_path",
+        "raw_remote_evidence_sha256",
+        "minimum_target_official_date",
+        "created_at_utc",
+        "claim_level",
+    }
+)
+_MINIMUM_TRANSITIVE_RUNTIME_PATHS = frozenset(
+    {
+        "src/calibrated_model.py",
+        "src/database.py",
+        "src/game_repository.py",
+        "src/ingestion_repository.py",
+        "src/ingestion_service.py",
+        "src/mlb_api.py",
+        "src/raw_archive.py",
+        "src/retry_policy.py",
+        "src/shadow_prediction.py",
+    }
+)
+_EXECUTION_MANIFEST_STATUS = "FROZEN_BEFORE_SHADOW_V2_ACTIVATION"
+_ACTIVATION_STATUS = "ACTIVATED_BEFORE_FIRST_SHADOW_V2_BATCH"
+_ACTIVATION_CLAIM_LEVEL = (
+    "REMOTE_SERVER_ATTESTED_NOT_CRYPTOGRAPHICALLY_TIMESTAMPED"
+)
+_TEST_SUITE_COMMAND = "python -m unittest discover -s tests -v"
+_GIT_COMMAND_TIMEOUT_SECONDS = 30
 
 _CANDIDATE_LEDGER_COLUMNS = (
     "batch_id",
@@ -932,6 +1026,40 @@ class ShadowCompletionPublication:
     official_prediction_created: bool
     receipt_created: bool = field(default=True, init=False)
     slot_completed: bool = field(default=True, init=False)
+
+
+@dataclass(frozen=True, slots=True)
+class ShadowExecutionAuthority:
+    """Preuve locale fermee des autorisations d'un futur nouveau slot.
+
+    Cette valeur ne reserve rien et ne rend aucune prediction possible a elle
+    seule. Elle relie uniquement HEAD aux deux blobs d'introduction immuables,
+    aux fichiers runtime, aux versions installees et a la preuve GitHub deja
+    persistee lors de l'activation.
+    """
+
+    runtime_code_commit: str
+    shadow_service_code_commit: str
+    shadow_service_module_sha256: str
+    shadow_protocol_sha256: str
+    execution_manifest_sha256: str
+    execution_manifest_introduction_commit: str
+    activation_sha256: str
+    activation_introduction_commit: str
+    activation_verified_at_utc: str
+    minimum_target_official_date: str
+    runtime_versions: tuple[tuple[str, str], ...]
+    validation_scope: str = field(
+        default="IMMUTABLE_GIT_MANIFEST_AND_ACTIVATION_ONLY",
+        init=False,
+    )
+    output_slot_inspected: bool = field(default=False, init=False)
+    output_slot_reserved: bool = field(default=False, init=False)
+    network_request_performed: bool = field(default=False, init=False)
+    sqlite_read: bool = field(default=False, init=False)
+    model_artifact_read: bool = field(default=False, init=False)
+    model_deserialized: bool = field(default=False, init=False)
+    predictions_computed: bool = field(default=False, init=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -7491,6 +7619,867 @@ def _validate_reserved_execution_authorization(
             "La date cible precede une borne active du contexte reserve."
         )
     return runtime_versions
+
+
+def _preflight_project_directory(project_directory: Path) -> Path:
+    """Canonise la racine locale sans suivre un lien de substitution."""
+    try:
+        project_input = Path(project_directory).expanduser()
+        project = Path(os.path.abspath(os.fspath(project_input)))
+    except (TypeError, OSError, RuntimeError, ValueError) as error:
+        raise ShadowPredictionError(
+            "Dossier du projet invalide pour le preflight fantome."
+        ) from error
+    mode = _lstat_mode(project)
+    if not isinstance(mode, int) or not stat.S_ISDIR(mode):
+        raise ShadowPredictionError(
+            "Le projet du preflight doit etre un repertoire local non "
+            "symbolique."
+        )
+    return project
+
+
+def _run_preflight_git(
+    project_directory: Path,
+    arguments: Sequence[str],
+    *,
+    accepted_return_codes: frozenset[int] = frozenset({0}),
+) -> tuple[int, bytes]:
+    """Execute une commande Git locale fermee, sans shell ni entree."""
+    if (
+        type(arguments) not in (tuple, list)
+        or not arguments
+        or any(type(value) is not str or not value for value in arguments)
+    ):
+        raise ShadowPredictionError("Arguments Git internes invalides.")
+    try:
+        completed = subprocess.run(
+            ["git", "-C", os.fspath(project_directory), *arguments],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            shell=False,
+            timeout=_GIT_COMMAND_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise ShadowPredictionError(
+            "Impossible d'executer le controle Git local du preflight."
+        ) from error
+    return_code = completed.returncode
+    if type(return_code) is not int or return_code not in accepted_return_codes:
+        raise ShadowPredictionError(
+            "Le controle Git local du preflight a echoue."
+        )
+    output = completed.stdout
+    if type(output) is not bytes:
+        raise ShadowPredictionError(
+            "La sortie Git locale du preflight n'est pas binaire."
+        )
+    return return_code, output
+
+
+def _git_text(output: bytes, *, field: str) -> str:
+    try:
+        text = output.decode("utf-8")
+    except UnicodeError as error:
+        raise ShadowPredictionError(
+            f"La sortie Git de {field} n'est pas UTF-8."
+        ) from error
+    if "\x00" in text:
+        raise ShadowPredictionError(
+            f"La sortie Git de {field} contient un octet nul."
+        )
+    return text
+
+
+def _require_git_ancestor(
+    project_directory: Path,
+    ancestor: str,
+    descendant: str,
+    *,
+    strict: bool,
+    description: str,
+) -> None:
+    ancestor_commit = _require_git_commit(ancestor, field=f"{description}.ancestor")
+    descendant_commit = _require_git_commit(
+        descendant,
+        field=f"{description}.descendant",
+    )
+    if strict and ancestor_commit == descendant_commit:
+        raise ShadowPredictionError(
+            f"L'ordre Git strict est absent pour {description}."
+        )
+    return_code, _ = _run_preflight_git(
+        project_directory,
+        ("merge-base", "--is-ancestor", ancestor_commit, descendant_commit),
+        accepted_return_codes=frozenset({0, 1}),
+    )
+    if return_code != 0:
+        raise ShadowPredictionError(
+            f"L'ascendance Git requise est absente pour {description}."
+        )
+
+
+def _read_canonical_json_bytes(
+    content: bytes,
+    *,
+    description: str,
+) -> dict[str, Any]:
+    """Decode un objet JSON canonique exact, sans derniere-cle-gagnante."""
+    if type(content) is not bytes:
+        raise ShadowPredictionError(
+            f"Les octets de {description} sont invalides."
+        )
+    try:
+        value = json.loads(
+            content.decode("utf-8"),
+            object_pairs_hook=_reject_duplicate_keys,
+        )
+    except (
+        UnicodeError,
+        ValueError,
+        ShadowPredictionError,
+        RecursionError,
+    ) as error:
+        raise ShadowPredictionError(
+            f"{description} n'est pas un JSON canonique non ambigu."
+        ) from error
+    if type(value) is not dict or _canonical_json_file_bytes(value) != content:
+        raise ShadowPredictionError(
+            f"{description} ne respecte pas le format JSON canonique v2."
+        )
+    return value
+
+
+def _read_regular_project_file(
+    project_directory: Path,
+    relative_path: PurePosixPath,
+    *,
+    description: str,
+) -> bytes:
+    current = project_directory
+    for index, component in enumerate(relative_path.parts):
+        current = current / component
+        mode = _lstat_mode(current)
+        is_last = index == len(relative_path.parts) - 1
+        if (
+            not isinstance(mode, int)
+            or (not is_last and not stat.S_ISDIR(mode))
+            or (is_last and not stat.S_ISREG(mode))
+        ):
+            raise ShadowPredictionError(
+                f"Chemin local absent ou symbolique pour {description}."
+            )
+    try:
+        return current.read_bytes()
+    except OSError as error:
+        raise ShadowPredictionError(
+            f"Lecture locale impossible pour {description}."
+        ) from error
+
+
+def _git_immutable_introduction_blob(
+    project_directory: Path,
+    relative_path: PurePosixPath,
+    local_bytes: bytes,
+    *,
+    expected_introduction_commit: str | None = None,
+) -> tuple[str, bytes]:
+    """Retourne l'unique blob ajoute une fois et jamais modifie."""
+    path_text = relative_path.as_posix()
+    _, additions_output = _run_preflight_git(
+        project_directory,
+        ("log", "--diff-filter=A", "--format=%H", "--reverse", "--", path_text),
+    )
+    additions = tuple(
+        line for line in _git_text(
+            additions_output,
+            field=f"introduction de {path_text}",
+        ).splitlines()
+        if line
+    )
+    if len(additions) != 1:
+        raise ShadowPredictionError(
+            f"{path_text} doit avoir un unique commit d'introduction."
+        )
+    introduction_commit = _require_git_commit(
+        additions[0],
+        field=f"introduction_commit[{path_text}]",
+    )
+    if (
+        expected_introduction_commit is not None
+        and introduction_commit != expected_introduction_commit
+    ):
+        raise ShadowPredictionError(
+            f"Le commit d'introduction de {path_text} est incoherent."
+        )
+    _, history_output = _run_preflight_git(
+        project_directory,
+        ("log", "--format=%H", "--", path_text),
+    )
+    history = tuple(
+        line for line in _git_text(
+            history_output,
+            field=f"historique de {path_text}",
+        ).splitlines()
+        if line
+    )
+    if history != (introduction_commit,):
+        raise ShadowPredictionError(
+            f"{path_text} a ete modifie apres son introduction."
+        )
+    _, blob = _run_preflight_git(
+        project_directory,
+        ("show", f"{introduction_commit}:{path_text}"),
+    )
+    if blob != local_bytes:
+        raise ShadowPredictionError(
+            f"Le fichier local {path_text} differe de son blob d'introduction."
+        )
+    return introduction_commit, blob
+
+
+def _git_blob_at_commit(
+    project_directory: Path,
+    commit: str,
+    relative_path: str,
+) -> bytes:
+    commit_value = _require_git_commit(commit, field="blob.commit")
+    if (
+        type(relative_path) is not str
+        or not relative_path
+        or relative_path.startswith("/")
+        or "\\" in relative_path
+        or ".." in PurePosixPath(relative_path).parts
+    ):
+        raise ShadowPredictionError("Chemin Git de blob invalide.")
+    _, blob = _run_preflight_git(
+        project_directory,
+        ("show", f"{commit_value}:{relative_path}"),
+    )
+    return blob
+
+
+def _local_python_runtime_closure(
+    project_directory: Path,
+) -> tuple[str, ...]:
+    """Calcule la fermeture recursive des imports Python locaux `src`."""
+    pending = ["src/__init__.py", EXPECTED_SERVICE_MODULE_PATH]
+    discovered: set[str] = set()
+    while pending:
+        relative_path = pending.pop()
+        if relative_path in discovered:
+            continue
+        discovered.add(relative_path)
+        content = _read_regular_project_file(
+            project_directory,
+            PurePosixPath(relative_path),
+            description=f"module runtime {relative_path}",
+        )
+        try:
+            tree = ast.parse(content, filename=relative_path)
+        except (SyntaxError, ValueError) as error:
+            raise ShadowPredictionError(
+                f"Module runtime Python invalide : {relative_path}."
+            ) from error
+        module_names: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                if node.level == 0 and node.module and (
+                    node.module == "src" or node.module.startswith("src.")
+                ):
+                    module_names.add(node.module)
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name == "src" or alias.name.startswith("src."):
+                        module_names.add(alias.name)
+            elif (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "import_module"
+                and len(node.args) == 1
+                and not node.keywords
+                and isinstance(node.args[0], ast.Constant)
+                and type(node.args[0].value) is str
+                and (
+                    node.args[0].value == "src"
+                    or node.args[0].value.startswith("src.")
+                )
+            ):
+                module_names.add(node.args[0].value)
+        for module_name in module_names:
+            parts = module_name.split(".")
+            for index in range(1, len(parts)):
+                package_init = "/".join(parts[:index]) + "/__init__.py"
+                package_mode = _lstat_mode(
+                    project_directory.joinpath(*PurePosixPath(package_init).parts)
+                )
+                if isinstance(package_mode, int) and stat.S_ISREG(package_mode):
+                    discovered.add(package_init)
+            module_path = "/".join(parts) + ".py"
+            package_path = "/".join(parts) + "/__init__.py"
+            module_mode = _lstat_mode(
+                project_directory.joinpath(*PurePosixPath(module_path).parts)
+            )
+            package_mode = _lstat_mode(
+                project_directory.joinpath(*PurePosixPath(package_path).parts)
+            )
+            if isinstance(module_mode, int) and stat.S_ISREG(module_mode):
+                pending.append(module_path)
+            elif isinstance(package_mode, int) and stat.S_ISREG(package_mode):
+                pending.append(package_path)
+            else:
+                raise ShadowPredictionError(
+                    f"Import Python local introuvable : {module_name}."
+                )
+    return tuple(sorted(discovered))
+
+
+def _validate_execution_manifest(
+    manifest: dict[str, Any],
+    *,
+    project_directory: Path,
+    protocol_sha256: str,
+    manifest_introduction_commit: str,
+    runtime_code_commit: str,
+) -> tuple[str, str, str, tuple[tuple[str, str], ...], str]:
+    """Valide chaque valeur figee du manifeste et ses octets runtime."""
+    if not _has_exact_keys(manifest, _EXECUTION_MANIFEST_KEYS):
+        raise ShadowPredictionError(
+            "Le manifeste d'execution ne respecte pas son schema exact."
+        )
+    exact_values: dict[str, object] = {
+        "execution_manifest_schema_version": 1,
+        "status": _EXECUTION_MANIFEST_STATUS,
+        "shadow_service_module_path": EXPECTED_SERVICE_MODULE_PATH,
+        "shadow_protocol_path": SHADOW_PROTOCOL_RELATIVE_PATH.as_posix(),
+        "shadow_protocol_sha256": protocol_sha256,
+        "model_artifact_path": EXPECTED_MODEL_ARTIFACT_PATH,
+        "model_artifact_sha256": EXPECTED_MODEL_ARTIFACT_SHA256,
+        "model_artifact_size_bytes": EXPECTED_MODEL_ARTIFACT_SIZE_BYTES,
+        "requirements_path": REQUIREMENTS_RELATIVE_PATH.as_posix(),
+    }
+    for field_name, expected in exact_values.items():
+        actual = manifest.get(field_name)
+        if type(actual) is not type(expected) or actual != expected:
+            raise ShadowPredictionError(
+                f"Valeur invalide dans le manifeste : {field_name}."
+            )
+    service_commit = _require_git_commit(
+        manifest.get("shadow_service_code_commit"),
+        field="manifest.shadow_service_code_commit",
+    )
+    service_sha256 = _require_sha256(
+        manifest.get("shadow_service_module_sha256"),
+        field="manifest.shadow_service_module_sha256",
+    )
+    requirements_sha256 = _require_sha256(
+        manifest.get("requirements_sha256"),
+        field="manifest.requirements_sha256",
+    )
+    created_at = _require_utc_timestamp(
+        manifest.get("created_at_utc"),
+        field="manifest.created_at_utc",
+    )
+    minimum_date = _require_date_string(
+        manifest.get("minimum_target_official_date"),
+        field="manifest.minimum_target_official_date",
+    )
+    if minimum_date < EXPECTED_SHADOW_PROTOCOL_REGISTERED_ON.isoformat():
+        raise ShadowPredictionError(
+            "La date minimale du manifeste precede le protocole v2."
+        )
+
+    test_result = manifest.get("test_suite_result")
+    if not _has_exact_keys(test_result, _EXECUTION_TEST_RESULT_KEYS):
+        raise ShadowPredictionError(
+            "Le resultat de tests du manifeste est incomplet."
+        )
+    assert isinstance(test_result, dict)
+    for key, expected in (
+        ("command", _TEST_SUITE_COMMAND),
+        ("status", "OK"),
+        ("failures", 0),
+        ("errors", 0),
+        ("tested_code_commit", service_commit),
+    ):
+        actual = test_result.get(key)
+        if type(actual) is not type(expected) or actual != expected:
+            raise ShadowPredictionError(
+                f"Resultat de tests invalide pour {key}."
+            )
+    for key in ("tests_run", "skipped"):
+        value = test_result.get(key)
+        if type(value) is not int or value < 0:
+            raise ShadowPredictionError(
+                f"Compteur de tests invalide pour {key}."
+            )
+    if test_result["tests_run"] <= 0:
+        raise ShadowPredictionError(
+            "Le manifeste doit prouver au moins un test execute."
+        )
+    if test_result["skipped"] > test_result["tests_run"]:
+        raise ShadowPredictionError(
+            "Le nombre de tests ignores depasse les tests executes."
+        )
+    tests_completed_at = _require_utc_timestamp(
+        test_result.get("completed_at_utc"),
+        field="manifest.test_suite_result.completed_at_utc",
+    )
+    if tests_completed_at > created_at:
+        raise ShadowPredictionError(
+            "Le manifeste a ete cree avant la fin de ses tests."
+        )
+
+    runtime = manifest.get("runtime_versions")
+    if (
+        type(runtime) is not dict
+        or frozenset(runtime) != _MODEL_RUNTIME_KEYS
+        or tuple(runtime) != tuple(sorted(runtime))
+        or any(
+            type(value) is not str or not value or value != value.strip()
+            for value in runtime.values()
+        )
+    ):
+        raise ShadowPredictionError(
+            "Les versions runtime du manifeste ne sont pas canoniques."
+        )
+    installed_runtime = _installed_model_runtime_versions()
+    if runtime != installed_runtime:
+        raise ShadowPredictionError(
+            "Les versions installees divergent du manifeste d'execution."
+        )
+
+    runtime_hashes = manifest.get("transitive_runtime_file_sha256_map")
+    closure = _local_python_runtime_closure(project_directory)
+    if (
+        type(runtime_hashes) is not dict
+        or tuple(runtime_hashes) != tuple(sorted(runtime_hashes))
+        or frozenset(runtime_hashes) != frozenset(closure)
+        or not _MINIMUM_TRANSITIVE_RUNTIME_PATHS.issubset(runtime_hashes)
+    ):
+        raise ShadowPredictionError(
+            "La fermeture des fichiers runtime du manifeste est inexacte."
+        )
+    for relative_path in closure:
+        expected_sha256 = _require_sha256(
+            runtime_hashes.get(relative_path),
+            field=f"manifest.transitive_runtime_file_sha256_map[{relative_path}]",
+        )
+        local_bytes = _read_regular_project_file(
+            project_directory,
+            PurePosixPath(relative_path),
+            description=f"fichier runtime {relative_path}",
+        )
+        if hashlib.sha256(local_bytes).hexdigest() != expected_sha256:
+            raise ShadowPredictionError(
+                f"Le fichier runtime {relative_path} a change."
+            )
+        if _git_blob_at_commit(
+            project_directory,
+            service_commit,
+            relative_path,
+        ) != local_bytes:
+            raise ShadowPredictionError(
+                f"Le fichier runtime {relative_path} differe du commit service."
+            )
+    if runtime_hashes[EXPECTED_SERVICE_MODULE_PATH] != service_sha256:
+        raise ShadowPredictionError(
+            "L'empreinte du service diverge de la fermeture runtime."
+        )
+
+    requirements_bytes = _read_regular_project_file(
+        project_directory,
+        REQUIREMENTS_RELATIVE_PATH,
+        description="requirements.txt",
+    )
+    if (
+        hashlib.sha256(requirements_bytes).hexdigest() != requirements_sha256
+        or _git_blob_at_commit(
+            project_directory,
+            service_commit,
+            REQUIREMENTS_RELATIVE_PATH.as_posix(),
+        ) != requirements_bytes
+    ):
+        raise ShadowPredictionError(
+            "requirements.txt diverge du manifeste ou du commit service."
+        )
+    protocol_bytes = _read_regular_project_file(
+        project_directory,
+        SHADOW_PROTOCOL_RELATIVE_PATH,
+        description="protocole shadow v2",
+    )
+    if _git_blob_at_commit(
+        project_directory,
+        service_commit,
+        SHADOW_PROTOCOL_RELATIVE_PATH.as_posix(),
+    ) != protocol_bytes:
+        raise ShadowPredictionError(
+            "Le protocole shadow diverge du commit service."
+        )
+
+    _require_git_ancestor(
+        project_directory,
+        EXPECTED_EVALUATION_RESULTS_COMMIT,
+        runtime_code_commit,
+        strict=False,
+        description="resultats scelles vers HEAD",
+    )
+    _require_git_ancestor(
+        project_directory,
+        service_commit,
+        manifest_introduction_commit,
+        strict=True,
+        description="service vers manifeste",
+    )
+    _require_git_ancestor(
+        project_directory,
+        service_commit,
+        runtime_code_commit,
+        strict=False,
+        description="service vers HEAD",
+    )
+    return (
+        service_commit,
+        service_sha256,
+        requirements_sha256,
+        tuple(sorted(installed_runtime.items())),
+        minimum_date,
+    )
+
+
+def _read_and_validate_activation(
+    *,
+    project_directory: Path,
+    protocol_sha256: str,
+    manifest_sha256: str,
+    manifest_introduction_commit: str,
+    manifest_minimum_date: str,
+    runtime_code_commit: str,
+) -> tuple[str, str, str, str]:
+    """Lie activation locale, blob Git et preuve GitHub du manifeste."""
+    activation_bytes = _read_regular_project_file(
+        project_directory,
+        ACTIVATION_RELATIVE_PATH,
+        description="activation shadow v2",
+    )
+    activation = _read_canonical_json_bytes(
+        activation_bytes,
+        description="activation shadow v2",
+    )
+    activation_commit, _ = _git_immutable_introduction_blob(
+        project_directory,
+        ACTIVATION_RELATIVE_PATH,
+        activation_bytes,
+    )
+    if not _has_exact_keys(activation, _ACTIVATION_KEYS):
+        raise ShadowPredictionError(
+            "L'activation shadow ne respecte pas son schema exact."
+        )
+    query_url = GITHUB_COMPARE_URL_TEMPLATE.format(
+        expected_commit=manifest_introduction_commit
+    )
+    exact_values: dict[str, object] = {
+        "activation_schema_version": 1,
+        "status": _ACTIVATION_STATUS,
+        "shadow_protocol_path": SHADOW_PROTOCOL_RELATIVE_PATH.as_posix(),
+        "shadow_protocol_sha256": protocol_sha256,
+        "execution_manifest_path": EXECUTION_MANIFEST_RELATIVE_PATH.as_posix(),
+        "execution_manifest_sha256": manifest_sha256,
+        "execution_manifest_introduction_commit": manifest_introduction_commit,
+        "execution_manifest_remote_ref": GITHUB_REMOTE_REF,
+        "execution_manifest_remote_query_url": query_url,
+        "execution_manifest_remote_effective_url": query_url,
+        "execution_manifest_remote_response_status_code": 200,
+        "execution_manifest_remote_response_redirect_count": 0,
+        "raw_remote_evidence_path": (
+            ACTIVATION_REMOTE_EVIDENCE_RELATIVE_PATH.as_posix()
+        ),
+        "minimum_target_official_date": manifest_minimum_date,
+        "claim_level": _ACTIVATION_CLAIM_LEVEL,
+    }
+    for field_name, expected in exact_values.items():
+        actual = activation.get(field_name)
+        if type(actual) is not type(expected) or actual != expected:
+            raise ShadowPredictionError(
+                f"Valeur invalide dans l'activation : {field_name}."
+            )
+    verified_at = _require_utc_timestamp(
+        activation.get("execution_manifest_remote_http_date_utc"),
+        field="activation.execution_manifest_remote_http_date_utc",
+    )
+    response_received_at = _require_utc_timestamp(
+        activation.get("execution_manifest_remote_response_received_at_utc"),
+        field="activation.execution_manifest_remote_response_received_at_utc",
+    )
+    response_body_sha256 = _require_sha256(
+        activation.get("execution_manifest_remote_response_body_sha256"),
+        field="activation.execution_manifest_remote_response_body_sha256",
+    )
+    raw_sha256 = _require_sha256(
+        activation.get("raw_remote_evidence_sha256"),
+        field="activation.raw_remote_evidence_sha256",
+    )
+    created_at = _require_utc_timestamp(
+        activation.get("created_at_utc"),
+        field="activation.created_at_utc",
+    )
+    if response_received_at > created_at:
+        raise ShadowPredictionError(
+            "L'activation precede la reception de sa preuve distante."
+        )
+    minimum_date = _require_date_string(
+        activation.get("minimum_target_official_date"),
+        field="activation.minimum_target_official_date",
+    )
+    if minimum_date < max(
+        EXPECTED_SHADOW_PROTOCOL_REGISTERED_ON.isoformat(),
+        verified_at[:10],
+    ):
+        raise ShadowPredictionError(
+            "La date minimale ne couvre pas la visibilite distante."
+        )
+
+    raw_bytes = _read_regular_project_file(
+        project_directory,
+        ACTIVATION_REMOTE_EVIDENCE_RELATIVE_PATH,
+        description="preuve distante du manifeste",
+    )
+    if hashlib.sha256(raw_bytes).hexdigest() != raw_sha256:
+        raise ShadowPredictionError(
+            "L'empreinte de la preuve distante d'activation est incoherente."
+        )
+    _git_immutable_introduction_blob(
+        project_directory,
+        ACTIVATION_REMOTE_EVIDENCE_RELATIVE_PATH,
+        raw_bytes,
+        expected_introduction_commit=activation_commit,
+    )
+    try:
+        with gzip.GzipFile(fileobj=io.BytesIO(raw_bytes), mode="rb") as archive:
+            raw_json_bytes = archive.read()
+    except (OSError, EOFError, zlib.error) as error:
+        raise ShadowPredictionError(
+            "La preuve distante d'activation est illisible."
+        ) from error
+    raw = _read_canonical_json_bytes(
+        raw_json_bytes,
+        description="preuve distante du manifeste",
+    )
+    if _canonical_gzip_bytes(raw_json_bytes) != raw_bytes:
+        raise ShadowPredictionError(
+            "La preuve distante du manifeste n'est pas un gzip canonique."
+        )
+    evidence = ShadowActivationReverificationEvidence(
+        activation_introduction_commit=manifest_introduction_commit,
+        activation_remote_ref=GITHUB_REMOTE_REF,
+        activation_remote_reverified_at_utc=verified_at,
+        response_received_at_utc=response_received_at,
+        response_body_sha256=response_body_sha256,
+        raw_evidence=raw,
+        canonical_json_bytes=raw_json_bytes,
+        canonical_gzip_bytes=raw_bytes,
+        canonical_gzip_sha256=raw_sha256,
+    )
+    _validate_activation_reverification_evidence(evidence)
+    raw_headers = raw.get("selected_response_headers")
+    assert isinstance(raw_headers, dict)
+    raw_date = _parse_imf_fixdate_gmt(
+        raw_headers.get("date"),
+        field="activation.raw.selected_response_headers.date",
+    )
+    binding_values = {
+        "execution_manifest_remote_http_date_utc": raw_date,
+        "execution_manifest_remote_response_received_at_utc": raw.get(
+            "response_received_at_utc"
+        ),
+        "execution_manifest_remote_response_body_sha256": raw.get(
+            "response_body_sha256"
+        ),
+    }
+    for field_name, expected in binding_values.items():
+        if activation.get(field_name) != expected:
+            raise ShadowPredictionError(
+                f"L'activation diverge de sa preuve pour {field_name}."
+            )
+    activation_sha256 = hashlib.sha256(activation_bytes).hexdigest()
+    _require_git_ancestor(
+        project_directory,
+        manifest_introduction_commit,
+        activation_commit,
+        strict=True,
+        description="manifeste vers activation",
+    )
+    _require_git_ancestor(
+        project_directory,
+        activation_commit,
+        runtime_code_commit,
+        strict=False,
+        description="activation vers HEAD",
+    )
+    return activation_sha256, activation_commit, verified_at, minimum_date
+
+
+def _require_tracked_nonignored_root(
+    project_directory: Path,
+    relative_root: PurePosixPath,
+) -> None:
+    current = project_directory
+    for component in relative_root.parts:
+        current = current / component
+        mode = _lstat_mode(current)
+        if not isinstance(mode, int) or not stat.S_ISDIR(mode):
+            raise ShadowPredictionError(
+                f"Racine versionnee absente : {relative_root.as_posix()}."
+            )
+    return_code, _ = _run_preflight_git(
+        project_directory,
+        ("check-ignore", "-q", "--", relative_root.as_posix()),
+        accepted_return_codes=frozenset({0, 1}),
+    )
+    if return_code == 0:
+        raise ShadowPredictionError(
+            f"Racine interdite par .gitignore : {relative_root.as_posix()}."
+        )
+    _, tracked_output = _run_preflight_git(
+        project_directory,
+        ("ls-files", "--", relative_root.as_posix()),
+    )
+    if not _git_text(
+        tracked_output,
+        field=f"fichiers suivis de {relative_root.as_posix()}",
+    ).splitlines():
+        raise ShadowPredictionError(
+            f"Racine non versionnee : {relative_root.as_posix()}."
+        )
+
+
+def verify_shadow_execution_authority(
+    target_official_date: date | str,
+    *,
+    project_directory: Path = PROJECT_DIRECTORY,
+) -> ShadowExecutionAuthority:
+    """Valide l'autorite immuable d'un nouveau slot, sans effet externe.
+
+    Cette primitive doit etre appelee uniquement apres l'inspection ABSENT du
+    futur orchestrateur. Elle ne lit ni le slot, ni MLB, ni SQLite, ni le
+    joblib. Elle ne fait aucun appel reseau et ne cree aucun fichier.
+    """
+    target = _parse_target_official_date(target_official_date)
+    if target.year != EXPECTED_TARGET_SEASON:
+        raise ShadowPredictionError(
+            "Le preflight d'execution exige exactement la saison 2026."
+        )
+    project = _preflight_project_directory(project_directory)
+    protocol, protocol_sha256 = _read_frozen_protocol(project)
+    _validate_protocol_contract(protocol)
+
+    manifest_bytes = _read_regular_project_file(
+        project,
+        EXECUTION_MANIFEST_RELATIVE_PATH,
+        description="manifeste d'execution shadow v2",
+    )
+    manifest = _read_canonical_json_bytes(
+        manifest_bytes,
+        description="manifeste d'execution shadow v2",
+    )
+    manifest_sha256 = hashlib.sha256(manifest_bytes).hexdigest()
+
+    _, top_level_output = _run_preflight_git(
+        project,
+        ("rev-parse", "--show-toplevel"),
+    )
+    git_root_text = _git_text(
+        top_level_output,
+        field="racine du depot",
+    ).strip()
+    try:
+        git_root = Path(git_root_text).resolve(strict=True)
+        project_resolved = project.resolve(strict=True)
+    except (OSError, RuntimeError, ValueError) as error:
+        raise ShadowPredictionError(
+            "La racine Git du preflight est invalide."
+        ) from error
+    if git_root != project_resolved:
+        raise ShadowPredictionError(
+            "Le preflight doit viser exactement la racine du depot Git."
+        )
+    _, head_output = _run_preflight_git(project, ("rev-parse", "HEAD"))
+    runtime_commit = _require_git_commit(
+        _git_text(head_output, field="HEAD").strip(),
+        field="runtime_code_commit",
+    )
+    _, status_output = _run_preflight_git(
+        project,
+        ("status", "--porcelain=v1", "--untracked-files=all"),
+    )
+    if status_output:
+        raise ShadowPredictionError(
+            "Le depot Git doit etre strictement propre avant un nouveau slot."
+        )
+
+    manifest_commit, manifest_blob = _git_immutable_introduction_blob(
+        project,
+        EXECUTION_MANIFEST_RELATIVE_PATH,
+        manifest_bytes,
+    )
+    manifest = _read_canonical_json_bytes(
+        manifest_blob,
+        description="blob d'introduction du manifeste d'execution",
+    )
+    (
+        service_commit,
+        service_sha256,
+        _requirements_sha256,
+        runtime_versions,
+        minimum_date,
+    ) = _validate_execution_manifest(
+        manifest,
+        project_directory=project,
+        protocol_sha256=protocol_sha256,
+        manifest_introduction_commit=manifest_commit,
+        runtime_code_commit=runtime_commit,
+    )
+    if target.isoformat() < minimum_date:
+        raise ShadowPredictionError(
+            "La date cible precede la date minimale du manifeste."
+        )
+
+    activation_sha256, activation_commit, verified_at, activation_minimum = (
+        _read_and_validate_activation(
+            project_directory=project,
+            protocol_sha256=protocol_sha256,
+            manifest_sha256=manifest_sha256,
+            manifest_introduction_commit=manifest_commit,
+            manifest_minimum_date=minimum_date,
+            runtime_code_commit=runtime_commit,
+        )
+    )
+    if target.isoformat() < max(activation_minimum, verified_at[:10]):
+        raise ShadowPredictionError(
+            "La date cible precede l'activation distante persistante."
+        )
+    for relative_root in (
+        SHADOW_RESULT_ROOT_RELATIVE_PATH,
+        SHADOW_ACTIVATION_ROOT_RELATIVE_PATH,
+        SHADOW_CERTIFICATION_ROOT_RELATIVE_PATH,
+    ):
+        _require_tracked_nonignored_root(project, relative_root)
+
+    return ShadowExecutionAuthority(
+        runtime_code_commit=runtime_commit,
+        shadow_service_code_commit=service_commit,
+        shadow_service_module_sha256=service_sha256,
+        shadow_protocol_sha256=protocol_sha256,
+        execution_manifest_sha256=manifest_sha256,
+        execution_manifest_introduction_commit=manifest_commit,
+        activation_sha256=activation_sha256,
+        activation_introduction_commit=activation_commit,
+        activation_verified_at_utc=verified_at,
+        minimum_target_official_date=minimum_date,
+        runtime_versions=runtime_versions,
+    )
 
 
 def _execute_reserved_shadow_prediction(

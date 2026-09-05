@@ -1,7 +1,7 @@
 """Moteur controle de la prediction fantome MLB v2.
 
-Ce module ne sait volontairement ni activer ni executer une prediction. Il
-valide l'apercu statique, construit les formats canoniques, inspecte les
+Ce module ne sait volontairement pas encore activer le protocole. Il valide
+l'apercu statique, construit les formats canoniques, inspecte les
 creneaux, fige leurs preuves distantes et publie leur sous-ensemble source,
 puis le registre des candidats et leurs variables J-1 canoniques.
 Une primitive separee controle les fichiers figes du modele et les versions
@@ -18,6 +18,9 @@ temporelle et publie exclusivement le marqueur terminal COMPLETED.
 Le coeur d'orchestration reserve enchaine maintenant ces primitives sans
 permettre de reprise partielle : toute erreur controlee apres reservation
 ferme le creneau par FAILED.json, et un lot vide n'ouvre jamais le modele.
+Un point d'entree public impose desormais l'inspection avant tout preflight,
+retourne un doublon exact sans nouvel horodatage et construit lui-meme toutes
+les autorisations d'une nouvelle execution sans accepter de valeur runtime.
 Les chemins d'apercu restent sans lecture officielle, import ou chargement
 de modele.
 """
@@ -115,6 +118,9 @@ PREDICTIONS_FILENAME = "predictions.csv"
 RECEIPT_FILENAME = "receipt.json"
 COMPLETED_FILENAME = "COMPLETED"
 _EXECUTION_STAGE_AUTHORIZATION = "EXECUTION_AUTHORIZATION"
+_EXECUTION_STAGE_ACTIVATION_PUBLICATION = (
+    "ACTIVATION_REVERIFICATION_PUBLICATION"
+)
 _EXECUTION_STAGE_SOURCE = "SOURCE_SNAPSHOT"
 _EXECUTION_STAGE_CANDIDATES = "CANDIDATE_FEATURES"
 _EXECUTION_STAGE_FEATURE_REVALIDATION = "FEATURE_REVALIDATION"
@@ -2400,6 +2406,57 @@ def _valid_completed_marker(
         earliest.replace("Z", "+00:00")
     )
     return completed_datetime <= earliest_datetime - timedelta(minutes=120)
+
+
+def _inspect_shadow_prediction_slot_presence_first(
+    target_official_date: date,
+    *,
+    project_directory: Path,
+) -> tuple[Path, Path, bool]:
+    """Effectue la toute premiere inspection sans lire aucun fichier.
+
+    Le SHA-256 du manifeste n'existe qu'apres lecture du preflight immuable.
+    Cette passe minimale resout ce cycle : elle ne fait que des ``lstat`` sur
+    le chemin canonique. ``True`` signifie que le chemin est deja consomme ou
+    structurellement invalide ; seule l'absence complete renvoie ``False``.
+    """
+    if type(target_official_date) is not date:
+        raise ShadowPredictionError(
+            "La premiere inspection exige une date cible deja validee."
+        )
+    if not isinstance(project_directory, Path):
+        raise ShadowPredictionError(
+            "project_directory doit etre un chemin Path."
+        )
+    try:
+        project_input = project_directory.expanduser()
+        project = Path(os.path.abspath(os.fspath(project_input)))
+    except (TypeError, OSError, RuntimeError) as error:
+        raise ShadowPredictionError(
+            "Dossier du projet invalide pour la premiere inspection."
+        ) from error
+    project_mode = _lstat_mode(project)
+    if not isinstance(project_mode, int) or not stat.S_ISDIR(project_mode):
+        raise ShadowPredictionError(
+            "Le dossier du projet doit etre un repertoire local non "
+            "symbolique."
+        )
+
+    target_date = target_official_date.isoformat()
+    slot_path = project.joinpath(
+        *SHADOW_RESULT_ROOT_RELATIVE_PATH.parts,
+        target_date,
+    )
+    current = project
+    for component in SHADOW_RESULT_ROOT_RELATIVE_PATH.parts:
+        current = current / component
+        mode = _lstat_mode(current)
+        if mode is _PATH_MISSING:
+            return project, slot_path, False
+        if not isinstance(mode, int) or not stat.S_ISDIR(mode):
+            return project, slot_path, True
+
+    return project, slot_path, _lstat_mode(slot_path) is not _PATH_MISSING
 
 
 def inspect_shadow_prediction_slot(
@@ -8635,6 +8692,348 @@ def _execute_reserved_shadow_prediction(
                 f"{type(failure_error).__name__}: {failure_error}"
             ) from error
         raise
+
+
+def _validate_execution_authority_identity(
+    authority: ShadowExecutionAuthority,
+    *,
+    target_official_date: date,
+) -> tuple[str, str, str, str, str, tuple[tuple[str, str], ...]]:
+    """Valide l'enveloppe d'autorite sans creer de nouvel instant."""
+    if type(authority) is not ShadowExecutionAuthority:
+        raise ShadowPredictionError(
+            "Le preflight doit retourner une autorite shadow exacte."
+        )
+    if authority.validation_scope != (
+        "IMMUTABLE_GIT_MANIFEST_AND_ACTIVATION_ONLY"
+    ):
+        raise ShadowPredictionError(
+            "La portee de l'autorite shadow est invalide."
+        )
+    for field_name in (
+        "output_slot_inspected",
+        "output_slot_reserved",
+        "network_request_performed",
+        "sqlite_read",
+        "model_artifact_read",
+        "model_deserialized",
+        "predictions_computed",
+    ):
+        if getattr(authority, field_name) is not False:
+            raise ShadowPredictionError(
+                f"L'autorite shadow diverge pour {field_name}."
+            )
+
+    _require_git_commit(
+        authority.runtime_code_commit,
+        field="authority.runtime_code_commit",
+    )
+    _require_git_commit(
+        authority.shadow_service_code_commit,
+        field="authority.shadow_service_code_commit",
+    )
+    service_sha256 = _require_sha256(
+        authority.shadow_service_module_sha256,
+        field="authority.shadow_service_module_sha256",
+    )
+    protocol_sha256 = _require_sha256(
+        authority.shadow_protocol_sha256,
+        field="authority.shadow_protocol_sha256",
+    )
+    if protocol_sha256 != EXPECTED_SHADOW_PROTOCOL_SHA256:
+        raise ShadowPredictionError(
+            "L'autorite ne vise pas le protocole shadow v2 fige."
+        )
+    _require_sha256(
+        authority.execution_manifest_sha256,
+        field="authority.execution_manifest_sha256",
+    )
+    manifest_commit = _require_git_commit(
+        authority.execution_manifest_introduction_commit,
+        field="authority.execution_manifest_introduction_commit",
+    )
+    activation_sha256 = _require_sha256(
+        authority.activation_sha256,
+        field="authority.activation_sha256",
+    )
+    _require_git_commit(
+        authority.activation_introduction_commit,
+        field="authority.activation_introduction_commit",
+    )
+    activation_verified_at = _require_utc_timestamp(
+        authority.activation_verified_at_utc,
+        field="authority.activation_verified_at_utc",
+    )
+    minimum_date = _require_date_string(
+        authority.minimum_target_official_date,
+        field="authority.minimum_target_official_date",
+    )
+    if (
+        minimum_date < EXPECTED_SHADOW_PROTOCOL_REGISTERED_ON.isoformat()
+        or minimum_date < activation_verified_at[:10]
+        or target_official_date.isoformat() < minimum_date
+    ):
+        raise ShadowPredictionError(
+            "Les bornes temporelles de l'autorite shadow sont invalides."
+        )
+
+    runtime_versions = authority.runtime_versions
+    if (
+        type(runtime_versions) is not tuple
+        or any(
+            type(pair) is not tuple
+            or len(pair) != 2
+            or any(type(value) is not str for value in pair)
+            for pair in runtime_versions
+        )
+        or tuple(sorted(dict(runtime_versions).items())) != runtime_versions
+        or frozenset(dict(runtime_versions)) != _MODEL_RUNTIME_KEYS
+        or any(
+            not value or value != value.strip()
+            for _, value in runtime_versions
+        )
+    ):
+        raise ShadowPredictionError(
+            "Les versions runtime de l'autorite ne sont pas canoniques."
+        )
+
+    return (
+        service_sha256,
+        manifest_commit,
+        activation_sha256,
+        activation_verified_at,
+        minimum_date,
+        runtime_versions,
+    )
+
+
+def _execution_context_from_authority(
+    authority: ShadowExecutionAuthority,
+    *,
+    target_official_date: date,
+    started_at_utc: str,
+) -> ShadowReceiptExecutionContext:
+    """Transforme uniquement une autorite exacte en contexte ferme."""
+    (
+        service_sha256,
+        manifest_commit,
+        activation_sha256,
+        activation_verified_at,
+        minimum_date,
+        runtime_versions,
+    ) = _validate_execution_authority_identity(
+        authority,
+        target_official_date=target_official_date,
+    )
+    started_at = _require_utc_timestamp(
+        started_at_utc,
+        field="started_at_utc",
+    )
+    if activation_verified_at > started_at:
+        raise ShadowPredictionError(
+            "L'activation persistante ne peut pas suivre started_at_utc."
+        )
+
+    return ShadowReceiptExecutionContext(
+        started_at_utc=started_at,
+        execution_manifest_introduction_commit=manifest_commit,
+        activation_sha256=activation_sha256,
+        activation_verified_at_utc=activation_verified_at,
+        minimum_target_official_date=minimum_date,
+        shadow_service_module_sha256=service_sha256,
+        runtime_versions=runtime_versions,
+    )
+
+
+def _validate_remote_evidence_before_reservation(
+    evidence: ShadowActivationReverificationEvidence,
+    *,
+    authority: ShadowExecutionAuthority,
+    target_official_date: date,
+    reserved_at_utc: str,
+) -> None:
+    """Ferme la preuve distante et son ordre avant de consommer le slot."""
+    _validate_activation_reverification_evidence(evidence)
+    reserved_at = _require_utc_timestamp(
+        reserved_at_utc,
+        field="reserved_at_utc",
+    )
+    if (
+        evidence.activation_introduction_commit
+        != authority.activation_introduction_commit
+        or evidence.activation_remote_ref != GITHUB_REMOTE_REF
+    ):
+        raise ShadowPredictionError(
+            "La reverification distante diverge de l'activation autorisee."
+        )
+    if (
+        evidence.response_received_at_utc > reserved_at
+        or evidence.activation_remote_reverified_at_utc > reserved_at
+        or target_official_date.isoformat()
+        < evidence.activation_remote_reverified_at_utc[:10]
+    ):
+        raise ShadowPredictionError(
+            "La reverification distante ne precede pas la reservation."
+        )
+
+
+def _fail_after_public_reservation(
+    reservation: ShadowPredictionSlotReservation,
+    *,
+    stage: str,
+    error: Exception,
+    project_directory: Path,
+) -> None:
+    """Ferme une erreur publique post-reservation sans masquer l'origine."""
+    error_type = type(error).__name__
+    error_message = str(error).strip() or f"{error_type} sans message."
+    try:
+        failed_at = _format_utc_seconds(_utc_now(), field="failed_at_utc")
+        fail_shadow_prediction_slot(
+            reservation,
+            failed_at_utc=failed_at,
+            stage=stage,
+            error_type=error_type,
+            error_message=error_message,
+            project_directory=project_directory,
+        )
+    except ShadowPredictionSlotConsumedError:
+        pass
+    except Exception as failure_error:
+        raise ShadowPredictionError(
+            "L'execution publique a echoue et son marqueur FAILED.json n'a "
+            "pas pu etre publie sans ambiguite : "
+            f"{type(failure_error).__name__}: {failure_error}"
+        ) from error
+
+
+def execute_shadow_prediction(
+    target_official_date: date | str,
+    *,
+    project_directory: Path = PROJECT_DIRECTORY,
+    database_path: Path = DATABASE_PATH,
+    data_directory: Path = DATA_DIR,
+) -> dict[str, Any] | ShadowCompletionPublication:
+    """Execute ou relit un unique slot shadow v2 sans option de contournement.
+
+    La premiere operation sur l'arbre de resultats est une inspection par
+    ``lstat``. Un slot deja present ne cree aucun instant et ne declenche aucun
+    appel distant ; seul son recu exact peut etre rendu. Pour un slot absent,
+    ``started_at_utc`` est capture immediatement, puis chaque autorisation est
+    derivee des preuves figees avant la reverification distante et la
+    reservation exclusive.
+    """
+    target = _parse_target_official_date(target_official_date)
+    if target.year != EXPECTED_TARGET_SEASON:
+        raise ShadowPredictionError(
+            "Saison cible invalide pour l'execution shadow v2."
+        )
+    if target < EXPECTED_SHADOW_PROTOCOL_REGISTERED_ON:
+        raise ShadowPredictionError(
+            "La date cible precede l'enregistrement du protocole shadow v2."
+        )
+
+    project, first_slot_path, slot_was_present = (
+        _inspect_shadow_prediction_slot_presence_first(
+            target,
+            project_directory=project_directory,
+        )
+    )
+    started_at: str | None = None
+    if not slot_was_present:
+        started_at = _format_utc_seconds(
+            _utc_now(),
+            field="started_at_utc",
+        )
+
+    authority = verify_shadow_execution_authority(
+        target,
+        project_directory=project,
+    )
+    _validate_execution_authority_identity(
+        authority,
+        target_official_date=target,
+    )
+    inspected = inspect_shadow_prediction_slot(
+        target,
+        shadow_protocol_sha256=authority.shadow_protocol_sha256,
+        execution_manifest_sha256=authority.execution_manifest_sha256,
+        model_artifact_sha256=EXPECTED_MODEL_ARTIFACT_SHA256,
+        project_directory=project,
+    )
+    if inspected.slot_path != first_slot_path:
+        raise ShadowPredictionError(
+            "Le chemin du slot a change entre les deux inspections."
+        )
+
+    if slot_was_present:
+        if (
+            inspected.state is ShadowPredictionSlotState.COMPLETED_EXACT
+            and type(inspected.receipt) is dict
+        ):
+            return inspected.receipt
+        raise ShadowPredictionSlotConsumedError(
+            "Le slot fantome deja present ne correspond pas a un doublon "
+            f"exact : {inspected.state.value}."
+        )
+    if inspected.state is not ShadowPredictionSlotState.ABSENT:
+        raise ShadowPredictionSlotConsumedError(
+            "Le slot fantome a ete consomme apres sa premiere inspection : "
+            f"{inspected.state.value}."
+        )
+    assert started_at is not None
+    execution_context = _execution_context_from_authority(
+        authority,
+        target_official_date=target,
+        started_at_utc=started_at,
+    )
+
+    evidence = fetch_activation_reverification_evidence(
+        authority.activation_introduction_commit
+    )
+    reserved_at = _format_utc_seconds(
+        _utc_now(),
+        field="reserved_at_utc",
+    )
+    _validate_remote_evidence_before_reservation(
+        evidence,
+        authority=authority,
+        target_official_date=target,
+        reserved_at_utc=reserved_at,
+    )
+    reservation = reserve_shadow_prediction_slot(
+        target,
+        reserved_at_utc=reserved_at,
+        runtime_code_commit=authority.runtime_code_commit,
+        shadow_protocol_sha256=authority.shadow_protocol_sha256,
+        execution_manifest_sha256=authority.execution_manifest_sha256,
+        model_artifact_sha256=EXPECTED_MODEL_ARTIFACT_SHA256,
+        project_directory=project,
+    )
+
+    try:
+        activation_publication = publish_activation_reverification_evidence(
+            reservation,
+            evidence,
+            project_directory=project,
+        )
+    except Exception as error:
+        _fail_after_public_reservation(
+            reservation,
+            stage=_EXECUTION_STAGE_ACTIVATION_PUBLICATION,
+            error=error,
+            project_directory=project,
+        )
+        raise
+
+    return _execute_reserved_shadow_prediction(
+        reservation,
+        activation_publication,
+        execution_context,
+        database_path=database_path,
+        data_directory=data_directory,
+        project_directory=project,
+    )
 
 
 def _read_frozen_protocol(

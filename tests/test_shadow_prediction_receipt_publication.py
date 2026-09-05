@@ -523,12 +523,26 @@ class ShadowReceiptPublicationTests(unittest.TestCase):
     def test_concurrent_publishers_have_exactly_one_winner(self):
         def attempt(_):
             try:
-                return ("ok", self._publish().receipt_sha256)
+                publication = shadow._build_and_publish_shadow_receipt(
+                    self.fixture.fixture.reservation,
+                    self.fixture.fixture.activation_publication,
+                    self.fixture.source,
+                    self.fixture.candidates,
+                    self.predictions,
+                    self.context,
+                    project_directory=self.project,
+                )
+                return ("ok", publication.receipt_sha256)
             except shadow.ShadowPredictionSlotConsumedError as error:
                 return ("consumed", type(error).__name__)
 
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            outcomes = list(pool.map(attempt, range(2)))
+        with patch.object(
+            shadow,
+            "_utc_now",
+            return_value=RECEIPT_FINALIZED_AT,
+        ):
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                outcomes = list(pool.map(attempt, range(2)))
         self.assertEqual([kind for kind, _ in outcomes].count("ok"), 1)
         self.assertEqual([kind for kind, _ in outcomes].count("consumed"), 1)
         self.assertEqual(len(tuple(self.slot.iterdir())), 7)

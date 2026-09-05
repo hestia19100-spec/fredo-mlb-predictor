@@ -13,8 +13,10 @@ ensuite des probabilites internes; une autre les lie aux cinq preuves du slot
 et publie exclusivement le sixieme fichier predictions.csv.
 Une primitive interne distincte relit les six fichiers, verifie un contexte
 d'execution deja autorise et publie le septieme fichier receipt.json.
+Une derniere primitive interne relit les sept preuves, controle la limite
+temporelle et publie exclusivement le marqueur terminal COMPLETED.
 Les chemins d'apercu restent sans lecture officielle, import ou chargement
-de modele. Aucun marqueur COMPLETED n'est encore construit ici.
+de modele.
 """
 
 from __future__ import annotations
@@ -106,6 +108,7 @@ CANDIDATE_LEDGER_FILENAME = "candidate_ledger.csv"
 FEATURES_FILENAME = "features.csv"
 PREDICTIONS_FILENAME = "predictions.csv"
 RECEIPT_FILENAME = "receipt.json"
+COMPLETED_FILENAME = "COMPLETED"
 EXPECTED_CALIBRATED_MODEL_VERSION = "logistic_team_form_v1_platt"
 ACTIVATION_RELATIVE_PATH = PurePosixPath(
     "shadow_activations/logistic_team_form_v1_platt_shadow_v2/activation.json"
@@ -898,6 +901,27 @@ class ShadowReceiptPublication:
 
 
 @dataclass(frozen=True, slots=True)
+class ShadowCompletionPublication:
+    """Preuve du huitieme fichier et de la fermeture terminale du slot."""
+
+    slot_path: Path
+    completed_path: Path
+    completed_relative_path: str
+    completed_sha256: str
+    completed_size_bytes: int
+    completed_at_utc: str
+    batch_id: str
+    receipt_relative_path: str
+    receipt_sha256: str
+    batch_status: str
+    earliest_predicted_scheduled_start_utc: str | None
+    local_completion_lead_seconds: int | None
+    official_prediction_created: bool
+    receipt_created: bool = field(default=True, init=False)
+    slot_completed: bool = field(default=True, init=False)
+
+
+@dataclass(frozen=True, slots=True)
 class _ShadowReceiptPredecessors:
     activation_evidence: dict[str, Any]
     activation_bytes: bytes
@@ -912,6 +936,16 @@ class _ShadowReceiptPredecessors:
     exclusions: tuple[tuple[str, int], ...]
     target_official_date: str
     information_cutoff_utc: str
+
+
+@dataclass(frozen=True, slots=True)
+class _ShadowCompletionPredecessors:
+    receipt: dict[str, Any]
+    receipt_bytes: bytes
+    receipt_finalized_at_utc: str
+    batch_status: str
+    earliest_predicted_scheduled_start_utc: str | None
+    receipt_predecessors: _ShadowReceiptPredecessors
 
 
 def _validate_json_value(
@@ -2202,7 +2236,29 @@ def _valid_completed_marker(
         )
     except ShadowPredictionError:
         return False
-    return receipt_finalized_at <= completed_at
+    if receipt_finalized_at > completed_at:
+        return False
+    earliest_start = receipt_batch.get(
+        "earliest_predicted_scheduled_start_utc"
+    )
+    if earliest_start is None:
+        return True
+    try:
+        earliest = _require_utc_timestamp(
+            earliest_start,
+            field=(
+                "receipt.batch.earliest_predicted_scheduled_start_utc"
+            ),
+        )
+    except ShadowPredictionError:
+        return False
+    completed_datetime = datetime.fromisoformat(
+        completed_at.replace("Z", "+00:00")
+    )
+    earliest_datetime = datetime.fromisoformat(
+        earliest.replace("Z", "+00:00")
+    )
+    return completed_datetime <= earliest_datetime - timedelta(minutes=120)
 
 
 def inspect_shadow_prediction_slot(
@@ -2292,7 +2348,7 @@ def inspect_shadow_prediction_slot(
     if not isinstance(slot_mode, int) or not stat.S_ISDIR(slot_mode):
         return inspection(ShadowPredictionSlotState.INCOMPLETE_CONSUMED)
 
-    completed_path = slot_path / "COMPLETED"
+    completed_path = slot_path / COMPLETED_FILENAME
     completed_mode = _lstat_mode(completed_path)
     if completed_mode is _PATH_MISSING:
         failed_mode = _lstat_mode(slot_path / "FAILED.json")
@@ -2323,7 +2379,9 @@ def inspect_shadow_prediction_slot(
         return inspection(mismatch)
 
     reserved_result = _read_canonical_json_object(slot_path / "RESERVED")
-    receipt_result = _read_canonical_json_object(slot_path / "receipt.json")
+    receipt_result = _read_canonical_json_object(
+        slot_path / RECEIPT_FILENAME
+    )
     completed_result = _read_canonical_json_object(completed_path)
     if (
         reserved_result is None
@@ -2357,7 +2415,7 @@ def inspect_shadow_prediction_slot(
     expected_receipt_path = (
         SHADOW_RESULT_ROOT_RELATIVE_PATH
         / target_date
-        / "receipt.json"
+        / RECEIPT_FILENAME
     ).as_posix()
     if not _valid_completed_marker(
         completed,
@@ -5758,8 +5816,16 @@ def _read_validated_receipt_predecessors(
     predictions_publication: ShadowPredictionsPublication,
     *,
     project_directory: Path,
+    expected_additional_filenames: frozenset[str] = frozenset(),
 ) -> _ShadowReceiptPredecessors:
     """Reconstruit et relie les six fichiers qui precedent le recu."""
+    if type(expected_additional_filenames) is not frozenset or not all(
+        type(name) is str and name
+        for name in expected_additional_filenames
+    ):
+        raise ShadowPredictionError(
+            "Les fichiers posterieurs attendus doivent etre explicites."
+        )
     expected_names = frozenset(
         {
             SOURCE_SNAPSHOT_FILENAME,
@@ -5767,7 +5833,7 @@ def _read_validated_receipt_predecessors(
             FEATURES_FILENAME,
             PREDICTIONS_FILENAME,
         }
-    )
+    ) | expected_additional_filenames
     _validate_source_snapshot_predecessors(
         reservation,
         activation_publication,
@@ -6498,6 +6564,580 @@ def _build_and_publish_shadow_receipt(
             protocol_sha256=reserved["shadow_protocol_sha256"],
             artifact_sha256=EXPECTED_MODEL_ARTIFACT_SHA256,
             official_prediction_created=predicted_games > 0,
+        )
+
+
+def _read_validated_completion_predecessors(
+    reservation: ShadowPredictionSlotReservation,
+    activation_publication: ShadowActivationReverificationPublication,
+    source_publication: ShadowSourceSnapshotPublication,
+    candidate_publication: ShadowCandidateFeaturesPublication,
+    predictions_publication: ShadowPredictionsPublication,
+    receipt_publication: ShadowReceiptPublication,
+    *,
+    project_directory: Path,
+    expected_additional_filenames: frozenset[str] = frozenset(),
+) -> _ShadowCompletionPredecessors:
+    """Relit les sept preuves et lie integralement le recu a leur contenu."""
+    if type(receipt_publication) is not ShadowReceiptPublication:
+        raise ShadowPredictionError(
+            "Une preuve exacte de publication du recu est requise."
+        )
+    if type(expected_additional_filenames) is not frozenset or not all(
+        type(name) is str and name
+        for name in expected_additional_filenames
+    ):
+        raise ShadowPredictionError(
+            "Les fichiers terminaux attendus doivent etre explicites."
+        )
+
+    receipt_predecessors = _read_validated_receipt_predecessors(
+        reservation,
+        activation_publication,
+        source_publication,
+        candidate_publication,
+        predictions_publication,
+        project_directory=project_directory,
+        expected_additional_filenames=(
+            frozenset({RECEIPT_FILENAME})
+            | expected_additional_filenames
+        ),
+    )
+    target = receipt_predecessors.target_official_date
+    expected_slot = project_directory.joinpath(
+        *SHADOW_RESULT_ROOT_RELATIVE_PATH.parts,
+        target,
+    )
+    receipt_path = expected_slot / RECEIPT_FILENAME
+    receipt_relative_path = (
+        SHADOW_RESULT_ROOT_RELATIVE_PATH / target / RECEIPT_FILENAME
+    ).as_posix()
+    if (
+        reservation.slot_path != expected_slot
+        or receipt_publication.slot_path != expected_slot
+        or receipt_publication.receipt_path != receipt_path
+        or receipt_publication.receipt_relative_path != receipt_relative_path
+        or receipt_publication.receipt_created is not True
+        or receipt_publication.slot_completed is not False
+    ):
+        raise ShadowPredictionError(
+            "La preuve du recu ne vise pas le septieme fichier canonique."
+        )
+
+    persisted_receipt = _read_canonical_json_object(receipt_path)
+    if persisted_receipt is None:
+        raise ShadowPredictionError(
+            "Le recu persiste n'est pas un objet JSON canonique."
+        )
+    receipt, receipt_bytes = persisted_receipt
+    receipt_sha256 = hashlib.sha256(receipt_bytes).hexdigest()
+    if (
+        type(receipt_publication.receipt_size_bytes) is not int
+        or receipt_publication.receipt_size_bytes != len(receipt_bytes)
+        or _require_sha256(
+            receipt_publication.receipt_sha256,
+            field="receipt_publication.receipt_sha256",
+        )
+        != receipt_sha256
+    ):
+        raise ShadowPredictionError(
+            "La taille ou l'empreinte du recu ne correspond pas a sa preuve."
+        )
+
+    reserved = reservation.reserved_marker
+    protocol_sha256 = _require_sha256(
+        reserved["shadow_protocol_sha256"],
+        field="RESERVED.shadow_protocol_sha256",
+    )
+    manifest_sha256 = _require_sha256(
+        reserved["execution_manifest_sha256"],
+        field="RESERVED.execution_manifest_sha256",
+    )
+    if not _valid_receipt(
+        receipt,
+        reserved=reserved,
+        batch_id=reservation.batch_id,
+        slot_key=reservation.slot_key,
+        target_official_date=target,
+        shadow_protocol_sha256=protocol_sha256,
+        execution_manifest_sha256=manifest_sha256,
+        model_artifact_sha256=EXPECTED_MODEL_ARTIFACT_SHA256,
+    ):
+        raise ShadowPredictionError("Le recu persiste viole le contrat v2.")
+
+    batch = receipt["batch"]
+    activation = receipt["activation"]
+    times = receipt["times"]
+    schedule_http = receipt["schedule_http_response"]
+    lineage = receipt["lineage"]
+    source = receipt["source"]
+    counts = receipt["counts"]
+    output_hashes = receipt["output_hashes"]
+    model_invariants = receipt["model_invariants"]
+    runtime_versions = receipt["runtime_versions"]
+    assert isinstance(batch, dict)
+    assert isinstance(activation, dict)
+    assert isinstance(times, dict)
+    assert isinstance(schedule_http, dict)
+    assert isinstance(lineage, dict)
+    assert isinstance(source, dict)
+    assert isinstance(counts, dict)
+    assert isinstance(output_hashes, dict)
+    assert isinstance(model_invariants, dict)
+    assert isinstance(runtime_versions, dict)
+
+    snapshot = receipt_predecessors.source_snapshot
+    ingestion = snapshot["schedule_ingestion"]
+    sqlite_snapshot = snapshot["sqlite_snapshot"]
+    raw_activation = receipt_predecessors.activation_evidence
+    exclusions = dict(receipt_predecessors.exclusions)
+    schedule_game_count = len(snapshot["target_schedule"])
+    eligible_game_count = len(receipt_predecessors.feature_rows)
+    predicted_game_count = len(receipt_predecessors.prediction_rows)
+    batch_status = (
+        "COMPLETED_WITH_PREDICTIONS"
+        if predicted_game_count > 0
+        else "COMPLETED_NO_ELIGIBLE_GAMES"
+    )
+    earliest = predictions_publication.earliest_predicted_scheduled_start_utc
+
+    expected_publication_values: dict[str, object] = {
+        "receipt_finalized_at_utc": times["receipt_finalized_at_utc"],
+        "batch_status": batch_status,
+        "schedule_game_count": schedule_game_count,
+        "eligible_game_count": eligible_game_count,
+        "predicted_game_count": predicted_game_count,
+        "earliest_predicted_scheduled_start_utc": earliest,
+        "execution_manifest_sha256": manifest_sha256,
+        "protocol_sha256": protocol_sha256,
+        "artifact_sha256": EXPECTED_MODEL_ARTIFACT_SHA256,
+        "official_prediction_created": predicted_game_count > 0,
+    }
+    for name, expected in expected_publication_values.items():
+        actual = getattr(receipt_publication, name)
+        if type(actual) is not type(expected) or actual != expected:
+            raise ShadowPredictionError(
+                f"La preuve du recu diverge pour {name}."
+            )
+
+    expected_batch = {
+        "batch_id": reservation.batch_id,
+        "slot_key": reservation.slot_key,
+        "target_official_date": target,
+        "status": batch_status,
+        "earliest_predicted_scheduled_start_utc": earliest,
+    }
+    expected_counts = {
+        "schedule_games": schedule_game_count,
+        "eligible_games": eligible_game_count,
+        "predicted_games": predicted_game_count,
+        "excluded_games_by_reason": exclusions,
+    }
+    expected_output_hashes = {
+        "activation_reverification_evidence_sha256": (
+            activation_publication.evidence_sha256
+        ),
+        "candidate_ledger_sha256": (
+            candidate_publication.candidate_ledger_sha256
+        ),
+        "features_sha256": candidate_publication.features_sha256,
+        "predictions_sha256": predictions_publication.predictions_sha256,
+    }
+    expected_lineage = {
+        "runtime_code_commit": reserved["runtime_code_commit"],
+        "shadow_protocol_sha256": protocol_sha256,
+        "execution_manifest_sha256": manifest_sha256,
+        "model_artifact_sha256": EXPECTED_MODEL_ARTIFACT_SHA256,
+        "artifact_manifest_sha256": EXPECTED_ARTIFACT_MANIFEST_SHA256,
+        "model_protocol_sha256": EXPECTED_MODEL_PROTOCOL_SHA256,
+        "evaluation_protocol_sha256": EXPECTED_EVALUATION_PROTOCOL_SHA256,
+        "evaluation_report_sha256": EXPECTED_EVALUATION_REPORT_SHA256,
+        "evaluation_results_commit": EXPECTED_EVALUATION_RESULTS_COMMIT,
+    }
+    if (
+        batch != expected_batch
+        or counts != expected_counts
+        or output_hashes != expected_output_hashes
+        or any(
+            type(lineage.get(name)) is not type(expected)
+            or lineage.get(name) != expected
+            for name, expected in expected_lineage.items()
+        )
+        or not _has_exact_keys(
+            runtime_versions,
+            _RECEIPT_SECTION_KEYS["runtime_versions"],
+        )
+        or any(
+            type(value) is not str or not value or value != value.strip()
+            for value in runtime_versions.values()
+        )
+    ):
+        raise ShadowPredictionError(
+            "L'identite, les compteurs ou les empreintes du recu divergent."
+        )
+    if predicted_game_count > 0 and runtime_versions != dict(
+        predictions_publication.runtime_versions
+    ):
+        raise ShadowPredictionError(
+            "Les versions runtime du recu divergent des predictions."
+        )
+
+    execution_manifest_commit = _require_git_commit(
+        activation["execution_manifest_introduction_commit"],
+        field="receipt.activation.execution_manifest_introduction_commit",
+    )
+    activation_sha256 = _require_sha256(
+        activation["activation_sha256"],
+        field="receipt.activation.activation_sha256",
+    )
+    activation_verified_at = _require_utc_timestamp(
+        activation["activation_verified_at_utc"],
+        field="receipt.activation.activation_verified_at_utc",
+    )
+    minimum_target_date = _require_date_string(
+        activation["minimum_target_official_date"],
+        field="receipt.activation.minimum_target_official_date",
+    )
+    service_sha256 = _require_sha256(
+        lineage["shadow_service_module_sha256"],
+        field="receipt.lineage.shadow_service_module_sha256",
+    )
+    expected_activation = {
+        "execution_manifest_introduction_commit": execution_manifest_commit,
+        "activation_introduction_commit": (
+            activation_publication.activation_introduction_commit
+        ),
+        "activation_path": ACTIVATION_RELATIVE_PATH.as_posix(),
+        "activation_sha256": activation_sha256,
+        "activation_verified_at_utc": activation_verified_at,
+        "activation_remote_reverified_at_utc": (
+            activation_publication.activation_remote_reverified_at_utc
+        ),
+        "activation_remote_ref": GITHUB_REMOTE_REF,
+        "activation_remote_reverification_query_url": raw_activation[
+            "request_url"
+        ],
+        "activation_remote_reverification_effective_url": raw_activation[
+            "effective_url"
+        ],
+        "activation_remote_reverification_status_code": raw_activation[
+            "response_status_code"
+        ],
+        "activation_remote_reverification_redirect_count": raw_activation[
+            "response_redirect_count"
+        ],
+        "activation_remote_reverification_response_received_at_utc": (
+            raw_activation["response_received_at_utc"]
+        ),
+        "activation_remote_reverification_response_body_sha256": (
+            raw_activation["response_body_sha256"]
+        ),
+        "activation_remote_reverification_evidence_path": (
+            activation_publication.evidence_relative_path
+        ),
+        "activation_remote_reverification_evidence_sha256": (
+            activation_publication.evidence_sha256
+        ),
+        "minimum_target_official_date": minimum_target_date,
+    }
+    if activation != expected_activation:
+        raise ShadowPredictionError(
+            "La section activation du recu diverge de la preuve distante."
+        )
+
+    schedule_observed_at = _require_utc_timestamp(
+        ingestion["mlb_http_response_received_at_utc"],
+        field="schedule_ingestion.mlb_http_response_received_at_utc",
+    )
+    mlb_http_date = _require_utc_timestamp(
+        ingestion["mlb_http_date_utc"],
+        field="schedule_ingestion.mlb_http_date_utc",
+    )
+    cutoff = receipt_predecessors.information_cutoff_utc
+    issued_at = _require_utc_timestamp(
+        predictions_publication.issued_at_utc,
+        field="predictions_publication.issued_at_utc",
+    )
+    receipt_finalized_at = _require_utc_timestamp(
+        times["receipt_finalized_at_utc"],
+        field="receipt.times.receipt_finalized_at_utc",
+    )
+    started_at = _require_utc_timestamp(
+        times["started_at_utc"],
+        field="receipt.times.started_at_utc",
+    )
+    reserved_at = _require_utc_timestamp(
+        reserved["reserved_at_utc"],
+        field="RESERVED.reserved_at_utc",
+    )
+    to_datetime = lambda value: datetime.fromisoformat(
+        value.replace("Z", "+00:00")
+    )
+    expected_times = {
+        "started_at_utc": started_at,
+        "reserved_at_utc": reserved_at,
+        "schedule_observed_at_utc": schedule_observed_at,
+        "information_cutoff_utc": cutoff,
+        "issued_at_utc": issued_at,
+        "receipt_finalized_at_utc": receipt_finalized_at,
+        "mlb_http_date_utc": mlb_http_date,
+        "mlb_http_response_received_at_utc": schedule_observed_at,
+        "clock_skew_seconds": int(
+            (to_datetime(schedule_observed_at) - to_datetime(mlb_http_date))
+            .total_seconds()
+        ),
+        "schedule_age_seconds": int(
+            (to_datetime(cutoff) - to_datetime(schedule_observed_at))
+            .total_seconds()
+        ),
+    }
+    if (
+        times != expected_times
+        or not (
+            started_at
+            <= activation_publication.response_received_at_utc
+            <= reserved_at
+            <= schedule_observed_at
+            <= cutoff
+            <= issued_at
+            <= receipt_finalized_at
+        )
+        or activation_verified_at > started_at
+        or minimum_target_date
+        < EXPECTED_SHADOW_PROTOCOL_REGISTERED_ON.isoformat()
+        or minimum_target_date < activation_verified_at[:10]
+        or target < minimum_target_date
+    ):
+        raise ShadowPredictionError(
+            "Les temps ou la date minimale du recu divergent."
+        )
+
+    expected_schedule_http = {
+        "effective_url": ingestion["response_effective_url"],
+        "status_code": ingestion["response_status_code"],
+        "redirect_count": ingestion["response_redirect_count"],
+        "date_header_raw": ingestion["mlb_http_date_header_raw"],
+        "date_header_utc": mlb_http_date,
+        "received_at_utc": schedule_observed_at,
+        "body_sha256": ingestion["response_body_sha256"],
+    }
+    expected_source = {
+        "sqlite_snapshot_sha256": sqlite_snapshot["sha256"],
+        "sqlite_snapshot_size_bytes": sqlite_snapshot["size_bytes"],
+        "source_snapshot_path": source_publication.snapshot_relative_path,
+        "source_snapshot_sha256": source_publication.snapshot_sha256,
+        "schedule_ingestion_run_id": ingestion["run_id"],
+        "schedule_source": ingestion["source"],
+        "schedule_requested_start_date": ingestion["requested_start_date"],
+        "schedule_requested_end_date": ingestion["requested_end_date"],
+        "schedule_game_types": ingestion["game_types"],
+        "schedule_request_parameters_json": ingestion[
+            "request_parameters_json"
+        ],
+        "schedule_ingestion_completed_at_utc": ingestion[
+            "completed_at_utc"
+        ],
+        "schedule_raw_archive_path": ingestion["raw_archive_path"],
+        "schedule_raw_archive_sha256": ingestion["raw_archive_sha256"],
+    }
+    expected_model_invariants = {
+        "fit_calls": 0,
+        "partial_fit_calls": 0,
+        "recalibration_calls": 0,
+        "threshold_tuning_calls": 0,
+        "feature_selection_calls": 0,
+        "predict_proba_calls": predictions_publication.predict_proba_calls,
+        "artifact_state_sha256_before": (
+            predictions_publication.artifact_state_sha256_before
+        ),
+        "artifact_state_sha256_after": (
+            predictions_publication.artifact_state_sha256_after
+        ),
+        "artifact_state_unchanged": True,
+        "warning_policy_id": _MODEL_WARNING_POLICY_ID,
+        "approved_compatibility_warning_count": (
+            predictions_publication.approved_compatibility_warning_count
+        ),
+        "unexpected_warning_count": 0,
+    }
+    if (
+        schedule_http != expected_schedule_http
+        or source != expected_source
+        or model_invariants != expected_model_invariants
+        or any(
+            value is not True
+            for value in receipt["negative_attestations"].values()
+        )
+        or not service_sha256
+    ):
+        raise ShadowPredictionError(
+            "Le recu ne correspond plus aux preuves source ou modele."
+        )
+
+    return _ShadowCompletionPredecessors(
+        receipt=receipt,
+        receipt_bytes=receipt_bytes,
+        receipt_finalized_at_utc=receipt_finalized_at,
+        batch_status=batch_status,
+        earliest_predicted_scheduled_start_utc=earliest,
+        receipt_predecessors=receipt_predecessors,
+    )
+
+
+def _complete_shadow_prediction_slot(
+    reservation: ShadowPredictionSlotReservation,
+    activation_publication: ShadowActivationReverificationPublication,
+    source_publication: ShadowSourceSnapshotPublication,
+    candidate_publication: ShadowCandidateFeaturesPublication,
+    predictions_publication: ShadowPredictionsPublication,
+    receipt_publication: ShadowReceiptPublication,
+    *,
+    project_directory: Path = PROJECT_DIRECTORY,
+) -> ShadowCompletionPublication:
+    """Publie exclusivement COMPLETED apres relecture des sept preuves."""
+    predecessor_names = frozenset(
+        {
+            SOURCE_SNAPSHOT_FILENAME,
+            CANDIDATE_LEDGER_FILENAME,
+            FEATURES_FILENAME,
+            PREDICTIONS_FILENAME,
+            RECEIPT_FILENAME,
+        }
+    )
+    _validate_source_snapshot_predecessors(
+        reservation,
+        activation_publication,
+        project_directory=project_directory,
+        expected_additional_filenames=predecessor_names,
+    )
+    with _hold_source_snapshot_stage_lock(
+        reservation,
+        project_directory=project_directory,
+    ):
+        predecessors = _read_validated_completion_predecessors(
+            reservation,
+            activation_publication,
+            source_publication,
+            candidate_publication,
+            predictions_publication,
+            receipt_publication,
+            project_directory=project_directory,
+        )
+
+        # Cet instant unique suit la relecture fsync du recu et precede
+        # immediatement la construction des octets canoniques de COMPLETED.
+        completed_at = _format_utc_seconds(
+            _utc_now(),
+            field="completed_at_utc",
+        )
+        if completed_at < predecessors.receipt_finalized_at_utc:
+            raise ShadowPredictionError(
+                "COMPLETED ne peut pas preceder la finalisation du recu."
+            )
+        earliest = predecessors.earliest_predicted_scheduled_start_utc
+        lead_seconds: int | None = None
+        if earliest is not None:
+            lead_seconds = int(
+                (
+                    datetime.fromisoformat(earliest.replace("Z", "+00:00"))
+                    - datetime.fromisoformat(
+                        completed_at.replace("Z", "+00:00")
+                    )
+                ).total_seconds()
+            )
+            if lead_seconds < 120 * 60:
+                raise ShadowPredictionError(
+                    "Le slot ne peut plus etre termine deux heures avant "
+                    "le premier match predit."
+                )
+
+        receipt_relative_path = receipt_publication.receipt_relative_path
+        marker: dict[str, Any] = {
+            "marker_schema_version": 1,
+            "batch_id": reservation.batch_id,
+            "receipt_path": receipt_relative_path,
+            "receipt_sha256": receipt_publication.receipt_sha256,
+            "completed_at_utc": completed_at,
+        }
+        if not _valid_completed_marker(
+            marker,
+            receipt=predecessors.receipt,
+            receipt_bytes=predecessors.receipt_bytes,
+            receipt_path=receipt_relative_path,
+            batch_id=reservation.batch_id,
+        ):
+            raise ShadowPredictionError(
+                "Le marqueur COMPLETED construit viole le contrat v2."
+            )
+        completed_bytes = _canonical_json_file_bytes(marker)
+        completed_path = reservation.slot_path / COMPLETED_FILENAME
+        try:
+            completed_sha256 = _publish_exclusive_verified(
+                completed_path,
+                completed_bytes,
+            )
+            confirmed = _read_validated_completion_predecessors(
+                reservation,
+                activation_publication,
+                source_publication,
+                candidate_publication,
+                predictions_publication,
+                receipt_publication,
+                project_directory=project_directory,
+                expected_additional_filenames=frozenset(
+                    {COMPLETED_FILENAME}
+                ),
+            )
+            persisted_completed = _read_canonical_json_object(completed_path)
+            if (
+                confirmed != predecessors
+                or persisted_completed is None
+                or persisted_completed[0] != marker
+                or persisted_completed[1] != completed_bytes
+                or hashlib.sha256(persisted_completed[1]).hexdigest()
+                != completed_sha256
+                or not _valid_completed_marker(
+                    persisted_completed[0],
+                    receipt=confirmed.receipt,
+                    receipt_bytes=confirmed.receipt_bytes,
+                    receipt_path=receipt_relative_path,
+                    batch_id=reservation.batch_id,
+                )
+            ):
+                raise ShadowPredictionError(
+                    "COMPLETED ou ses predecesseurs ont change apres publication."
+                )
+        except ShadowPublicationConflictError as error:
+            raise ShadowPredictionSlotConsumedError(
+                "Le jalon COMPLETED est deja consomme."
+            ) from error
+        except OSError as error:
+            raise ShadowPredictionError(
+                "Publication de COMPLETED incomplete; aucune reparation "
+                "n'est permise."
+            ) from error
+
+        completed_relative_path = (
+            SHADOW_RESULT_ROOT_RELATIVE_PATH
+            / predecessors.receipt_predecessors.target_official_date
+            / COMPLETED_FILENAME
+        ).as_posix()
+        return ShadowCompletionPublication(
+            slot_path=reservation.slot_path,
+            completed_path=completed_path,
+            completed_relative_path=completed_relative_path,
+            completed_sha256=completed_sha256,
+            completed_size_bytes=len(completed_bytes),
+            completed_at_utc=completed_at,
+            batch_id=reservation.batch_id,
+            receipt_relative_path=receipt_relative_path,
+            receipt_sha256=receipt_publication.receipt_sha256,
+            batch_status=predecessors.batch_status,
+            earliest_predicted_scheduled_start_utc=earliest,
+            local_completion_lead_seconds=lead_seconds,
+            official_prediction_created=(
+                receipt_publication.official_prediction_created
+            ),
         )
 
 

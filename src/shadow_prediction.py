@@ -1,7 +1,6 @@
 """Moteur controle de la prediction fantome MLB v2.
 
-Ce module ne sait volontairement pas encore activer le protocole. Il valide
-l'apercu statique, construit les formats canoniques, inspecte les
+Ce module valide l'apercu statique, construit les formats canoniques, inspecte les
 creneaux, fige leurs preuves distantes et publie leur sous-ensemble source,
 puis le registre des candidats et leurs variables J-1 canoniques.
 Une primitive separee controle les fichiers figes du modele et les versions
@@ -24,6 +23,9 @@ les autorisations d'une nouvelle execution sans accepter de valeur runtime.
 La commande exige le drapeau explicite ``--execute-shadow`` pour appeler ce
 point d'entree et rend le recu canonique ; sans ce drapeau, l'apercu reste sans
 lecture officielle, import ou chargement de modele.
+Une commande distincte ``--activate-shadow`` publie une seule fois les deux
+preuves d'activation du manifeste deja fige et visible sur GitHub. Elle ne
+reserve aucun creneau journalier et ne lit ni MLB, ni SQLite, ni modele.
 """
 
 from __future__ import annotations
@@ -715,6 +717,10 @@ class ShadowPredictionSlotConsumedError(ShadowPublicationConflictError):
     """Refus definitif lorsqu'un slot journalier n'est plus absent."""
 
 
+class ShadowActivationConsumedError(ShadowPublicationConflictError):
+    """Refus definitif lorsqu'une racine d'activation existe deja."""
+
+
 class ShadowPredictionSlotState(str, Enum):
     """Etats fermes d'un creneau journalier v2 deja inspecte."""
 
@@ -784,6 +790,29 @@ class ShadowActivationReverificationPublication:
     activation_remote_reverified_at_utc: str
     response_received_at_utc: str
     response_body_sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class ShadowActivationPublication:
+    """Preuve retournee apres publication exclusive de l'activation v2."""
+
+    activation_root: Path
+    evidence_path: Path
+    evidence_relative_path: str
+    evidence_sha256: str
+    evidence_size_bytes: int
+    activation_path: Path
+    activation_relative_path: str
+    activation_sha256: str
+    activation_size_bytes: int
+    execution_manifest_sha256: str
+    execution_manifest_introduction_commit: str
+    execution_manifest_remote_ref: str
+    execution_manifest_remote_http_date_utc: str
+    execution_manifest_remote_response_received_at_utc: str
+    minimum_target_official_date: str
+    created_at_utc: str
+    activation: dict[str, Any] = field(repr=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -8207,6 +8236,511 @@ def _validate_execution_manifest(
     )
 
 
+def _require_absent_activation_root(project_directory: Path) -> Path:
+    """Refuse toute activation deja presente, partielle ou substituee."""
+    activation_root = project_directory.joinpath(
+        *SHADOW_ACTIVATION_ROOT_RELATIVE_PATH.parts
+    )
+    current = project_directory
+    for component in SHADOW_ACTIVATION_ROOT_RELATIVE_PATH.parts:
+        current = current / component
+        mode = _lstat_mode(current)
+        if mode is _PATH_MISSING:
+            return activation_root
+        if not isinstance(mode, int) or not stat.S_ISDIR(mode):
+            raise ShadowActivationConsumedError(
+                "Le chemin d'activation shadow v2 est deja consomme ou "
+                "structurellement invalide."
+            )
+    raise ShadowActivationConsumedError(
+        "L'activation shadow v2 existe deja et ne peut jamais etre "
+        "ecrasee, reparee ou recreee."
+    )
+
+
+def _require_exact_clean_git_root(project_directory: Path) -> str:
+    """Exige la racine Git exacte et un HEAD propre, puis le renvoie."""
+    _, top_level_output = _run_preflight_git(
+        project_directory,
+        ("rev-parse", "--show-toplevel"),
+    )
+    git_root_text = _git_text(
+        top_level_output,
+        field="racine du depot",
+    ).strip()
+    try:
+        git_root = Path(git_root_text).resolve(strict=True)
+        project_resolved = project_directory.resolve(strict=True)
+    except (OSError, RuntimeError, ValueError) as error:
+        raise ShadowPredictionError(
+            "La racine Git de l'activation est invalide."
+        ) from error
+    if git_root != project_resolved:
+        raise ShadowPredictionError(
+            "L'activation doit viser exactement la racine du depot Git."
+        )
+
+    _, head_output = _run_preflight_git(
+        project_directory,
+        ("rev-parse", "HEAD"),
+    )
+    runtime_commit = _require_git_commit(
+        _git_text(head_output, field="HEAD").strip(),
+        field="runtime_code_commit",
+    )
+    _, status_output = _run_preflight_git(
+        project_directory,
+        ("status", "--porcelain=v1", "--untracked-files=all"),
+    )
+    if status_output:
+        raise ShadowPredictionError(
+            "Le depot Git doit etre strictement propre avant l'activation."
+        )
+    return runtime_commit
+
+
+def _require_activation_paths_not_ignored(project_directory: Path) -> None:
+    """Refuse une activation que Git ne pourrait pas rendre visible."""
+    for relative_path in (
+        SHADOW_ACTIVATION_ROOT_RELATIVE_PATH,
+        ACTIVATION_REMOTE_EVIDENCE_RELATIVE_PATH,
+        ACTIVATION_RELATIVE_PATH,
+    ):
+        return_code, _ = _run_preflight_git(
+            project_directory,
+            ("check-ignore", "-q", "--", relative_path.as_posix()),
+            accepted_return_codes=frozenset({0, 1}),
+        )
+        if return_code == 0:
+            raise ShadowPredictionError(
+                "Le chemin d'activation est interdit par .gitignore : "
+                f"{relative_path.as_posix()}."
+            )
+
+
+def _validate_activation_publication_content(
+    activation: dict[str, Any],
+    evidence: ShadowActivationReverificationEvidence,
+    *,
+    protocol_sha256: str,
+    manifest_sha256: str,
+    manifest_introduction_commit: str,
+    minimum_target_official_date: str,
+) -> tuple[bytes, bytes]:
+    """Valide les deux contenus d'activation avant toute creation locale."""
+    protocol_hash = _require_sha256(
+        protocol_sha256,
+        field="activation.shadow_protocol_sha256",
+    )
+    manifest_hash = _require_sha256(
+        manifest_sha256,
+        field="activation.execution_manifest_sha256",
+    )
+    manifest_commit = _require_git_commit(
+        manifest_introduction_commit,
+        field="activation.execution_manifest_introduction_commit",
+    )
+    minimum_date = _require_date_string(
+        minimum_target_official_date,
+        field="activation.minimum_target_official_date",
+    )
+    raw, _raw_json, raw_gzip = (
+        _validate_activation_reverification_evidence(evidence)
+    )
+    if evidence.activation_introduction_commit != manifest_commit:
+        raise ShadowPredictionError(
+            "La preuve distante ne vise pas le manifeste d'execution."
+        )
+    if not _has_exact_keys(activation, _ACTIVATION_KEYS):
+        raise ShadowPredictionError(
+            "L'activation a publier ne respecte pas son schema exact."
+        )
+
+    request_url = GITHUB_COMPARE_URL_TEMPLATE.format(
+        expected_commit=manifest_commit
+    )
+    exact_values: dict[str, object] = {
+        "activation_schema_version": 1,
+        "status": _ACTIVATION_STATUS,
+        "shadow_protocol_path": SHADOW_PROTOCOL_RELATIVE_PATH.as_posix(),
+        "shadow_protocol_sha256": protocol_hash,
+        "execution_manifest_path": (
+            EXECUTION_MANIFEST_RELATIVE_PATH.as_posix()
+        ),
+        "execution_manifest_sha256": manifest_hash,
+        "execution_manifest_introduction_commit": manifest_commit,
+        "execution_manifest_remote_ref": GITHUB_REMOTE_REF,
+        "execution_manifest_remote_query_url": request_url,
+        "execution_manifest_remote_effective_url": request_url,
+        "execution_manifest_remote_response_status_code": 200,
+        "execution_manifest_remote_response_redirect_count": 0,
+        "execution_manifest_remote_http_date_utc": (
+            evidence.activation_remote_reverified_at_utc
+        ),
+        "execution_manifest_remote_response_received_at_utc": (
+            evidence.response_received_at_utc
+        ),
+        "execution_manifest_remote_response_body_sha256": (
+            evidence.response_body_sha256
+        ),
+        "raw_remote_evidence_path": (
+            ACTIVATION_REMOTE_EVIDENCE_RELATIVE_PATH.as_posix()
+        ),
+        "raw_remote_evidence_sha256": evidence.canonical_gzip_sha256,
+        "minimum_target_official_date": minimum_date,
+        "claim_level": _ACTIVATION_CLAIM_LEVEL,
+    }
+    for field_name, expected in exact_values.items():
+        actual = activation.get(field_name)
+        if type(actual) is not type(expected) or actual != expected:
+            raise ShadowPredictionError(
+                f"Valeur invalide dans l'activation a publier : "
+                f"{field_name}."
+            )
+
+    created_at = _require_utc_timestamp(
+        activation.get("created_at_utc"),
+        field="activation.created_at_utc",
+    )
+    verified_at = _require_utc_timestamp(
+        evidence.activation_remote_reverified_at_utc,
+        field="activation.execution_manifest_remote_http_date_utc",
+    )
+    received_at = _require_utc_timestamp(
+        evidence.response_received_at_utc,
+        field=(
+            "activation.execution_manifest_remote_response_received_at_utc"
+        ),
+    )
+    if received_at > created_at:
+        raise ShadowPredictionError(
+            "L'ordre temporel de l'activation distante est invalide."
+        )
+    if minimum_date < max(
+        EXPECTED_SHADOW_PROTOCOL_REGISTERED_ON.isoformat(),
+        verified_at[:10],
+    ):
+        raise ShadowPredictionError(
+            "La date minimale du manifeste ne couvre pas l'activation "
+            "distante."
+        )
+
+    selected_headers = raw.get("selected_response_headers")
+    assert isinstance(selected_headers, dict)
+    if (
+        raw.get("request_url") != request_url
+        or raw.get("effective_url") != request_url
+        or _parse_imf_fixdate_gmt(
+            selected_headers.get("date"),
+            field="activation.raw.selected_response_headers.date",
+        ) != verified_at
+        or raw.get("response_received_at_utc") != received_at
+        or raw.get("response_body_sha256") != evidence.response_body_sha256
+    ):
+        raise ShadowPredictionError(
+            "L'activation diverge de sa preuve GitHub canonique."
+        )
+
+    activation_bytes = _canonical_json_file_bytes(activation)
+    _read_canonical_json_bytes(
+        activation_bytes,
+        description="activation shadow v2 preparee",
+    )
+    return activation_bytes, raw_gzip
+
+
+def _create_activation_root_exclusive(project_directory: Path) -> Path:
+    """Cree la racine finale comme frontiere de propriete atomique."""
+    activation_root = project_directory.joinpath(
+        *SHADOW_ACTIVATION_ROOT_RELATIVE_PATH.parts
+    )
+    current = project_directory
+    parts = SHADOW_ACTIVATION_ROOT_RELATIVE_PATH.parts
+    for index, component in enumerate(parts):
+        parent = current
+        current = current / component
+        is_final = index == len(parts) - 1
+        mode = _lstat_mode(current)
+
+        if is_final:
+            if mode is not _PATH_MISSING:
+                raise ShadowActivationConsumedError(
+                    "L'activation shadow v2 a ete reservee par une autre "
+                    "execution."
+                )
+            try:
+                current.mkdir(exist_ok=False)
+            except FileExistsError as error:
+                raise ShadowActivationConsumedError(
+                    "L'activation shadow v2 a ete reservee par une autre "
+                    "execution."
+                ) from error
+            except OSError as error:
+                raise ShadowPredictionError(
+                    "Impossible de creer la racine d'activation de facon "
+                    "exclusive."
+                ) from error
+            _fsync_parent_directory(parent)
+            confirmed = _lstat_mode(current)
+            if not isinstance(confirmed, int) or not stat.S_ISDIR(confirmed):
+                raise ShadowPredictionError(
+                    "La racine d'activation creee n'est pas un repertoire "
+                    "local non symbolique."
+                )
+            return activation_root
+
+        if mode is _PATH_MISSING:
+            try:
+                current.mkdir(exist_ok=False)
+                _fsync_parent_directory(parent)
+            except FileExistsError:
+                pass
+            except OSError as error:
+                raise ShadowPredictionError(
+                    "Impossible de preparer le parent de l'activation."
+                ) from error
+            mode = _lstat_mode(current)
+        if not isinstance(mode, int) or not stat.S_ISDIR(mode):
+            raise ShadowActivationConsumedError(
+                "Le parent de l'activation est deja consomme ou "
+                "symbolique."
+            )
+    raise ShadowPredictionError("Racine d'activation interne introuvable.")
+
+
+def _publish_prepared_activation_once(
+    *,
+    project_directory: Path,
+    activation: dict[str, Any],
+    activation_bytes: bytes,
+    evidence: ShadowActivationReverificationEvidence,
+    manifest_sha256: str,
+    manifest_introduction_commit: str,
+    minimum_target_official_date: str,
+) -> ShadowActivationPublication:
+    """Publie les deux fichiers apres acquisition exclusive de leur racine."""
+    expected_activation_bytes, expected_evidence_bytes = (
+        _validate_activation_publication_content(
+            activation,
+            evidence,
+            protocol_sha256=EXPECTED_SHADOW_PROTOCOL_SHA256,
+            manifest_sha256=manifest_sha256,
+            manifest_introduction_commit=manifest_introduction_commit,
+            minimum_target_official_date=minimum_target_official_date,
+        )
+    )
+    if type(activation_bytes) is not bytes or (
+        activation_bytes != expected_activation_bytes
+    ):
+        raise ShadowPredictionError(
+            "Les octets d'activation prepares ne sont pas canoniques."
+        )
+
+    activation_root = _create_activation_root_exclusive(project_directory)
+    evidence_path = project_directory.joinpath(
+        *ACTIVATION_REMOTE_EVIDENCE_RELATIVE_PATH.parts
+    )
+    activation_path = project_directory.joinpath(
+        *ACTIVATION_RELATIVE_PATH.parts
+    )
+    if evidence_path.parent != activation_root or (
+        activation_path.parent != activation_root
+    ):
+        raise ShadowPredictionError(
+            "Les chemins d'activation ne partagent pas leur racine figee."
+        )
+
+    try:
+        evidence_sha256 = _publish_exclusive_verified(
+            evidence_path,
+            expected_evidence_bytes,
+        )
+        activation_sha256 = _publish_exclusive_verified(
+            activation_path,
+            activation_bytes,
+        )
+    except ShadowPublicationConflictError as error:
+        raise ShadowActivationConsumedError(
+            "L'activation est consommee et un de ses fichiers existe deja."
+        ) from error
+
+    try:
+        entries = list(activation_root.iterdir())
+    except OSError as error:
+        raise ShadowPredictionError(
+            "Impossible de relire la racine d'activation publiee."
+        ) from error
+    expected_names = frozenset(
+        {activation_path.name, evidence_path.name}
+    )
+    if (
+        len(entries) != 2
+        or frozenset(entry.name for entry in entries) != expected_names
+        or any(
+            not isinstance(mode := _lstat_mode(entry), int)
+            or not stat.S_ISREG(mode)
+            for entry in entries
+        )
+    ):
+        raise ShadowPredictionError(
+            "La racine d'activation ne contient pas exactement ses deux "
+            "preuves regulieres."
+        )
+    persisted_evidence = evidence_path.read_bytes()
+    persisted_activation = activation_path.read_bytes()
+    if (
+        persisted_evidence != expected_evidence_bytes
+        or persisted_activation != activation_bytes
+        or hashlib.sha256(persisted_evidence).hexdigest()
+        != evidence_sha256
+        or hashlib.sha256(persisted_activation).hexdigest()
+        != activation_sha256
+    ):
+        raise ShadowPredictionError(
+            "La relecture finale des preuves d'activation a diverge."
+        )
+
+    return ShadowActivationPublication(
+        activation_root=activation_root,
+        evidence_path=evidence_path,
+        evidence_relative_path=(
+            ACTIVATION_REMOTE_EVIDENCE_RELATIVE_PATH.as_posix()
+        ),
+        evidence_sha256=evidence_sha256,
+        evidence_size_bytes=len(persisted_evidence),
+        activation_path=activation_path,
+        activation_relative_path=ACTIVATION_RELATIVE_PATH.as_posix(),
+        activation_sha256=activation_sha256,
+        activation_size_bytes=len(persisted_activation),
+        execution_manifest_sha256=manifest_sha256,
+        execution_manifest_introduction_commit=(
+            manifest_introduction_commit
+        ),
+        execution_manifest_remote_ref=GITHUB_REMOTE_REF,
+        execution_manifest_remote_http_date_utc=(
+            evidence.activation_remote_reverified_at_utc
+        ),
+        execution_manifest_remote_response_received_at_utc=(
+            evidence.response_received_at_utc
+        ),
+        minimum_target_official_date=minimum_target_official_date,
+        created_at_utc=activation["created_at_utc"],
+        activation=dict(activation),
+    )
+
+
+def activate_shadow_protocol(
+    *,
+    project_directory: Path = PROJECT_DIRECTORY,
+) -> ShadowActivationPublication:
+    """Active une fois le manifeste distant sans toucher au lot quotidien."""
+    project = _preflight_project_directory(project_directory)
+
+    # Cette presence est inspectee avant protocole, Git, reseau ou runtime.
+    # Toute racine existante, meme partielle, est definitivement consommee.
+    _require_absent_activation_root(project)
+
+    protocol, protocol_sha256 = _read_frozen_protocol(project)
+    _validate_protocol_contract(protocol)
+    manifest_bytes = _read_regular_project_file(
+        project,
+        EXECUTION_MANIFEST_RELATIVE_PATH,
+        description="manifeste d'execution shadow v2",
+    )
+    _read_canonical_json_bytes(
+        manifest_bytes,
+        description="manifeste d'execution shadow v2 local",
+    )
+    manifest_sha256 = hashlib.sha256(manifest_bytes).hexdigest()
+
+    runtime_commit = _require_exact_clean_git_root(project)
+    manifest_commit, manifest_blob = _git_immutable_introduction_blob(
+        project,
+        EXECUTION_MANIFEST_RELATIVE_PATH,
+        manifest_bytes,
+    )
+    manifest = _read_canonical_json_bytes(
+        manifest_blob,
+        description="blob d'introduction du manifeste d'execution",
+    )
+    (
+        _service_commit,
+        _service_sha256,
+        _requirements_sha256,
+        _runtime_versions,
+        minimum_date,
+    ) = _validate_execution_manifest(
+        manifest,
+        project_directory=project,
+        protocol_sha256=protocol_sha256,
+        manifest_introduction_commit=manifest_commit,
+        runtime_code_commit=runtime_commit,
+    )
+    _require_activation_paths_not_ignored(project)
+
+    # La preuve distante est integralement construite et validee avant que
+    # la racine append-only ne soit creee.
+    evidence = fetch_activation_reverification_evidence(manifest_commit)
+    created_at = _format_utc_seconds(
+        _utc_now(),
+        field="activation.created_at_utc",
+    )
+    request_url = GITHUB_COMPARE_URL_TEMPLATE.format(
+        expected_commit=manifest_commit
+    )
+    activation: dict[str, Any] = {
+        "activation_schema_version": 1,
+        "status": _ACTIVATION_STATUS,
+        "shadow_protocol_path": SHADOW_PROTOCOL_RELATIVE_PATH.as_posix(),
+        "shadow_protocol_sha256": protocol_sha256,
+        "execution_manifest_path": (
+            EXECUTION_MANIFEST_RELATIVE_PATH.as_posix()
+        ),
+        "execution_manifest_sha256": manifest_sha256,
+        "execution_manifest_introduction_commit": manifest_commit,
+        "execution_manifest_remote_ref": GITHUB_REMOTE_REF,
+        "execution_manifest_remote_query_url": request_url,
+        "execution_manifest_remote_effective_url": request_url,
+        "execution_manifest_remote_response_status_code": 200,
+        "execution_manifest_remote_response_redirect_count": 0,
+        "execution_manifest_remote_http_date_utc": (
+            evidence.activation_remote_reverified_at_utc
+        ),
+        "execution_manifest_remote_response_received_at_utc": (
+            evidence.response_received_at_utc
+        ),
+        "execution_manifest_remote_response_body_sha256": (
+            evidence.response_body_sha256
+        ),
+        "raw_remote_evidence_path": (
+            ACTIVATION_REMOTE_EVIDENCE_RELATIVE_PATH.as_posix()
+        ),
+        "raw_remote_evidence_sha256": evidence.canonical_gzip_sha256,
+        "minimum_target_official_date": minimum_date,
+        "created_at_utc": created_at,
+        "claim_level": _ACTIVATION_CLAIM_LEVEL,
+    }
+    activation_bytes, _evidence_bytes = (
+        _validate_activation_publication_content(
+            activation,
+            evidence,
+            protocol_sha256=protocol_sha256,
+            manifest_sha256=manifest_sha256,
+            manifest_introduction_commit=manifest_commit,
+            minimum_target_official_date=minimum_date,
+        )
+    )
+    return _publish_prepared_activation_once(
+        project_directory=project,
+        activation=activation,
+        activation_bytes=activation_bytes,
+        evidence=evidence,
+        manifest_sha256=manifest_sha256,
+        manifest_introduction_commit=manifest_commit,
+        minimum_target_official_date=minimum_date,
+    )
+
+
 def _read_and_validate_activation(
     *,
     project_directory: Path,
@@ -9319,7 +9853,8 @@ def _build_argument_parser() -> argparse.ArgumentParser:
             "Valide localement le protocole fantome MLB v2 et une date "
             "cible. Le mode par defaut reste un apercu sans modele ni "
             "prediction ; --execute-shadow demande explicitement le lot "
-            "officiel."
+            "officiel et --activate-shadow publie l'activation unique du "
+            "manifeste."
         )
     )
 
@@ -9356,16 +9891,42 @@ def _canonical_execution_receipt_bytes(
     return receipt_bytes
 
 
+def _canonical_activation_output_bytes(
+    result: ShadowActivationPublication,
+) -> bytes:
+    """Relit l'activation publiee pour l'unique sortie de son CLI."""
+    if type(result) is not ShadowActivationPublication:
+        raise ShadowPredictionError(
+            "L'activation n'a pas produit une preuve de publication exacte."
+        )
+    activation_result = _read_canonical_json_object(result.activation_path)
+    if activation_result is None:
+        raise ShadowPredictionError(
+            "L'activation publiee ne peut pas etre relue pour la sortie CLI."
+        )
+    activation, activation_bytes = activation_result
+    if (
+        activation != result.activation
+        or hashlib.sha256(activation_bytes).hexdigest()
+        != result.activation_sha256
+        or len(activation_bytes) != result.activation_size_bytes
+    ):
+        raise ShadowPredictionError(
+            "L'activation publiee diverge de sa preuve de sortie."
+        )
+    return activation_bytes
+
+
 def main(argv: Sequence[str] | None = None) -> int:
-    """Affiche l'apercu ou, sur demande explicite, le recu shadow exact."""
+    """Affiche l'apercu, l'activation ou le recu shadow exact demande."""
     parser = _build_argument_parser()
     parser.add_argument(
         "--target-official-date",
-        required=True,
         metavar="YYYY-MM-DD",
         help="Date officielle MLB cible, obligatoirement en saison 2026.",
     )
-    parser.add_argument(
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
         "--execute-shadow",
         action="store_true",
         help=(
@@ -9373,9 +9934,35 @@ def main(argv: Sequence[str] | None = None) -> int:
             "drapeau, seul l'apercu statique est produit."
         ),
     )
+    mode.add_argument(
+        "--activate-shadow",
+        action="store_true",
+        help=(
+            "Publie une seule fois l'activation du manifeste distant, sans "
+            "lire MLB, SQLite ou le modele."
+        ),
+    )
     arguments = parser.parse_args(argv)
+    if arguments.activate_shadow and arguments.target_official_date is not None:
+        parser.error(
+            "--target-official-date ne doit pas etre utilise avec "
+            "--activate-shadow."
+        )
+    if (
+        not arguments.activate_shadow
+        and arguments.target_official_date is None
+    ):
+        parser.error(
+            "--target-official-date est requis pour l'apercu ou "
+            "--execute-shadow."
+        )
     try:
-        if arguments.execute_shadow:
+        if arguments.activate_shadow:
+            activation = activate_shadow_protocol()
+            output = _canonical_activation_output_bytes(activation).decode(
+                "utf-8"
+            )
+        elif arguments.execute_shadow:
             result = execute_shadow_prediction(arguments.target_official_date)
             output = _canonical_execution_receipt_bytes(result).decode("utf-8")
         else:

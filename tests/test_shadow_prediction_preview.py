@@ -222,7 +222,7 @@ class ShadowPredictionPreviewTests(unittest.TestCase):
             ).to_dict(),
         )
 
-    def test_cli_still_has_no_activation_mode(self) -> None:
+    def test_cli_activation_cannot_be_mixed_with_a_daily_date(self) -> None:
         stderr = io.StringIO()
         with redirect_stderr(stderr), self.assertRaises(SystemExit):
             shadow_prediction.main(
@@ -232,7 +232,10 @@ class ShadowPredictionPreviewTests(unittest.TestCase):
                     "--activate-shadow",
                 ]
             )
-        self.assertIn("unrecognized arguments", stderr.getvalue())
+        self.assertIn(
+            "--target-official-date ne doit pas etre utilise",
+            stderr.getvalue(),
+        )
 
     @staticmethod
     def _filesystem_snapshot(root: Path) -> tuple[tuple[str, bool, bytes], ...]:

@@ -186,7 +186,6 @@ class ShadowPredictionCLIExecutionTests(unittest.TestCase):
 
     def test_cli_exposes_no_runtime_or_path_override(self) -> None:
         forbidden = (
-            "--activate-shadow",
             "--project-directory",
             "--database-path",
             "--data-directory",

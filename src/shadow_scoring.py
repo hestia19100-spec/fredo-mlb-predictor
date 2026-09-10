@@ -13,8 +13,10 @@ from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_EVEN
 from enum import Enum
 import base64
+import csv
 import gzip
 import hashlib
+import io
 import json
 import math
 from pathlib import Path, PurePosixPath
@@ -25,6 +27,7 @@ import zlib
 
 import requests
 
+from src import shadow_certification as certification
 from src import shadow_prediction as shadow
 from src import shadow_scoring_registration as scoring_registration
 
@@ -209,6 +212,16 @@ class ScoringOutcomeFamily(str, Enum):
     POSTPONED = "POSTPONED"
 
 
+class ScoringPredictionSourceStatus(str, Enum):
+    """Statut exact d'une date de l'intention prospective figee."""
+
+    CERTIFIED_NONEMPTY = "CERTIFIED_NONEMPTY"
+    COMPLETED_EMPTY = "COMPLETED_EMPTY"
+    LOCAL_ONLY = "LOCAL_ONLY"
+    FAILED = "FAILED"
+    MISSED = "MISSED"
+
+
 @dataclass(frozen=True, slots=True)
 class ScoringExecutionAuthority:
     """Autorite Git locale complete, sans aucune lecture de resultat."""
@@ -305,6 +318,38 @@ class CertifiedScoringPrediction:
     home_team_id: int
     p_home_win: str
     p_away_win: str
+
+
+@dataclass(frozen=True, slots=True)
+class ImmutableScoringPredictionSource:
+    """Cohorte d'une date relue seulement depuis des blobs Git immuables."""
+
+    target_official_date: str
+    status: ScoringPredictionSourceStatus
+    results_commit: str | None
+    certification_commit: str | None
+    batch_id: str | None
+    predictions: tuple[CertifiedScoringPrediction, ...]
+    predictions_sha256: str | None
+    receipt_sha256: str | None
+    certification_sha256: str | None
+    raw_certification_evidence_sha256: str | None
+    status_reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class _ValidatedImmutableShadowBatch:
+    """Lot terminal controle a partir de ses huit blobs Git uniquement."""
+
+    target_official_date: str
+    results_commit: str
+    batch_id: str
+    status: str
+    earliest_predicted_start_utc: str | None
+    results_tree_file_hashes: tuple[dict[str, object], ...]
+    receipt: dict[str, Any] = field(repr=False)
+    receipt_bytes: bytes = field(repr=False)
+    predictions_bytes: bytes = field(repr=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -792,6 +837,882 @@ def verify_scoring_execution_authority(
         runtime_code_commit=runtime_commit,
         scoring_engine_sha256=hashlib.sha256(engine_bytes).hexdigest(),
     )
+
+
+def _require_prediction_source_authorities(
+    authority: ScoringExecutionAuthority,
+    target: date,
+    *,
+    project_directory: Path,
+) -> shadow.ShadowExecutionAuthority:
+    """Relie l'autorite scoring au preflight shadow sans lire un resultat."""
+    if type(authority) is not ScoringExecutionAuthority:
+        raise shadow.ShadowPredictionError(
+            "Une autorite d'execution scoring exacte est requise."
+        )
+    if (
+        authority.scoring_protocol_sha256
+        != scoring_registration.EXPECTED_SCORING_PROTOCOL_SHA256
+        or authority.protocol_introduction_commit
+        != EXPECTED_PROTOCOL_INTRODUCTION_COMMIT
+        or authority.registration_commit != EXPECTED_REGISTRATION_COMMIT
+        or authority.registration_sha256 != EXPECTED_REGISTRATION_SHA256
+        or authority.registration_remote_evidence_sha256
+        != EXPECTED_REGISTRATION_REMOTE_EVIDENCE_SHA256
+    ):
+        raise shadow.ShadowPredictionError(
+            "L'autorite scoring ne correspond pas au preenregistrement fige."
+        )
+    runtime_commit = shadow._require_git_commit(
+        authority.runtime_code_commit,
+        field="scoring.runtime_code_commit",
+    )
+    shadow_authority = shadow.verify_shadow_execution_authority(
+        target,
+        project_directory=project_directory,
+    )
+    if (
+        type(shadow_authority) is not shadow.ShadowExecutionAuthority
+        or shadow_authority.runtime_code_commit != runtime_commit
+        or shadow_authority.shadow_protocol_sha256
+        != shadow.EXPECTED_SHADOW_PROTOCOL_SHA256
+    ):
+        raise shadow.ShadowPredictionError(
+            "Les autorites scoring et shadow ne designent pas le meme runtime."
+        )
+    protocol_authorities = authority.protocol.get("authorities")
+    if type(protocol_authorities) is not dict:
+        raise shadow.ShadowPredictionError(
+            "Les autorites du protocole de scoring sont absentes."
+        )
+    protocol_shadow = protocol_authorities.get("shadow_protocol")
+    protocol_manifest = protocol_authorities.get("execution_manifest")
+    protocol_model = protocol_authorities.get("model")
+    if (
+        type(protocol_shadow) is not dict
+        or type(protocol_manifest) is not dict
+        or type(protocol_model) is not dict
+        or protocol_shadow.get("sha256")
+        != shadow_authority.shadow_protocol_sha256
+        or protocol_manifest.get("sha256")
+        != shadow_authority.execution_manifest_sha256
+        or protocol_model.get("artifact_sha256")
+        != shadow.EXPECTED_MODEL_ARTIFACT_SHA256
+    ):
+        raise shadow.ShadowPredictionError(
+            "Le protocole de scoring et l'autorite shadow divergent."
+        )
+    return shadow_authority
+
+
+def _git_history(
+    project_directory: Path,
+    arguments: tuple[str, ...],
+    *,
+    field_name: str,
+) -> tuple[str, ...]:
+    return certification._git_lines(
+        project_directory,
+        arguments,
+        field=field_name,
+    )
+
+
+def _certification_paths_for_target(
+    target_text: str,
+) -> tuple[PurePosixPath, PurePosixPath]:
+    raw_path, certification_path = certification._certification_relative_paths(
+        target_text
+    )
+    return raw_path, certification_path
+
+
+def _path_exists_without_reading(
+    project_directory: Path,
+    relative_path: PurePosixPath,
+) -> bool:
+    return shadow._lstat_mode(
+        project_directory.joinpath(*relative_path.parts)
+    ) is not shadow._PATH_MISSING
+
+
+def _require_no_orphan_certification(
+    project_directory: Path,
+    target_text: str,
+) -> None:
+    raw_path, certification_path = _certification_paths_for_target(target_text)
+    for relative in (certification_path, raw_path):
+        history = _git_history(
+            project_directory,
+            ("log", "--format=%H", "--", relative.as_posix()),
+            field_name=f"historique Git de {relative.as_posix()}",
+        )
+        if history or _path_exists_without_reading(project_directory, relative):
+            raise shadow.ShadowPredictionError(
+                "Une certification existe sans lot COMPLETED immuable."
+            )
+
+
+def _discover_result_commit(
+    project_directory: Path,
+    target_text: str,
+    *,
+    runtime_commit: str,
+) -> tuple[ScoringPredictionSourceStatus, str | None]:
+    result_root = shadow.SHADOW_RESULT_ROOT_RELATIVE_PATH / target_text
+    completed_path = result_root / shadow.COMPLETED_FILENAME
+    additions = _git_history(
+        project_directory,
+        (
+            "log",
+            "--diff-filter=A",
+            "--format=%H",
+            "--reverse",
+            "--",
+            completed_path.as_posix(),
+        ),
+        field_name=f"introduction Git de {completed_path.as_posix()}",
+    )
+    root_history = _git_history(
+        project_directory,
+        ("log", "--format=%H", "--", result_root.as_posix()),
+        field_name=f"historique Git de {result_root.as_posix()}",
+    )
+    if not additions:
+        _require_no_orphan_certification(
+            project_directory,
+            target_text,
+        )
+        if root_history or _path_exists_without_reading(
+            project_directory,
+            result_root,
+        ):
+            return ScoringPredictionSourceStatus.FAILED, None
+        return ScoringPredictionSourceStatus.MISSED, None
+    if len(additions) != 1:
+        raise shadow.ShadowPredictionError(
+            "Le marqueur COMPLETED doit avoir un unique commit d'introduction."
+        )
+    results_commit = shadow._require_git_commit(
+        additions[0],
+        field="results_commit",
+    )
+    if root_history != (results_commit,):
+        raise shadow.ShadowPredictionError(
+            "INVALID_OR_MUTATED_RESULT_OR_CERTIFICATION_GIT_HISTORY"
+        )
+    shadow._require_git_ancestor(
+        project_directory,
+        results_commit,
+        runtime_commit,
+        strict=True,
+        description="resultats certifiables vers runtime scoring",
+    )
+    return ScoringPredictionSourceStatus.CERTIFIED_NONEMPTY, results_commit
+
+
+def _read_result_blobs(
+    project_directory: Path,
+    target_text: str,
+    results_commit: str,
+) -> dict[str, bytes]:
+    result_root = shadow.SHADOW_RESULT_ROOT_RELATIVE_PATH / target_text
+    prefix = result_root.as_posix()
+    expected_paths = tuple(
+        f"{prefix}/{filename}"
+        for filename in certification.EXPECTED_RESULT_FILENAMES
+    )
+    actual_paths = _git_history(
+        project_directory,
+        ("ls-tree", "-r", "--name-only", results_commit, "--", prefix),
+        field_name="arbre Git immuable du lot shadow",
+    )
+    if actual_paths != expected_paths:
+        raise shadow.ShadowPredictionError(
+            "Le commit de resultats ne contient pas exactement les huit "
+            "fichiers attendus."
+        )
+    return {
+        filename: shadow._git_blob_at_commit(
+            project_directory,
+            results_commit,
+            f"{prefix}/{filename}",
+        )
+        for filename in certification.EXPECTED_RESULT_FILENAMES
+    }
+
+
+def _validate_immutable_result_blobs(
+    project_directory: Path,
+    target_text: str,
+    results_commit: str,
+    shadow_authority: shadow.ShadowExecutionAuthority,
+    blobs: Mapping[str, bytes],
+) -> _ValidatedImmutableShadowBatch:
+    """Valide les deux formes terminales, y compris le lot vide."""
+    slot_key = shadow.build_slot_key(
+        shadow_protocol_sha256=shadow_authority.shadow_protocol_sha256,
+        target_official_date=target_text,
+    )
+    batch_id = shadow.build_batch_id(
+        slot_key=slot_key,
+        execution_manifest_sha256=(
+            shadow_authority.execution_manifest_sha256
+        ),
+        model_artifact_sha256=shadow.EXPECTED_MODEL_ARTIFACT_SHA256,
+    )
+    reserved, _reserved_bytes = certification._read_git_json_blob(
+        blobs,
+        "RESERVED",
+    )
+    receipt, receipt_bytes = certification._read_git_json_blob(
+        blobs,
+        shadow.RECEIPT_FILENAME,
+    )
+    completed, _completed_bytes = certification._read_git_json_blob(
+        blobs,
+        shadow.COMPLETED_FILENAME,
+    )
+    if not shadow._valid_reserved_marker(
+        reserved,
+        batch_id=batch_id,
+        slot_key=slot_key,
+        target_official_date=target_text,
+        shadow_protocol_sha256=shadow_authority.shadow_protocol_sha256,
+        execution_manifest_sha256=(
+            shadow_authority.execution_manifest_sha256
+        ),
+    ):
+        raise shadow.ShadowPredictionError(
+            "Le marqueur RESERVED du commit de resultats est invalide."
+        )
+    if not shadow._valid_receipt(
+        receipt,
+        reserved=reserved,
+        batch_id=batch_id,
+        slot_key=slot_key,
+        target_official_date=target_text,
+        shadow_protocol_sha256=shadow_authority.shadow_protocol_sha256,
+        execution_manifest_sha256=(
+            shadow_authority.execution_manifest_sha256
+        ),
+        model_artifact_sha256=shadow.EXPECTED_MODEL_ARTIFACT_SHA256,
+    ):
+        raise shadow.ShadowPredictionError(
+            "Le recu du commit de resultats est invalide."
+        )
+    receipt_path = (
+        shadow.SHADOW_RESULT_ROOT_RELATIVE_PATH
+        / target_text
+        / shadow.RECEIPT_FILENAME
+    ).as_posix()
+    if not shadow._valid_completed_marker(
+        completed,
+        receipt=receipt,
+        receipt_bytes=receipt_bytes,
+        receipt_path=receipt_path,
+        batch_id=batch_id,
+    ):
+        raise shadow.ShadowPredictionError(
+            "Le marqueur COMPLETED du commit de resultats est invalide."
+        )
+
+    batch = receipt.get("batch")
+    counts = receipt.get("counts")
+    output_hashes = receipt.get("output_hashes")
+    source = receipt.get("source")
+    lineage = receipt.get("lineage")
+    if any(
+        type(section) is not dict
+        for section in (batch, counts, output_hashes, source, lineage)
+    ):
+        raise shadow.ShadowPredictionError(
+            "Les sections du recu Git sont invalides."
+        )
+    assert isinstance(batch, dict)
+    assert isinstance(counts, dict)
+    assert isinstance(output_hashes, dict)
+    assert isinstance(source, dict)
+    assert isinstance(lineage, dict)
+    predicted_count = counts.get("predicted_games")
+    if type(predicted_count) is not int or predicted_count < 0:
+        raise shadow.ShadowPredictionError(
+            "Le nombre de predictions Git est invalide."
+        )
+
+    for receipt_field, filename in certification._OUTPUT_HASH_TO_FILENAME.items():
+        content = blobs.get(filename)
+        if (
+            type(content) is not bytes
+            or output_hashes.get(receipt_field)
+            != hashlib.sha256(content).hexdigest()
+        ):
+            raise shadow.ShadowPredictionError(
+                f"L'empreinte Git de {filename} diverge du recu."
+            )
+    source_snapshot = blobs.get(shadow.SOURCE_SNAPSHOT_FILENAME)
+    if (
+        type(source_snapshot) is not bytes
+        or source.get("source_snapshot_sha256")
+        != hashlib.sha256(source_snapshot).hexdigest()
+    ):
+        raise shadow.ShadowPredictionError(
+            "L'empreinte Git du snapshot source diverge du recu."
+        )
+    predictions_bytes = blobs.get(shadow.PREDICTIONS_FILENAME)
+    if type(predictions_bytes) is not bytes:
+        raise shadow.ShadowPredictionError(
+            "Le blob Git predictions.csv est absent."
+        )
+    expected_status = (
+        "COMPLETED_WITH_PREDICTIONS"
+        if predicted_count > 0
+        else "COMPLETED_NO_ELIGIBLE_GAMES"
+    )
+    if batch.get("status") != expected_status:
+        raise shadow.ShadowPredictionError(
+            "Le statut du lot Git diverge de son nombre de predictions."
+        )
+    if predicted_count:
+        earliest = certification._read_canonical_predictions_blob(
+            predictions_bytes,
+            batch_id=batch_id,
+            target_official_date=target_text,
+            expected_row_count=predicted_count,
+        )
+    else:
+        expected_empty = shadow._canonical_csv_bytes(
+            shadow._PREDICTIONS_COLUMNS,
+            [],
+        )
+        if predictions_bytes != expected_empty:
+            raise shadow.ShadowPredictionError(
+                "Le lot vide doit contenir seulement l'en-tete canonique."
+            )
+        earliest = None
+    if batch.get("earliest_predicted_scheduled_start_utc") != earliest:
+        raise shadow.ShadowPredictionError(
+            "Le premier horaire Git diverge du recu terminal."
+        )
+    runtime_commit = shadow._require_git_commit(
+        lineage.get("runtime_code_commit"),
+        field="receipt.lineage.runtime_code_commit",
+    )
+    shadow._require_git_ancestor(
+        project_directory,
+        runtime_commit,
+        results_commit,
+        strict=True,
+        description="execution de prediction vers commit de resultats",
+    )
+    tree_hashes = tuple(
+        {
+            "path": filename,
+            "sha256": hashlib.sha256(blobs[filename]).hexdigest(),
+            "size_bytes": len(blobs[filename]),
+        }
+        for filename in certification.EXPECTED_RESULT_FILENAMES
+    )
+    return _ValidatedImmutableShadowBatch(
+        target_official_date=target_text,
+        results_commit=results_commit,
+        batch_id=batch_id,
+        status=expected_status,
+        earliest_predicted_start_utc=earliest,
+        results_tree_file_hashes=tree_hashes,
+        receipt=receipt,
+        receipt_bytes=receipt_bytes,
+        predictions_bytes=predictions_bytes,
+    )
+
+
+def _parse_canonical_positive_integer(
+    value: object,
+    *,
+    field_name: str,
+) -> int:
+    if type(value) is not str or not re.fullmatch(r"[1-9][0-9]*", value):
+        raise shadow.ShadowPredictionError(
+            f"{field_name} doit etre un entier decimal canonique positif."
+        )
+    return int(value)
+
+
+def _read_certified_predictions_from_blob(
+    batch: _ValidatedImmutableShadowBatch,
+) -> tuple[CertifiedScoringPrediction, ...]:
+    try:
+        decoded = batch.predictions_bytes.decode("utf-8")
+        parsed = list(csv.reader(io.StringIO(decoded, newline="")))
+    except (UnicodeError, csv.Error) as error:
+        raise shadow.ShadowPredictionError(
+            "Le blob Git predictions.csv est illisible."
+        ) from error
+    if not parsed or tuple(parsed[0]) != shadow._PREDICTIONS_COLUMNS:
+        raise shadow.ShadowPredictionError(
+            "Le schema Git de predictions.csv est invalide."
+        )
+    rows = parsed[1:]
+    if (
+        shadow._canonical_csv_bytes(shadow._PREDICTIONS_COLUMNS, rows)
+        != batch.predictions_bytes
+    ):
+        raise shadow.ShadowPredictionError(
+            "Les octets Git de predictions.csv ne sont pas canoniques."
+        )
+    receipt_lineage = batch.receipt.get("lineage")
+    if type(receipt_lineage) is not dict:
+        raise shadow.ShadowPredictionError(
+            "La provenance du recu Git est invalide."
+        )
+    code_commit = shadow._require_git_commit(
+        receipt_lineage.get("runtime_code_commit"),
+        field="receipt.lineage.runtime_code_commit",
+    )
+    prediction_ids: set[str] = set()
+    game_ids: set[int] = set()
+    previous_order: tuple[str, int] | None = None
+    predictions: list[CertifiedScoringPrediction] = []
+    target = date.fromisoformat(batch.target_official_date)
+    for row_number, row in enumerate(rows, start=2):
+        if len(row) != len(shadow._PREDICTIONS_COLUMNS):
+            raise shadow.ShadowPredictionError(
+                f"Largeur invalide de predictions.csv a la ligne {row_number}."
+            )
+        prediction_id = shadow._require_sha256(
+            row[0],
+            field=f"predictions[{row_number}].prediction_id",
+        )
+        occurrence_key = shadow._require_sha256(
+            row[3],
+            field=f"predictions[{row_number}].occurrence_key",
+        )
+        game_id = _parse_canonical_positive_integer(
+            row[2],
+            field_name=f"predictions[{row_number}].game_id",
+        )
+        season = _parse_canonical_positive_integer(
+            row[4],
+            field_name=f"predictions[{row_number}].season",
+        )
+        away_team_id = _parse_canonical_positive_integer(
+            row[6],
+            field_name=f"predictions[{row_number}].away_team_id",
+        )
+        home_team_id = _parse_canonical_positive_integer(
+            row[7],
+            field_name=f"predictions[{row_number}].home_team_id",
+        )
+        scheduled_start = shadow._require_utc_timestamp(
+            row[8],
+            field=f"predictions[{row_number}].scheduled_start_utc",
+        )
+        shadow._require_utc_timestamp(
+            row[9],
+            field=f"predictions[{row_number}].information_cutoff_utc",
+        )
+        shadow._require_utc_timestamp(
+            row[10],
+            field=f"predictions[{row_number}].issued_at_utc",
+        )
+        official_date = shadow._require_date_string(
+            row[5],
+            field=f"predictions[{row_number}].official_date",
+        )
+        feature_as_of = shadow._require_date_string(
+            row[11],
+            field=f"predictions[{row_number}].feature_as_of_date",
+        )
+        away_source_date = shadow._require_date_string(
+            row[12],
+            field=f"predictions[{row_number}].away_max_source_date",
+        )
+        home_source_date = shadow._require_date_string(
+            row[13],
+            field=f"predictions[{row_number}].home_max_source_date",
+        )
+        try:
+            home_float = float(row[22])
+            away_float = float(row[23])
+            home_decimal = _parse_probability_text(
+                row[22],
+                field_name=f"predictions[{row_number}].p_home_win",
+            )
+            away_decimal = _parse_probability_text(
+                row[23],
+                field_name=f"predictions[{row_number}].p_away_win",
+            )
+        except (ValueError, ScoringAdjudicationError) as error:
+            raise shadow.ShadowPredictionError(
+                "Une probabilite Git certifiee est invalide."
+            ) from error
+        if (
+            row[1] != batch.batch_id
+            or season != 2026
+            or official_date != batch.target_official_date
+            or feature_as_of != (target - timedelta(days=1)).isoformat()
+            or away_source_date >= official_date
+            or home_source_date >= official_date
+            or away_team_id == home_team_id
+            or row[24] != shadow.EXPECTED_CALIBRATED_MODEL_VERSION
+            or row[25] != shadow.EXPECTED_MODEL_ARTIFACT_SHA256
+            or row[26] != shadow.EXPECTED_SHADOW_PROTOCOL_SHA256
+            or row[27] != code_commit
+            or prediction_id
+            != shadow.build_prediction_id(
+                shadow_protocol_sha256=shadow.EXPECTED_SHADOW_PROTOCOL_SHA256,
+                game_id=game_id,
+                official_date_at_snapshot=official_date,
+                scheduled_start_utc_at_snapshot=scheduled_start,
+            )
+            or occurrence_key
+            != shadow.build_occurrence_key(
+                game_id=game_id,
+                official_date_at_snapshot=official_date,
+                scheduled_start_utc_at_snapshot_or_null=scheduled_start,
+            )
+            or shadow._format_probability_float(home_float) != row[22]
+            or shadow._format_probability_float(away_float) != row[23]
+            or away_float != 1.0 - home_float
+            or home_decimal + away_decimal != Decimal("1")
+        ):
+            raise shadow.ShadowPredictionError(
+                "Une ligne Git certifiee diverge du contrat shadow v2."
+            )
+        order_key = (scheduled_start, game_id)
+        if (
+            prediction_id in prediction_ids
+            or game_id in game_ids
+            or (previous_order is not None and order_key <= previous_order)
+        ):
+            raise shadow.ShadowPredictionError(
+                "Les predictions Git sont dupliquees ou hors ordre canonique."
+            )
+        prediction_ids.add(prediction_id)
+        game_ids.add(game_id)
+        previous_order = order_key
+        predictions.append(
+            CertifiedScoringPrediction(
+                prediction_id=prediction_id,
+                batch_id=batch.batch_id,
+                game_id=game_id,
+                occurrence_key=occurrence_key,
+                season=season,
+                target_official_date=official_date,
+                away_team_id=away_team_id,
+                home_team_id=home_team_id,
+                p_home_win=row[22],
+                p_away_win=row[23],
+            )
+        )
+    expected_count = batch.receipt["counts"]["predicted_games"]
+    if len(predictions) != expected_count:
+        raise shadow.ShadowPredictionError(
+            "Le nombre de predictions certifiees diverge du recu."
+        )
+    return tuple(predictions)
+
+
+def _read_and_validate_certification(
+    project_directory: Path,
+    batch: _ValidatedImmutableShadowBatch,
+    *,
+    runtime_commit: str,
+) -> tuple[str, str, str]:
+    raw_path, certification_path = _certification_paths_for_target(
+        batch.target_official_date
+    )
+    certification_additions = _git_history(
+        project_directory,
+        (
+            "log",
+            "--diff-filter=A",
+            "--format=%H",
+            "--reverse",
+            "--",
+            certification_path.as_posix(),
+        ),
+        field_name="introduction Git de la certification",
+    )
+    raw_additions = _git_history(
+        project_directory,
+        (
+            "log",
+            "--diff-filter=A",
+            "--format=%H",
+            "--reverse",
+            "--",
+            raw_path.as_posix(),
+        ),
+        field_name="introduction Git de la preuve de certification",
+    )
+    if not certification_additions and not raw_additions:
+        if _path_exists_without_reading(
+            project_directory,
+            certification_path,
+        ) or _path_exists_without_reading(project_directory, raw_path):
+            raise shadow.ShadowPredictionError(
+                "Une certification non versionnee constitue un conflit structurel."
+            )
+        return "", "", ""
+    if (
+        len(certification_additions) != 1
+        or raw_additions != certification_additions
+    ):
+        raise shadow.ShadowPredictionError(
+            "INVALID_OR_MUTATED_RESULT_OR_CERTIFICATION_GIT_HISTORY"
+        )
+    certification_commit = shadow._require_git_commit(
+        certification_additions[0],
+        field="certification_commit",
+    )
+    for relative in (certification_path, raw_path):
+        history = _git_history(
+            project_directory,
+            ("log", "--format=%H", "--", relative.as_posix()),
+            field_name=f"historique Git de {relative.as_posix()}",
+        )
+        if history != (certification_commit,):
+            raise shadow.ShadowPredictionError(
+                "INVALID_OR_MUTATED_RESULT_OR_CERTIFICATION_GIT_HISTORY"
+            )
+    shadow._require_git_ancestor(
+        project_directory,
+        batch.results_commit,
+        certification_commit,
+        strict=True,
+        description="resultats vers certification prospective",
+    )
+    shadow._require_git_ancestor(
+        project_directory,
+        certification_commit,
+        runtime_commit,
+        strict=True,
+        description="certification prospective vers runtime scoring",
+    )
+    certification_bytes = shadow._git_blob_at_commit(
+        project_directory,
+        certification_commit,
+        certification_path.as_posix(),
+    )
+    certification_document = shadow._read_canonical_json_bytes(
+        certification_bytes,
+        description="certification prospective immuable",
+    )
+    if certification_document.get("raw_remote_evidence_path") != raw_path.as_posix():
+        raise shadow.ShadowPredictionError(
+            "La certification designe un chemin de preuve distante inattendu."
+        )
+    raw_bytes = shadow._git_blob_at_commit(
+        project_directory,
+        certification_commit,
+        raw_path.as_posix(),
+    )
+    raw_sha256 = hashlib.sha256(raw_bytes).hexdigest()
+    if certification_document.get("raw_remote_evidence_sha256") != raw_sha256:
+        raise shadow.ShadowPredictionError(
+            "L'empreinte de la preuve distante certifiee diverge."
+        )
+    try:
+        with gzip.GzipFile(fileobj=io.BytesIO(raw_bytes), mode="rb") as archive:
+            raw_json_bytes = archive.read()
+    except (OSError, EOFError, zlib.error) as error:
+        raise shadow.ShadowPredictionError(
+            "La preuve distante certifiee est illisible."
+        ) from error
+    raw_document = shadow._read_canonical_json_bytes(
+        raw_json_bytes,
+        description="preuve distante certifiee immuable",
+    )
+    if shadow._canonical_gzip_bytes(raw_json_bytes) != raw_bytes:
+        raise shadow.ShadowPredictionError(
+            "La preuve distante certifiee n'est pas un gzip canonique."
+        )
+    evidence = shadow.ShadowActivationReverificationEvidence(
+        activation_introduction_commit=batch.results_commit,
+        activation_remote_ref=certification_document.get(
+            "results_remote_ref"
+        ),
+        activation_remote_reverified_at_utc=certification_document.get(
+            "remote_http_date_utc"
+        ),
+        response_received_at_utc=certification_document.get(
+            "remote_response_received_at_utc"
+        ),
+        response_body_sha256=certification_document.get(
+            "remote_response_body_sha256"
+        ),
+        raw_evidence=raw_document,
+        canonical_json_bytes=raw_json_bytes,
+        canonical_gzip_bytes=raw_bytes,
+        canonical_gzip_sha256=raw_sha256,
+    )
+    completed = certification.CompletedShadowBatchCommit(
+        target_official_date=batch.target_official_date,
+        results_commit=batch.results_commit,
+        batch_id=batch.batch_id,
+        earliest_predicted_start_utc=(
+            batch.earliest_predicted_start_utc or ""
+        ),
+        results_tree_file_hashes=batch.results_tree_file_hashes,
+        receipt=batch.receipt,
+    )
+    validated_bytes = certification._validate_prepared_certification(
+        certification_document,
+        batch=completed,
+        evidence=evidence,
+        raw_evidence_relative_path=raw_path.as_posix(),
+    )
+    if validated_bytes != certification_bytes:
+        raise shadow.ShadowPredictionError(
+            "Les octets de certification Git divergent du document valide."
+        )
+    return (
+        certification_commit,
+        hashlib.sha256(certification_bytes).hexdigest(),
+        raw_sha256,
+    )
+
+
+def _validate_first_prediction_source_anchor(
+    source: ImmutableScoringPredictionSource,
+) -> None:
+    if source.target_official_date != scoring_registration.EXPECTED_FIRST_TARGET_DATE:
+        return
+    expected = {
+        "status": ScoringPredictionSourceStatus.CERTIFIED_NONEMPTY,
+        "results_commit": scoring_registration.EXPECTED_FIRST_RESULTS_COMMIT,
+        "certification_commit": (
+            scoring_registration.EXPECTED_FIRST_CERTIFICATION_COMMIT
+        ),
+        "batch_id": scoring_registration.EXPECTED_FIRST_BATCH_ID,
+        "predictions_sha256": (
+            scoring_registration.EXPECTED_FIRST_PREDICTIONS_SHA256
+        ),
+        "receipt_sha256": scoring_registration.EXPECTED_FIRST_RECEIPT_SHA256,
+        "certification_sha256": (
+            scoring_registration.EXPECTED_FIRST_CERTIFICATION_SHA256
+        ),
+    }
+    for field_name, expected_value in expected.items():
+        if getattr(source, field_name) != expected_value:
+            raise shadow.ShadowPredictionError(
+                "Le premier lot diverge de l'ancre prospectivement preenregistree."
+            )
+
+
+def load_immutable_scoring_prediction_source(
+    authority: ScoringExecutionAuthority,
+    target_official_date: date | str,
+    *,
+    project_directory: Path = PROJECT_DIRECTORY,
+) -> ImmutableScoringPredictionSource:
+    """Charge une cohorte seulement depuis ses commits Git certifies."""
+    project = shadow._preflight_project_directory(project_directory)
+    target = _parse_horizon_target(target_official_date)
+    target_text = target.isoformat()
+    shadow_authority = _require_prediction_source_authorities(
+        authority,
+        target,
+        project_directory=project,
+    )
+    discovery_status, results_commit = _discover_result_commit(
+        project,
+        target_text,
+        runtime_commit=authority.runtime_code_commit,
+    )
+    if results_commit is None:
+        source = ImmutableScoringPredictionSource(
+            target_official_date=target_text,
+            status=discovery_status,
+            results_commit=None,
+            certification_commit=None,
+            batch_id=None,
+            predictions=(),
+            predictions_sha256=None,
+            receipt_sha256=None,
+            certification_sha256=None,
+            raw_certification_evidence_sha256=None,
+            status_reason=(
+                "RESULT_ROOT_PRESENT_OR_HISTORIC_WITHOUT_COMPLETED"
+                if discovery_status is ScoringPredictionSourceStatus.FAILED
+                else "NO_RESULT_ROOT_EVER_PUBLISHED"
+            ),
+        )
+        _validate_first_prediction_source_anchor(source)
+        return source
+
+    blobs = _read_result_blobs(
+        project,
+        target_text,
+        results_commit,
+    )
+    batch = _validate_immutable_result_blobs(
+        project,
+        target_text,
+        results_commit,
+        shadow_authority,
+        blobs,
+    )
+    predictions = _read_certified_predictions_from_blob(batch)
+    predictions_sha256 = hashlib.sha256(batch.predictions_bytes).hexdigest()
+    receipt_sha256 = hashlib.sha256(batch.receipt_bytes).hexdigest()
+    if batch.status == "COMPLETED_NO_ELIGIBLE_GAMES":
+        _require_no_orphan_certification(project, target_text)
+        source = ImmutableScoringPredictionSource(
+            target_official_date=target_text,
+            status=ScoringPredictionSourceStatus.COMPLETED_EMPTY,
+            results_commit=results_commit,
+            certification_commit=None,
+            batch_id=batch.batch_id,
+            predictions=(),
+            predictions_sha256=predictions_sha256,
+            receipt_sha256=receipt_sha256,
+            certification_sha256=None,
+            raw_certification_evidence_sha256=None,
+            status_reason="VALID_COMPLETED_NO_ELIGIBLE_GAMES",
+        )
+        _validate_first_prediction_source_anchor(source)
+        return source
+
+    certification_commit, certification_sha256, raw_sha256 = (
+        _read_and_validate_certification(
+            project,
+            batch,
+            runtime_commit=authority.runtime_code_commit,
+        )
+    )
+    if not certification_commit:
+        source = ImmutableScoringPredictionSource(
+            target_official_date=target_text,
+            status=ScoringPredictionSourceStatus.LOCAL_ONLY,
+            results_commit=results_commit,
+            certification_commit=None,
+            batch_id=batch.batch_id,
+            predictions=(),
+            predictions_sha256=predictions_sha256,
+            receipt_sha256=receipt_sha256,
+            certification_sha256=None,
+            raw_certification_evidence_sha256=None,
+            status_reason="VALID_NONEMPTY_BATCH_WITHOUT_CERTIFICATION",
+        )
+        _validate_first_prediction_source_anchor(source)
+        return source
+    source = ImmutableScoringPredictionSource(
+        target_official_date=target_text,
+        status=ScoringPredictionSourceStatus.CERTIFIED_NONEMPTY,
+        results_commit=results_commit,
+        certification_commit=certification_commit,
+        batch_id=batch.batch_id,
+        predictions=predictions,
+        predictions_sha256=predictions_sha256,
+        receipt_sha256=receipt_sha256,
+        certification_sha256=certification_sha256,
+        raw_certification_evidence_sha256=raw_sha256,
+        status_reason="VALID_IMMUTABLE_CERTIFIED_NONEMPTY_BATCH",
+    )
+    _validate_first_prediction_source_anchor(source)
+    return source
 
 
 def _require_local_directory(path: Path, *, description: str) -> None:

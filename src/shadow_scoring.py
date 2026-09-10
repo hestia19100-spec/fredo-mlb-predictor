@@ -10,14 +10,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta, timezone
+from decimal import Decimal, InvalidOperation, ROUND_HALF_EVEN
 from enum import Enum
 import base64
 import gzip
 import hashlib
 import json
+import math
 from pathlib import Path, PurePosixPath
+import re
 import stat
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 import zlib
 
 import requests
@@ -97,6 +100,72 @@ _FAILED_MARKER_KEYS = frozenset(
 )
 _FAILURE_STAGES = frozenset({"OUTCOME_REQUEST", "OUTCOME_VALIDATION"})
 
+_FINAL_STATUS_CODES = frozenset({"F", "FG", "FO", "FR"})
+_FINAL_STATUS_DETAILS = frozenset({"COMPLETED EARLY", "FINAL", "GAME OVER"})
+_CANCELLED_STATUS_CODES = frozenset({"C", "CI", "CR"})
+_CANCELLED_STATUS_DETAILS = frozenset({"CANCELLED"})
+_POSTPONED_STATUS_CODES = frozenset({"D", "DI", "DR"})
+_POSTPONED_STATUS_DETAILS = frozenset({"POSTPONED"})
+_TERMINAL_OUTCOME_STATUSES = frozenset(
+    {
+        "SCORED_FINAL",
+        "VOID_CANCELLED",
+        "VOID_RESCHEDULED_OFFICIAL_DATE",
+        "VOID_POSTPONED_AT_DEADLINE",
+        "VOID_UNRESOLVED_AT_DEADLINE",
+    }
+)
+_VOID_OUTCOME_STATUSES = frozenset(
+    {
+        "VOID_CANCELLED",
+        "VOID_RESCHEDULED_OFFICIAL_DATE",
+        "VOID_POSTPONED_AT_DEADLINE",
+        "VOID_UNRESOLVED_AT_DEADLINE",
+    }
+)
+_PENDING_OUTCOME_STATUSES = frozenset(
+    {
+        "PENDING_MISSING_FROM_OBSERVATION",
+        "PENDING_NONTERMINAL",
+        "PENDING_POSTPONED",
+    }
+)
+_ALL_OUTCOME_STATUSES = frozenset(
+    {"SCORED_FINAL"} | _VOID_OUTCOME_STATUSES | _PENDING_OUTCOME_STATUSES
+)
+_ADJUDICATION_COLUMNS = (
+    "prediction_id",
+    "batch_id",
+    "game_id",
+    "occurrence_key",
+    "target_official_date",
+    "away_team_id",
+    "home_team_id",
+    "p_away_win",
+    "p_home_win",
+    "predicted_side",
+    "outcome_status",
+    "away_score",
+    "home_score",
+    "home_win",
+    "actual_winner",
+    "classification_correct",
+    "individual_log_loss",
+    "individual_brier_score",
+    "status_code_normalized",
+    "status_detail_normalized",
+    "final_official_date",
+    "outcome_http_date_utc",
+    "outcome_response_received_at_utc",
+    "outcome_evidence_sha256",
+)
+_PROBABILITY_TEXT_PATTERN = re.compile(
+    r"(?:0(?:\.[0-9]+)?|1(?:\.0+)?)\Z"
+)
+_STATUS_WHITESPACE_PATTERN = re.compile(r"\s+")
+_FIXED_12_QUANTUM = Decimal("0.000000000001")
+_LOG_LOSS_CLIP_EPSILON = 1e-15
+
 _RESERVED_MARKER_KEYS = frozenset(
     {
         "marker_schema_version",
@@ -125,6 +194,19 @@ class ScoringOutcomeRequestError(shadow.ShadowPredictionError):
 
 class ScoringOutcomeValidationError(shadow.ShadowPredictionError):
     """Reponse MLB recue mais incompatible avec le protocole fige."""
+
+
+class ScoringAdjudicationError(shadow.ShadowPredictionError):
+    """Conflit structurel interdisant toute adjudication silencieuse."""
+
+
+class ScoringOutcomeFamily(str, Enum):
+    """Famille metier d'une occurrence MLB apres normalisation."""
+
+    FINAL = "FINAL"
+    CANCELLED = "CANCELLED"
+    NONTERMINAL = "NONTERMINAL"
+    POSTPONED = "POSTPONED"
 
 
 @dataclass(frozen=True, slots=True)
@@ -207,6 +289,117 @@ class ScoringObservationFailure:
     failed_marker_sha256: str
     stage: str
     error_type: str
+
+
+@dataclass(frozen=True, slots=True)
+class CertifiedScoringPrediction:
+    """Projection minimale d'une ligne de prediction certifiee et immuable."""
+
+    prediction_id: str
+    batch_id: str
+    game_id: int
+    occurrence_key: str
+    season: int
+    target_official_date: str
+    away_team_id: int
+    home_team_id: int
+    p_home_win: str
+    p_away_win: str
+
+
+@dataclass(frozen=True, slots=True)
+class ReducedScoringOutcome:
+    """Occurrence canonique issue de la reduction exacte d'un gamePk."""
+
+    game_id: int
+    season: int
+    game_type: str
+    away_team_id: int
+    home_team_id: int
+    family: ScoringOutcomeFamily
+    status_code_normalized: str
+    status_detail_normalized: str
+    final_official_date: str | None
+    away_score: int | None
+    home_score: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class ScoringAdjudication:
+    """Ligne d'adjudication pure conforme au schema CSV preenregistre."""
+
+    prediction_id: str
+    batch_id: str
+    game_id: int
+    occurrence_key: str
+    target_official_date: str
+    away_team_id: int
+    home_team_id: int
+    p_away_win: str
+    p_home_win: str
+    predicted_side: str
+    outcome_status: str
+    away_score: int | None
+    home_score: int | None
+    home_win: int | None
+    actual_winner: str | None
+    classification_correct: int | None
+    individual_log_loss: str | None
+    individual_brier_score: str | None
+    status_code_normalized: str
+    status_detail_normalized: str
+    final_official_date: str | None
+    outcome_http_date_utc: str
+    outcome_response_received_at_utc: str
+    outcome_evidence_sha256: str
+
+    def as_csv_row(self) -> tuple[object, ...]:
+        """Retourne les valeurs dans l'ordre exact du protocole."""
+        return tuple(getattr(self, column) for column in _ADJUDICATION_COLUMNS)
+
+
+@dataclass(frozen=True, slots=True)
+class ScoringAdjudicationBatch:
+    """Resultat en memoire d'une adjudication complete, jamais filtree."""
+
+    target_official_date: str
+    checkpoint_utc_date: str
+    outcome_evidence_sha256: str
+    adjudications: tuple[ScoringAdjudication, ...]
+    certified_prediction_count: int
+    scored_count: int
+    void_count: int
+    pending_count: int
+    correct_count: int
+    incorrect_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class _RawScoringOccurrence:
+    """Occurrence MLB structurellement validee avant reduction."""
+
+    game_id: int
+    raw_season: int | str
+    season: int
+    game_type: str
+    away_team_id: int
+    home_team_id: int
+    family: ScoringOutcomeFamily
+    status_code_normalized: str
+    status_detail_normalized: str
+    official_date: str | None
+    away_score: int | None
+    home_score: int | None
+
+    @property
+    def exact_identity(self) -> tuple[object, ...]:
+        return (
+            type(self.raw_season),
+            self.raw_season,
+            self.game_type,
+            self.away_team_id,
+            self.home_team_id,
+        )
 
 
 def _parse_horizon_target(value: date | str) -> date:
@@ -1339,4 +1532,564 @@ def capture_and_publish_scoring_outcome_evidence(
         reservation,
         evidence,
         project_directory=project_directory,
+    )
+
+
+def _require_json_object(value: object, *, field_name: str) -> dict[str, Any]:
+    if type(value) is not dict:
+        raise ScoringAdjudicationError(
+            f"{field_name} doit etre un objet JSON exact."
+        )
+    return value
+
+
+def _require_positive_json_integer(value: object, *, field_name: str) -> int:
+    if type(value) is not int or value <= 0:
+        raise ScoringAdjudicationError(
+            f"{field_name} doit etre un entier JSON strictement positif."
+        )
+    return value
+
+
+def _require_mlb_season(value: object) -> tuple[int | str, int]:
+    if type(value) is int:
+        parsed = value
+    elif type(value) is str and re.fullmatch(r"[0-9]{4}", value):
+        parsed = int(value)
+    else:
+        raise ScoringAdjudicationError(
+            "season MLB doit etre un entier ou une annee JSON exacte."
+        )
+    if parsed != 2026:
+        raise ScoringAdjudicationError(
+            "SEASON_MISMATCH : une occurrence MLB n'appartient pas a 2026."
+        )
+    return value, parsed
+
+
+def _require_canonical_official_date(value: object) -> str:
+    if type(value) is not str:
+        raise ScoringAdjudicationError(
+            "officialDate final doit etre une date JSON."
+        )
+    try:
+        parsed = date.fromisoformat(value)
+    except ValueError as error:
+        raise ScoringAdjudicationError(
+            "officialDate final n'est pas une date ISO valide."
+        ) from error
+    if parsed.isoformat() != value:
+        raise ScoringAdjudicationError(
+            "officialDate final doit etre une date ISO canonique."
+        )
+    return value
+
+
+def _normalize_mlb_status(value: object, *, field_name: str) -> str:
+    if type(value) is not str:
+        raise ScoringAdjudicationError(
+            f"{field_name} doit etre une chaine JSON."
+        )
+    return _STATUS_WHITESPACE_PATTERN.sub(" ", value.strip()).upper()
+
+
+def _classify_mlb_occurrence(
+    status_code: str,
+    status_detail: str,
+) -> ScoringOutcomeFamily:
+    families: set[ScoringOutcomeFamily] = set()
+    if status_code in _FINAL_STATUS_CODES or status_detail in _FINAL_STATUS_DETAILS:
+        families.add(ScoringOutcomeFamily.FINAL)
+    if (
+        status_code in _CANCELLED_STATUS_CODES
+        or status_detail in _CANCELLED_STATUS_DETAILS
+    ):
+        families.add(ScoringOutcomeFamily.CANCELLED)
+    if (
+        status_code in _POSTPONED_STATUS_CODES
+        or status_detail in _POSTPONED_STATUS_DETAILS
+    ):
+        families.add(ScoringOutcomeFamily.POSTPONED)
+    if len(families) > 1:
+        raise ScoringAdjudicationError(
+            "STATUS_FAMILY_CONFLICT_WITHIN_OCCURRENCE"
+        )
+    if not families:
+        return ScoringOutcomeFamily.NONTERMINAL
+    return next(iter(families))
+
+
+def _require_final_score(value: object, *, field_name: str) -> int:
+    if type(value) is not int or value < 0:
+        raise ScoringAdjudicationError(
+            "FINAL_SCORE_MISSING_NEGATIVE_BOOLEAN_NONINTEGER_OR_TIED : "
+            f"{field_name} est invalide."
+        )
+    return value
+
+
+def _parse_raw_scoring_occurrence(game: dict[str, Any]) -> _RawScoringOccurrence:
+    game_id = _require_positive_json_integer(
+        game.get("gamePk"),
+        field_name="gamePk",
+    )
+    raw_season, season = _require_mlb_season(game.get("season"))
+    game_type = game.get("gameType")
+    if type(game_type) is not str or game_type != "R":
+        raise ScoringAdjudicationError(
+            "GAME_TYPE_MISMATCH : gameType MLB doit etre exactement R."
+        )
+    teams = _require_json_object(game.get("teams"), field_name="teams")
+    away = _require_json_object(teams.get("away"), field_name="teams.away")
+    home = _require_json_object(teams.get("home"), field_name="teams.home")
+    away_team = _require_json_object(
+        away.get("team"),
+        field_name="teams.away.team",
+    )
+    home_team = _require_json_object(
+        home.get("team"),
+        field_name="teams.home.team",
+    )
+    away_team_id = _require_positive_json_integer(
+        away_team.get("id"),
+        field_name="teams.away.team.id",
+    )
+    home_team_id = _require_positive_json_integer(
+        home_team.get("id"),
+        field_name="teams.home.team.id",
+    )
+    if away_team_id == home_team_id:
+        raise ScoringAdjudicationError(
+            "TEAM_IDENTITY_MISMATCH : une equipe ne peut pas jouer contre elle-meme."
+        )
+    status = _require_json_object(game.get("status"), field_name="status")
+    status_code = _normalize_mlb_status(
+        status.get("statusCode"),
+        field_name="status.statusCode",
+    )
+    status_detail = _normalize_mlb_status(
+        status.get("detailedState"),
+        field_name="status.detailedState",
+    )
+    family = _classify_mlb_occurrence(status_code, status_detail)
+    official_date: str | None = None
+    away_score: int | None = None
+    home_score: int | None = None
+    if family is ScoringOutcomeFamily.FINAL:
+        official_date = _require_canonical_official_date(
+            game.get("officialDate")
+        )
+        away_score = _require_final_score(
+            away.get("score"),
+            field_name="teams.away.score",
+        )
+        home_score = _require_final_score(
+            home.get("score"),
+            field_name="teams.home.score",
+        )
+        if away_score == home_score:
+            raise ScoringAdjudicationError(
+                "FINAL_SCORE_MISSING_NEGATIVE_BOOLEAN_NONINTEGER_OR_TIED : "
+                "un match MLB final ne peut pas etre a egalite."
+            )
+    return _RawScoringOccurrence(
+        game_id=game_id,
+        raw_season=raw_season,
+        season=season,
+        game_type=game_type,
+        away_team_id=away_team_id,
+        home_team_id=home_team_id,
+        family=family,
+        status_code_normalized=status_code,
+        status_detail_normalized=status_detail,
+        official_date=official_date,
+        away_score=away_score,
+        home_score=home_score,
+    )
+
+
+def _reduce_occurrence_group(
+    occurrences: Sequence[_RawScoringOccurrence],
+) -> ReducedScoringOutcome:
+    if not occurrences:
+        raise ScoringAdjudicationError(
+            "Un groupe MLB vide ne peut pas etre reduit."
+        )
+    first = occurrences[0]
+    if any(item.exact_identity != first.exact_identity for item in occurrences[1:]):
+        raise ScoringAdjudicationError("CONFLICTING_MLB_OCCURRENCE_IDENTITY")
+
+    final_occurrences = tuple(
+        item for item in occurrences if item.family is ScoringOutcomeFamily.FINAL
+    )
+    if final_occurrences:
+        selected = final_occurrences[0]
+        final_identity = (
+            selected.official_date,
+            selected.away_score,
+            selected.home_score,
+        )
+        if any(
+            (item.official_date, item.away_score, item.home_score)
+            != final_identity
+            for item in final_occurrences[1:]
+        ):
+            raise ScoringAdjudicationError(
+                "CONFLICTING_FINAL_SCORES_OR_FINAL_OFFICIAL_DATES"
+            )
+    else:
+        cancelled = tuple(
+            item
+            for item in occurrences
+            if item.family is ScoringOutcomeFamily.CANCELLED
+        )
+        if cancelled:
+            if any(
+                item.family
+                not in {
+                    ScoringOutcomeFamily.CANCELLED,
+                    ScoringOutcomeFamily.POSTPONED,
+                }
+                for item in occurrences
+            ):
+                raise ScoringAdjudicationError(
+                    "Une occurrence annulee contredit un etat non terminal."
+                )
+            selected = cancelled[0]
+        else:
+            nonterminal = tuple(
+                item
+                for item in occurrences
+                if item.family is ScoringOutcomeFamily.NONTERMINAL
+            )
+            selected = nonterminal[0] if nonterminal else occurrences[0]
+
+    return ReducedScoringOutcome(
+        game_id=selected.game_id,
+        season=selected.season,
+        game_type=selected.game_type,
+        away_team_id=selected.away_team_id,
+        home_team_id=selected.home_team_id,
+        family=selected.family,
+        status_code_normalized=selected.status_code_normalized,
+        status_detail_normalized=selected.status_detail_normalized,
+        final_official_date=selected.official_date,
+        away_score=selected.away_score,
+        home_score=selected.home_score,
+    )
+
+
+def reduce_scoring_outcome_evidence(
+    evidence: ScoringOutcomeObservationEvidence,
+) -> tuple[ReducedScoringOutcome, ...]:
+    """Aplatit puis reduit toutes les occurrences MLB dans l'ordre brut."""
+    _, body, _ = _validate_outcome_evidence(evidence)
+    payload, _ = _decode_and_validate_outcome_payload(body)
+    groups: dict[int, list[_RawScoringOccurrence]] = {}
+    for date_block in payload["dates"]:
+        for raw_game in date_block["games"]:
+            occurrence = _parse_raw_scoring_occurrence(raw_game)
+            groups.setdefault(occurrence.game_id, []).append(occurrence)
+    return tuple(
+        _reduce_occurrence_group(occurrences)
+        for occurrences in groups.values()
+    )
+
+
+def _parse_probability_text(value: object, *, field_name: str) -> Decimal:
+    if type(value) is not str or _PROBABILITY_TEXT_PATTERN.fullmatch(value) is None:
+        raise ScoringAdjudicationError(
+            f"{field_name} n'est pas une probabilite decimale canonique."
+        )
+    try:
+        parsed = Decimal(value)
+    except InvalidOperation as error:
+        raise ScoringAdjudicationError(
+            f"{field_name} n'est pas une probabilite valide."
+        ) from error
+    if not parsed.is_finite() or parsed < 0 or parsed > 1:
+        raise ScoringAdjudicationError(
+            f"{field_name} doit appartenir a l'intervalle ferme [0, 1]."
+        )
+    return parsed
+
+
+def _validate_certified_prediction(
+    prediction: CertifiedScoringPrediction,
+    *,
+    expected_target: str,
+) -> tuple[Decimal, Decimal]:
+    if type(prediction) is not CertifiedScoringPrediction:
+        raise ScoringAdjudicationError(
+            "Une prediction certifiee exacte est requise."
+        )
+    shadow._require_sha256(prediction.prediction_id, field="prediction_id")
+    shadow._require_sha256(prediction.batch_id, field="batch_id")
+    shadow._require_sha256(prediction.occurrence_key, field="occurrence_key")
+    if type(prediction.game_id) is not int or prediction.game_id <= 0:
+        raise ScoringAdjudicationError("game_id de prediction invalide.")
+    if type(prediction.season) is not int or prediction.season != 2026:
+        raise ScoringAdjudicationError("SEASON_MISMATCH dans la prediction.")
+    if prediction.target_official_date != expected_target:
+        raise ScoringAdjudicationError(
+            "La prediction ne vise pas la date de l'observation."
+        )
+    if (
+        type(prediction.away_team_id) is not int
+        or prediction.away_team_id <= 0
+        or type(prediction.home_team_id) is not int
+        or prediction.home_team_id <= 0
+        or prediction.away_team_id == prediction.home_team_id
+    ):
+        raise ScoringAdjudicationError(
+            "Identite des equipes de la prediction invalide."
+        )
+    home_probability = _parse_probability_text(
+        prediction.p_home_win,
+        field_name="p_home_win",
+    )
+    away_probability = _parse_probability_text(
+        prediction.p_away_win,
+        field_name="p_away_win",
+    )
+    if home_probability + away_probability != Decimal(1):
+        raise ScoringAdjudicationError(
+            "Les probabilites domicile et exterieur ne totalisent pas exactement 1."
+        )
+    return home_probability, away_probability
+
+
+def _format_fixed_12(value: float | Decimal, *, field_name: str) -> str:
+    try:
+        decimal_value = value if isinstance(value, Decimal) else Decimal(str(value))
+        formatted = decimal_value.quantize(
+            _FIXED_12_QUANTUM,
+            rounding=ROUND_HALF_EVEN,
+        )
+    except (InvalidOperation, ValueError) as error:
+        raise ScoringAdjudicationError(
+            f"{field_name} ne peut pas etre arrondi a douze decimales."
+        ) from error
+    if not formatted.is_finite():
+        raise ScoringAdjudicationError(f"{field_name} doit etre fini.")
+    return format(formatted, "f")
+
+
+def _individual_probability_metrics(
+    home_probability: Decimal,
+    home_win: int,
+) -> tuple[str, str]:
+    probability = float(home_probability)
+    clipped = min(
+        max(probability, _LOG_LOSS_CLIP_EPSILON),
+        1.0 - _LOG_LOSS_CLIP_EPSILON,
+    )
+    log_loss = -(
+        home_win * math.log(clipped)
+        + (1 - home_win) * math.log(1.0 - clipped)
+    )
+    if not math.isfinite(log_loss):
+        raise ScoringAdjudicationError("La log loss individuelle n'est pas finie.")
+    brier = (home_probability - Decimal(home_win)) ** 2
+    return (
+        _format_fixed_12(log_loss, field_name="individual_log_loss"),
+        _format_fixed_12(brier, field_name="individual_brier_score"),
+    )
+
+
+def adjudicate_scoring_predictions(
+    predictions: Sequence[CertifiedScoringPrediction],
+    evidence: ScoringOutcomeObservationEvidence,
+) -> ScoringAdjudicationBatch:
+    """Adjuge chaque prediction sans filtre, SQLite, modele ou nouvel appel MLB."""
+    if isinstance(predictions, (str, bytes, bytearray)):
+        raise ScoringAdjudicationError(
+            "Les predictions doivent former une sequence de lignes exactes."
+        )
+    try:
+        prediction_rows = tuple(predictions)
+    except TypeError as error:
+        raise ScoringAdjudicationError(
+            "Les predictions doivent etre iterables."
+        ) from error
+    target = _parse_horizon_target(evidence.target_official_date)
+    checkpoint = _parse_checkpoint_date(
+        evidence.checkpoint_utc_date,
+        target=target,
+    )
+    reduced = reduce_scoring_outcome_evidence(evidence)
+    reduced_by_game_id = {item.game_id: item for item in reduced}
+    if len(reduced_by_game_id) != len(reduced):
+        raise ScoringAdjudicationError(
+            "La reduction MLB contient un game_id duplique."
+        )
+
+    seen_prediction_ids: set[str] = set()
+    seen_game_ids: set[int] = set()
+    batch_ids: set[str] = set()
+    validated: list[
+        tuple[CertifiedScoringPrediction, Decimal, Decimal]
+    ] = []
+    for prediction in prediction_rows:
+        home_probability, away_probability = _validate_certified_prediction(
+            prediction,
+            expected_target=target.isoformat(),
+        )
+        if prediction.prediction_id in seen_prediction_ids:
+            raise ScoringAdjudicationError("DUPLICATE_PREDICTION_ID")
+        if prediction.game_id in seen_game_ids:
+            raise ScoringAdjudicationError("DUPLICATE_GAME_ID_WITHIN_BATCH")
+        seen_prediction_ids.add(prediction.prediction_id)
+        seen_game_ids.add(prediction.game_id)
+        batch_ids.add(prediction.batch_id)
+        validated.append((prediction, home_probability, away_probability))
+    if len(batch_ids) > 1:
+        raise ScoringAdjudicationError(
+            "Une observation ne peut pas melanger plusieurs batch_id."
+        )
+    validated.sort(key=lambda item: item[0].prediction_id)
+
+    at_deadline = checkpoint == FINAL_CHECKPOINT_AT_UTC.date()
+    adjudications: list[ScoringAdjudication] = []
+    for prediction, home_probability, _away_probability in validated:
+        outcome = reduced_by_game_id.get(prediction.game_id)
+        status_code = ""
+        status_detail = ""
+        final_official_date: str | None = None
+        away_score: int | None = None
+        home_score: int | None = None
+        home_win: int | None = None
+        actual_winner: str | None = None
+        classification_correct: int | None = None
+        individual_log_loss: str | None = None
+        individual_brier_score: str | None = None
+
+        if outcome is None:
+            outcome_status = (
+                "VOID_UNRESOLVED_AT_DEADLINE"
+                if at_deadline
+                else "PENDING_MISSING_FROM_OBSERVATION"
+            )
+        else:
+            if outcome.season != prediction.season:
+                raise ScoringAdjudicationError("SEASON_MISMATCH")
+            if outcome.game_type != "R":
+                raise ScoringAdjudicationError("GAME_TYPE_MISMATCH")
+            if (
+                outcome.away_team_id != prediction.away_team_id
+                or outcome.home_team_id != prediction.home_team_id
+            ):
+                raise ScoringAdjudicationError("TEAM_IDENTITY_MISMATCH")
+            status_code = outcome.status_code_normalized
+            status_detail = outcome.status_detail_normalized
+            final_official_date = outcome.final_official_date
+            if outcome.family is ScoringOutcomeFamily.FINAL:
+                away_score = outcome.away_score
+                home_score = outcome.home_score
+                if away_score is None or home_score is None or final_official_date is None:
+                    raise ScoringAdjudicationError(
+                        "Une finale reduite est structurellement incomplete."
+                    )
+                if final_official_date != prediction.target_official_date:
+                    outcome_status = "VOID_RESCHEDULED_OFFICIAL_DATE"
+                else:
+                    outcome_status = "SCORED_FINAL"
+                    home_win = int(home_score > away_score)
+                    actual_winner = "HOME" if home_win else "AWAY"
+                    predicted_side = (
+                        "HOME"
+                        if home_probability >= Decimal("0.5")
+                        else "AWAY"
+                    )
+                    classification_correct = int(predicted_side == actual_winner)
+                    (
+                        individual_log_loss,
+                        individual_brier_score,
+                    ) = _individual_probability_metrics(
+                        home_probability,
+                        home_win,
+                    )
+            elif outcome.family is ScoringOutcomeFamily.CANCELLED:
+                outcome_status = "VOID_CANCELLED"
+            elif outcome.family is ScoringOutcomeFamily.POSTPONED:
+                outcome_status = (
+                    "VOID_POSTPONED_AT_DEADLINE"
+                    if at_deadline
+                    else "PENDING_POSTPONED"
+                )
+            else:
+                outcome_status = (
+                    "VOID_UNRESOLVED_AT_DEADLINE"
+                    if at_deadline
+                    else "PENDING_NONTERMINAL"
+                )
+
+        predicted_side = (
+            "HOME" if home_probability >= Decimal("0.5") else "AWAY"
+        )
+        if outcome_status not in _ALL_OUTCOME_STATUSES:
+            raise ScoringAdjudicationError("Statut d'adjudication non autorise.")
+        adjudications.append(
+            ScoringAdjudication(
+                prediction_id=prediction.prediction_id,
+                batch_id=prediction.batch_id,
+                game_id=prediction.game_id,
+                occurrence_key=prediction.occurrence_key,
+                target_official_date=prediction.target_official_date,
+                away_team_id=prediction.away_team_id,
+                home_team_id=prediction.home_team_id,
+                p_away_win=prediction.p_away_win,
+                p_home_win=prediction.p_home_win,
+                predicted_side=predicted_side,
+                outcome_status=outcome_status,
+                away_score=away_score,
+                home_score=home_score,
+                home_win=home_win,
+                actual_winner=actual_winner,
+                classification_correct=classification_correct,
+                individual_log_loss=individual_log_loss,
+                individual_brier_score=individual_brier_score,
+                status_code_normalized=status_code,
+                status_detail_normalized=status_detail,
+                final_official_date=final_official_date,
+                outcome_http_date_utc=evidence.outcome_http_date_utc,
+                outcome_response_received_at_utc=(
+                    evidence.response_received_at_utc
+                ),
+                outcome_evidence_sha256=evidence.canonical_gzip_sha256,
+            )
+        )
+
+    scored_count = sum(
+        row.outcome_status == "SCORED_FINAL" for row in adjudications
+    )
+    void_count = sum(
+        row.outcome_status in _VOID_OUTCOME_STATUSES for row in adjudications
+    )
+    pending_count = sum(
+        row.outcome_status in _PENDING_OUTCOME_STATUSES for row in adjudications
+    )
+    correct_count = sum(row.classification_correct == 1 for row in adjudications)
+    incorrect_count = sum(
+        row.classification_correct == 0 for row in adjudications
+    )
+    if scored_count + void_count + pending_count != len(adjudications):
+        raise ScoringAdjudicationError(
+            "Les comptes d'adjudication ne couvrent pas toutes les predictions."
+        )
+    if correct_count + incorrect_count != scored_count:
+        raise ScoringAdjudicationError(
+            "Les comptes de classification divergent des matchs scores."
+        )
+    return ScoringAdjudicationBatch(
+        target_official_date=target.isoformat(),
+        checkpoint_utc_date=checkpoint.isoformat(),
+        outcome_evidence_sha256=evidence.canonical_gzip_sha256,
+        adjudications=tuple(adjudications),
+        certified_prediction_count=len(adjudications),
+        scored_count=scored_count,
+        void_count=void_count,
+        pending_count=pending_count,
+        correct_count=correct_count,
+        incorrect_count=incorrect_count,
     )

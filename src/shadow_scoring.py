@@ -1,9 +1,9 @@
 """Moteur append-only du scoring prospectif shadow MLB 2026.
 
 Le moteur valide l'autorite du protocole deja preenregistre, reserve
-atomiquement un creneau d'observation et archive une reponse MLB fraiche.
-Il ne lit ni SQLite ni modele et n'interprete encore aucun score : cette
-couche conserve uniquement la preuve brute ou ferme l'observation en echec.
+atomiquement un creneau d'observation, archive une reponse MLB fraiche puis
+derive des adjudications et un rapport quotidien canoniques. Il ne lit ni
+SQLite ni modele pendant le scoring.
 """
 
 from __future__ import annotations
@@ -68,6 +68,8 @@ OUTCOME_REQUEST_HEADERS = {
 }
 OUTCOME_REQUEST_TIMEOUT_SECONDS = 30
 OUTCOME_EVIDENCE_FILENAME = "outcome_observation.remote.json.gz"
+ADJUDICATIONS_FILENAME = "adjudications.csv"
+DAILY_REPORT_FILENAME = "daily_report.json"
 FAILED_FILENAME = "FAILED.json"
 
 _OUTCOME_EVIDENCE_KEYS = frozenset(
@@ -168,6 +170,31 @@ _PROBABILITY_TEXT_PATTERN = re.compile(
 _STATUS_WHITESPACE_PATTERN = re.compile(r"\s+")
 _FIXED_12_QUANTUM = Decimal("0.000000000001")
 _LOG_LOSS_CLIP_EPSILON = 1e-15
+_DAILY_REPORT_STATUS = "PROVISIONAL_DAILY_NO_VERDICT"
+_DAILY_REPORT_DISCLAIMER = (
+    "PROVISIONAL_DAILY_NO_VERDICT_SMALL_SAMPLE_"
+    "DO_NOT_CHANGE_MODEL_OR_PROTOCOL"
+)
+_DAILY_REPORT_KEYS = frozenset(
+    {
+        "report_schema_version",
+        "status",
+        "protocol_id",
+        "target_official_date",
+        "checkpoint_utc_date",
+        "observation_id",
+        "certified_prediction_count",
+        "scored_count",
+        "void_count",
+        "pending_count",
+        "correct_count",
+        "incorrect_count",
+        "accuracy",
+        "mean_log_loss",
+        "mean_brier_score",
+        "disclaimer",
+    }
+)
 
 _RESERVED_MARKER_KEYS = frozenset(
     {
@@ -417,6 +444,20 @@ class ScoringAdjudicationBatch:
     pending_count: int
     correct_count: int
     incorrect_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class ScoringObservationDocuments:
+    """Deux sorties canoniques derivees en memoire d'une adjudication."""
+
+    target_official_date: str
+    checkpoint_utc_date: str
+    observation_id: str
+    adjudications_csv_bytes: bytes = field(repr=False)
+    adjudications_sha256: str
+    daily_report: dict[str, Any] = field(repr=False)
+    daily_report_bytes: bytes = field(repr=False)
+    daily_report_sha256: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -3013,4 +3054,388 @@ def adjudicate_scoring_predictions(
         pending_count=pending_count,
         correct_count=correct_count,
         incorrect_count=incorrect_count,
+    )
+
+
+def _validate_daily_output_protocol(
+    authority: ScoringExecutionAuthority,
+) -> str:
+    if type(authority) is not ScoringExecutionAuthority:
+        raise ScoringAdjudicationError(
+            "Une autorite de scoring exacte est requise."
+        )
+    if authority.scoring_protocol_sha256 != (
+        scoring_registration.EXPECTED_SCORING_PROTOCOL_SHA256
+    ):
+        raise ScoringAdjudicationError(
+            "L'autorite ne vise pas le protocole de scoring fige."
+        )
+    protocol = authority.protocol
+    if type(protocol) is not dict:
+        raise ScoringAdjudicationError(
+            "Le protocole de l'autorite doit etre un objet JSON."
+        )
+    try:
+        protocol_id = protocol["protocol_id"]
+        schemas = protocol["output_publication"]["schemas"]
+        reporting = protocol["daily_reporting"]
+        columns = schemas["adjudications_csv_columns_exact_order"]
+        report_keys = schemas["daily_report_keys_exact_set"]
+    except (KeyError, TypeError) as error:
+        raise ScoringAdjudicationError(
+            "Le contrat de sortie quotidienne est absent du protocole."
+        ) from error
+    if (
+        protocol_id != scoring_registration.EXPECTED_PROTOCOL_ID
+        or type(columns) is not list
+        or tuple(columns) != _ADJUDICATION_COLUMNS
+        or type(report_keys) is not list
+        or frozenset(report_keys) != _DAILY_REPORT_KEYS
+        or len(report_keys) != len(_DAILY_REPORT_KEYS)
+        or reporting.get("status") != _DAILY_REPORT_STATUS
+        or reporting.get("minimum_disclaimer") != _DAILY_REPORT_DISCLAIMER
+    ):
+        raise ScoringAdjudicationError(
+            "Le contrat de sortie quotidienne diverge du protocole fige."
+        )
+    return protocol_id
+
+
+def _validate_daily_output_inputs(
+    authority: ScoringExecutionAuthority,
+    reservation: ScoringObservationReservation,
+    prediction_source: ImmutableScoringPredictionSource,
+    batch: ScoringAdjudicationBatch,
+) -> None:
+    if type(reservation) is not ScoringObservationReservation:
+        raise ScoringAdjudicationError(
+            "Une reservation d'observation exacte est requise."
+        )
+    if type(prediction_source) is not ImmutableScoringPredictionSource:
+        raise ScoringAdjudicationError(
+            "Une source de predictions immuable exacte est requise."
+        )
+    if type(batch) is not ScoringAdjudicationBatch:
+        raise ScoringAdjudicationError(
+            "Un lot d'adjudication exact est requis."
+        )
+    target = _parse_horizon_target(reservation.target_official_date)
+    checkpoint = _parse_checkpoint_date(
+        reservation.checkpoint_utc_date,
+        target=target,
+    )
+    expected_observation_id = build_observation_id(
+        scoring_protocol_sha256=(
+            scoring_registration.EXPECTED_SCORING_PROTOCOL_SHA256
+        ),
+        target_official_date=target,
+        checkpoint_utc_date=checkpoint,
+    )
+    marker = reservation.reserved_marker
+    if (
+        reservation.observation_id != expected_observation_id
+        or type(marker) is not dict
+        or frozenset(marker) != _RESERVED_MARKER_KEYS
+        or marker.get("observation_id") != expected_observation_id
+        or marker.get("target_official_date") != target.isoformat()
+        or marker.get("checkpoint_utc_date") != checkpoint.isoformat()
+        or marker.get("scoring_protocol_sha256")
+        != scoring_registration.EXPECTED_SCORING_PROTOCOL_SHA256
+        or marker.get("marker_schema_version") != 1
+        or marker.get("protocol_id") != scoring_registration.EXPECTED_PROTOCOL_ID
+        or marker.get("runtime_code_commit") != authority.runtime_code_commit
+    ):
+        raise ScoringAdjudicationError(
+            "La reservation ne correspond pas aux sorties quotidiennes."
+        )
+    _parse_utc_timestamp(
+        marker.get("reserved_at_utc"),
+        field_name="RESERVED.reserved_at_utc",
+    )
+    marker_bytes = shadow._canonical_json_file_bytes(marker)
+    if hashlib.sha256(marker_bytes).hexdigest() != (
+        reservation.reserved_marker_sha256
+    ):
+        raise ScoringAdjudicationError(
+            "L'empreinte de la reservation diverge."
+        )
+    if (
+        prediction_source.status
+        is not ScoringPredictionSourceStatus.CERTIFIED_NONEMPTY
+        or not prediction_source.results_commit
+        or not prediction_source.certification_commit
+        or not prediction_source.batch_id
+        or not prediction_source.predictions
+        or type(prediction_source.predictions) is not tuple
+    ):
+        raise ScoringAdjudicationError(
+            "Seule une cohorte certifiee non vide peut etre adjugee."
+        )
+    shadow._require_git_commit(
+        prediction_source.results_commit,
+        field="results_commit",
+    )
+    shadow._require_git_commit(
+        prediction_source.certification_commit,
+        field="certification_commit",
+    )
+    shadow._require_sha256(
+        prediction_source.batch_id,
+        field="batch_id",
+    )
+    for field_name in (
+        "predictions_sha256",
+        "receipt_sha256",
+        "certification_sha256",
+        "raw_certification_evidence_sha256",
+    ):
+        shadow._require_sha256(
+            getattr(prediction_source, field_name),
+            field=field_name,
+        )
+    if (
+        prediction_source.target_official_date != target.isoformat()
+        or batch.target_official_date != target.isoformat()
+        or batch.checkpoint_utc_date != checkpoint.isoformat()
+    ):
+        raise ScoringAdjudicationError(
+            "Date de sortie quotidienne incoherente."
+        )
+    shadow._require_sha256(
+        batch.outcome_evidence_sha256,
+        field="outcome_evidence_sha256",
+    )
+    if type(batch.adjudications) is not tuple:
+        raise ScoringAdjudicationError(
+            "Les adjudications doivent former un tuple immuable."
+        )
+    predictions = sorted(
+        prediction_source.predictions,
+        key=lambda item: item.prediction_id,
+    )
+    adjudications = batch.adjudications
+    if (
+        len(predictions) != len(adjudications)
+        or batch.certified_prediction_count != len(adjudications)
+        or tuple(row.prediction_id for row in adjudications)
+        != tuple(prediction.prediction_id for prediction in predictions)
+    ):
+        raise ScoringAdjudicationError(
+            "Les adjudications ne couvrent pas exactement la cohorte certifiee."
+        )
+    scored_count = 0
+    void_count = 0
+    pending_count = 0
+    correct_count = 0
+    incorrect_count = 0
+    for prediction, row in zip(predictions, adjudications, strict=True):
+        if type(prediction) is not CertifiedScoringPrediction:
+            raise ScoringAdjudicationError(
+                "La cohorte contient une prediction non canonique."
+            )
+        if type(row) is not ScoringAdjudication:
+            raise ScoringAdjudicationError(
+                "Le lot contient une adjudication non canonique."
+            )
+        expected_identity = (
+            prediction.prediction_id,
+            prediction.batch_id,
+            prediction.game_id,
+            prediction.occurrence_key,
+            prediction.target_official_date,
+            prediction.away_team_id,
+            prediction.home_team_id,
+            prediction.p_away_win,
+            prediction.p_home_win,
+        )
+        actual_identity = (
+            row.prediction_id,
+            row.batch_id,
+            row.game_id,
+            row.occurrence_key,
+            row.target_official_date,
+            row.away_team_id,
+            row.home_team_id,
+            row.p_away_win,
+            row.p_home_win,
+        )
+        if actual_identity != expected_identity:
+            raise ScoringAdjudicationError(
+                "Une adjudication diverge de sa prediction certifiee."
+            )
+        home_probability, _ = _validate_certified_prediction(
+            prediction,
+            expected_target=target.isoformat(),
+        )
+        expected_side = "HOME" if home_probability >= Decimal("0.5") else "AWAY"
+        if (
+            row.predicted_side != expected_side
+            or row.outcome_status not in _ALL_OUTCOME_STATUSES
+            or row.outcome_http_date_utc == ""
+            or row.outcome_response_received_at_utc == ""
+            or row.outcome_evidence_sha256 != batch.outcome_evidence_sha256
+        ):
+            raise ScoringAdjudicationError(
+                "Une adjudication contient une valeur de provenance invalide."
+            )
+        _parse_utc_timestamp(
+            row.outcome_http_date_utc,
+            field_name="outcome_http_date_utc",
+        )
+        _parse_utc_timestamp(
+            row.outcome_response_received_at_utc,
+            field_name="outcome_response_received_at_utc",
+        )
+        if row.outcome_status == "SCORED_FINAL":
+            scored_count += 1
+            if (
+                type(row.away_score) is not int
+                or row.away_score < 0
+                or type(row.home_score) is not int
+                or row.home_score < 0
+                or row.away_score == row.home_score
+                or row.final_official_date != target.isoformat()
+            ):
+                raise ScoringAdjudicationError(
+                    "Une ligne SCORED_FINAL contient un score invalide."
+                )
+            expected_home_win = int(row.home_score > row.away_score)
+            expected_winner = "HOME" if expected_home_win else "AWAY"
+            expected_correct = int(expected_side == expected_winner)
+            expected_log_loss, expected_brier = _individual_probability_metrics(
+                home_probability,
+                expected_home_win,
+            )
+            if (
+                row.home_win != expected_home_win
+                or row.actual_winner != expected_winner
+                or row.classification_correct != expected_correct
+                or row.individual_log_loss != expected_log_loss
+                or row.individual_brier_score != expected_brier
+            ):
+                raise ScoringAdjudicationError(
+                    "Les metriques individuelles d'une finale divergent."
+                )
+            if expected_correct:
+                correct_count += 1
+            else:
+                incorrect_count += 1
+        else:
+            if row.outcome_status in _VOID_OUTCOME_STATUSES:
+                void_count += 1
+            else:
+                pending_count += 1
+            if any(
+                value is not None
+                for value in (
+                    row.home_win,
+                    row.actual_winner,
+                    row.classification_correct,
+                    row.individual_log_loss,
+                    row.individual_brier_score,
+                )
+            ):
+                raise ScoringAdjudicationError(
+                    "Une ligne non scoree contient une metrique interdite."
+                )
+    expected_counts = (
+        len(adjudications),
+        scored_count,
+        void_count,
+        pending_count,
+        correct_count,
+        incorrect_count,
+    )
+    actual_counts = (
+        batch.certified_prediction_count,
+        batch.scored_count,
+        batch.void_count,
+        batch.pending_count,
+        batch.correct_count,
+        batch.incorrect_count,
+    )
+    if actual_counts != expected_counts:
+        raise ScoringAdjudicationError(
+            "Les compteurs quotidiens divergent des adjudications."
+        )
+
+
+def build_scoring_observation_documents(
+    authority: ScoringExecutionAuthority,
+    reservation: ScoringObservationReservation,
+    prediction_source: ImmutableScoringPredictionSource,
+    batch: ScoringAdjudicationBatch,
+) -> ScoringObservationDocuments:
+    """Construit le CSV et le rapport quotidien sans aucune publication."""
+    protocol_id = _validate_daily_output_protocol(authority)
+    _validate_daily_output_inputs(
+        authority,
+        reservation,
+        prediction_source,
+        batch,
+    )
+    adjudication_rows = tuple(
+        row.as_csv_row() for row in batch.adjudications
+    )
+    adjudications_bytes = shadow._canonical_csv_bytes(
+        _ADJUDICATION_COLUMNS,
+        adjudication_rows,
+    )
+    if batch.scored_count:
+        accuracy: float | None = batch.correct_count / batch.scored_count
+        mean_log_loss: float | None = math.fsum(
+            float(row.individual_log_loss)
+            for row in batch.adjudications
+            if row.outcome_status == "SCORED_FINAL"
+            and row.individual_log_loss is not None
+        ) / batch.scored_count
+        mean_brier_score: float | None = math.fsum(
+            float(row.individual_brier_score)
+            for row in batch.adjudications
+            if row.outcome_status == "SCORED_FINAL"
+            and row.individual_brier_score is not None
+        ) / batch.scored_count
+        if not all(
+            math.isfinite(value)
+            for value in (accuracy, mean_log_loss, mean_brier_score)
+        ):
+            raise ScoringAdjudicationError(
+                "Une metrique quotidienne n'est pas finie."
+            )
+    else:
+        accuracy = None
+        mean_log_loss = None
+        mean_brier_score = None
+    report: dict[str, Any] = {
+        "report_schema_version": 1,
+        "status": _DAILY_REPORT_STATUS,
+        "protocol_id": protocol_id,
+        "target_official_date": batch.target_official_date,
+        "checkpoint_utc_date": batch.checkpoint_utc_date,
+        "observation_id": reservation.observation_id,
+        "certified_prediction_count": batch.certified_prediction_count,
+        "scored_count": batch.scored_count,
+        "void_count": batch.void_count,
+        "pending_count": batch.pending_count,
+        "correct_count": batch.correct_count,
+        "incorrect_count": batch.incorrect_count,
+        "accuracy": accuracy,
+        "mean_log_loss": mean_log_loss,
+        "mean_brier_score": mean_brier_score,
+        "disclaimer": _DAILY_REPORT_DISCLAIMER,
+    }
+    if frozenset(report) != _DAILY_REPORT_KEYS:
+        raise ScoringAdjudicationError(
+            "Le rapport quotidien ne respecte pas son schema fige."
+        )
+    report_bytes = shadow._canonical_json_file_bytes(report)
+    return ScoringObservationDocuments(
+        target_official_date=batch.target_official_date,
+        checkpoint_utc_date=batch.checkpoint_utc_date,
+        observation_id=reservation.observation_id,
+        adjudications_csv_bytes=adjudications_bytes,
+        adjudications_sha256=hashlib.sha256(adjudications_bytes).hexdigest(),
+        daily_report=report,
+        daily_report_bytes=report_bytes,
+        daily_report_sha256=hashlib.sha256(report_bytes).hexdigest(),
     )

@@ -461,6 +461,21 @@ class ScoringObservationDocuments:
 
 
 @dataclass(frozen=True, slots=True)
+class ScoringObservationDocumentsPublication:
+    """Publication append-only des deux documents derives quotidiens."""
+
+    reservation: ScoringObservationReservation = field(repr=False)
+    evidence_publication: ScoringOutcomeEvidencePublication = field(repr=False)
+    documents: ScoringObservationDocuments = field(repr=False)
+    adjudications_path: Path
+    adjudications_sha256: str
+    adjudications_size_bytes: int
+    daily_report_path: Path
+    daily_report_sha256: str
+    daily_report_size_bytes: int
+
+
+@dataclass(frozen=True, slots=True)
 class _RawScoringOccurrence:
     """Occurrence MLB structurellement validee avant reduction."""
 
@@ -3438,4 +3453,174 @@ def build_scoring_observation_documents(
         daily_report=report,
         daily_report_bytes=report_bytes,
         daily_report_sha256=hashlib.sha256(report_bytes).hexdigest(),
+    )
+
+
+def _read_exact_local_file(path: Path, *, description: str) -> bytes:
+    mode = shadow._lstat_mode(path)
+    if not isinstance(mode, int) or not stat.S_ISREG(mode):
+        raise shadow.ShadowPredictionError(
+            f"{description} doit etre un fichier local non symbolique."
+        )
+    try:
+        return path.read_bytes()
+    except OSError as error:
+        raise shadow.ShadowPredictionError(
+            f"{description} ne peut pas etre relu."
+        ) from error
+
+
+def _validate_published_outcome_for_documents(
+    authority: ScoringExecutionAuthority,
+    reservation: ScoringObservationReservation,
+    evidence_publication: ScoringOutcomeEvidencePublication,
+    prediction_source: ImmutableScoringPredictionSource,
+    batch: ScoringAdjudicationBatch,
+    *,
+    project_directory: Path,
+) -> tuple[Path, ScoringObservationDocuments]:
+    documents = build_scoring_observation_documents(
+        authority,
+        reservation,
+        prediction_source,
+        batch,
+    )
+    if type(evidence_publication) is not ScoringOutcomeEvidencePublication:
+        raise shadow.ShadowPredictionError(
+            "Une publication de preuve MLB exacte est requise."
+        )
+    evidence = evidence_publication.evidence
+    _, _, canonical_gzip = _validate_outcome_evidence(evidence)
+    project = shadow._preflight_project_directory(project_directory)
+    target = _parse_horizon_target(reservation.target_official_date)
+    checkpoint = _parse_checkpoint_date(
+        reservation.checkpoint_utc_date,
+        target=target,
+    )
+    expected_slot = _observation_slot_path(project, target, checkpoint)
+    expected_evidence_path = expected_slot / OUTCOME_EVIDENCE_FILENAME
+    canonical_sha256 = hashlib.sha256(canonical_gzip).hexdigest()
+    if (
+        reservation.slot_path != expected_slot
+        or evidence_publication.reservation != reservation
+        or evidence_publication.evidence_path != expected_evidence_path
+        or evidence_publication.evidence_sha256 != canonical_sha256
+        or evidence_publication.evidence_size_bytes != len(canonical_gzip)
+        or evidence_publication.outcome_http_date_utc
+        != evidence.outcome_http_date_utc
+        or evidence_publication.response_received_at_utc
+        != evidence.response_received_at_utc
+        or evidence_publication.response_body_sha256
+        != evidence.response_body_sha256
+        or evidence_publication.flattened_occurrence_count
+        != evidence.flattened_occurrence_count
+        or batch.outcome_evidence_sha256 != canonical_sha256
+    ):
+        raise shadow.ShadowPredictionError(
+            "La preuve MLB publiee diverge des documents quotidiens."
+        )
+    _require_local_directory(expected_slot, description="creneau d'observation")
+    try:
+        names = sorted(path.name for path in expected_slot.iterdir())
+    except OSError as error:
+        raise shadow.ShadowPredictionError(
+            "Le creneau d'observation ne peut pas etre inspecte."
+        ) from error
+    if names != ["RESERVED", OUTCOME_EVIDENCE_FILENAME]:
+        raise shadow.ShadowPredictionSlotConsumedError(
+            "Les documents quotidiens ne sont pas les prochains fichiers du creneau."
+        )
+    persisted_reserved = shadow._read_canonical_json_object(
+        expected_slot / "RESERVED"
+    )
+    expected_reserved = shadow._canonical_json_file_bytes(
+        reservation.reserved_marker
+    )
+    if (
+        persisted_reserved is None
+        or persisted_reserved[0] != reservation.reserved_marker
+        or persisted_reserved[1] != expected_reserved
+        or hashlib.sha256(expected_reserved).hexdigest()
+        != reservation.reserved_marker_sha256
+    ):
+        raise shadow.ShadowPredictionError(
+            "Le marqueur RESERVED persiste diverge de la reservation."
+        )
+    persisted_evidence = _read_exact_local_file(
+        expected_evidence_path,
+        description="preuve MLB publiee",
+    )
+    if persisted_evidence != canonical_gzip:
+        raise shadow.ShadowPredictionError(
+            "La preuve MLB persiste diverge de ses octets valides."
+        )
+    return expected_slot, documents
+
+
+def publish_scoring_observation_documents(
+    authority: ScoringExecutionAuthority,
+    reservation: ScoringObservationReservation,
+    evidence_publication: ScoringOutcomeEvidencePublication,
+    prediction_source: ImmutableScoringPredictionSource,
+    batch: ScoringAdjudicationBatch,
+    *,
+    project_directory: Path = PROJECT_DIRECTORY,
+) -> ScoringObservationDocumentsPublication:
+    """Publie le CSV puis le rapport comme troisieme et quatrieme fichiers."""
+    slot, documents = _validate_published_outcome_for_documents(
+        authority,
+        reservation,
+        evidence_publication,
+        prediction_source,
+        batch,
+        project_directory=project_directory,
+    )
+    adjudications_path = slot / ADJUDICATIONS_FILENAME
+    daily_report_path = slot / DAILY_REPORT_FILENAME
+    adjudications_sha256 = shadow._publish_exclusive_verified(
+        adjudications_path,
+        documents.adjudications_csv_bytes,
+    )
+    if adjudications_sha256 != documents.adjudications_sha256:
+        raise shadow.ShadowPredictionError(
+            "L'empreinte publiee des adjudications diverge."
+        )
+    daily_report_sha256 = shadow._publish_exclusive_verified(
+        daily_report_path,
+        documents.daily_report_bytes,
+    )
+    if daily_report_sha256 != documents.daily_report_sha256:
+        raise shadow.ShadowPredictionError(
+            "L'empreinte publiee du rapport quotidien diverge."
+        )
+    if (
+        _read_exact_local_file(
+            adjudications_path,
+            description="adjudications publiees",
+        )
+        != documents.adjudications_csv_bytes
+        or _read_exact_local_file(
+            daily_report_path,
+            description="rapport quotidien publie",
+        )
+        != documents.daily_report_bytes
+        or _read_exact_local_file(
+            evidence_publication.evidence_path,
+            description="preuve MLB preservee",
+        )
+        != evidence_publication.evidence.canonical_gzip_bytes
+    ):
+        raise shadow.ShadowPredictionError(
+            "Une sortie publiee diverge apres relecture."
+        )
+    return ScoringObservationDocumentsPublication(
+        reservation=reservation,
+        evidence_publication=evidence_publication,
+        documents=documents,
+        adjudications_path=adjudications_path,
+        adjudications_sha256=adjudications_sha256,
+        adjudications_size_bytes=len(documents.adjudications_csv_bytes),
+        daily_report_path=daily_report_path,
+        daily_report_sha256=daily_report_sha256,
+        daily_report_size_bytes=len(documents.daily_report_bytes),
     )

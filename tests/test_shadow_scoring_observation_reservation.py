@@ -458,8 +458,8 @@ else:
                 ).exists()
             )
 
-    def test_module_has_no_outcome_sqlite_or_model_dependency(self) -> None:
-        """Ce lot ne peut encore lire aucun resultat ou modele."""
+    def test_module_has_no_sqlite_or_model_dependency(self) -> None:
+        """La capture MLB n'autorise toujours ni SQLite ni modele."""
         source = registration.PROJECT_DIRECTORY.joinpath(
             *scoring.SCORING_ENGINE_RELATIVE_PATH.parts
         )
@@ -473,7 +473,6 @@ else:
         forbidden = {
             "sqlite3",
             "joblib",
-            "requests",
             "src.database",
             "src.mlb_api",
             "src.ingestion_service",

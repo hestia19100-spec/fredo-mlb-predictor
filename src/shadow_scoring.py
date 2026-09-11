@@ -584,6 +584,11 @@ class ScoringObservationCompletionPublication:
     completed_size_bytes: int
 
 
+ScoringObservationExecutionResult = (
+    ScoringObservationCompletionPublication | ScoringObservationFailure
+)
+
+
 @dataclass(frozen=True, slots=True)
 class _RawScoringOccurrence:
     """Occurrence MLB structurellement validee avant reduction."""
@@ -4433,4 +4438,142 @@ def publish_scoring_observation_completion(
         completed_path=completed_path,
         completed_sha256=completed_sha256,
         completed_size_bytes=len(completion.canonical_json_bytes),
+    )
+
+
+def _require_certified_nonempty_observation_source(
+    source: ImmutableScoringPredictionSource,
+    *,
+    target: date,
+) -> None:
+    """Ferme l'acces MLB aux dates sans cohorte certifiee non vide."""
+    if type(source) is not ImmutableScoringPredictionSource:
+        raise ScoringAdjudicationError(
+            "Une source de predictions immuable exacte est requise."
+        )
+    if (
+        source.target_official_date != target.isoformat()
+        or source.status is not ScoringPredictionSourceStatus.CERTIFIED_NONEMPTY
+        or type(source.predictions) is not tuple
+        or not source.predictions
+        or not source.results_commit
+        or not source.certification_commit
+        or not source.batch_id
+    ):
+        raise ScoringAdjudicationError(
+            "Seule une date certifiee avec predictions peut ouvrir une "
+            "observation MLB."
+        )
+
+
+def execute_scoring_observation(
+    target_official_date: date | str,
+    checkpoint_utc_date: date | str,
+    *,
+    project_directory: Path = PROJECT_DIRECTORY,
+) -> ScoringObservationExecutionResult:
+    """Execute une observation officielle, une seule fois et dans l'ordre fige.
+
+    Le chemin est inspecte avant Git et toute horloge. L'autorite et la cohorte
+    certifiee sont ensuite validees avant la reservation irrevocable. Apres
+    RESERVED, seul le traitement controle des erreurs HTTP peut publier
+    FAILED.json; toute erreur ulterieure laisse le chemin partiel intact.
+    """
+    project = shadow._preflight_project_directory(project_directory)
+    target = _parse_horizon_target(target_official_date)
+    checkpoint = _parse_checkpoint_date(
+        checkpoint_utc_date,
+        target=target,
+    )
+    initial = inspect_scoring_observation_slot_presence_first(
+        target,
+        checkpoint,
+        project_directory=project,
+    )
+    if initial.state is not ScoringObservationSlotState.ABSENT:
+        raise shadow.ShadowPredictionSlotConsumedError(
+            "Le creneau d'observation est deja consomme; aucune lecture "
+            "Git, MLB, modele ou SQLite n'est autorisee."
+        )
+
+    started_at = _utc_now()
+    authority = verify_scoring_execution_authority(
+        project_directory=project,
+    )
+    source = load_immutable_scoring_prediction_source(
+        authority,
+        target,
+        project_directory=project,
+    )
+    _require_certified_nonempty_observation_source(
+        source,
+        target=target,
+    )
+
+    reserved_at_datetime = _utc_now()
+    started_text = _format_utc_seconds(
+        started_at,
+        field_name="started_at_utc",
+    )
+    reserved_at = _format_utc_seconds(
+        reserved_at_datetime,
+        field_name="reserved_at_utc",
+    )
+    if _parse_utc_timestamp(
+        reserved_at,
+        field_name="reserved_at_utc",
+    ) < _parse_utc_timestamp(
+        started_text,
+        field_name="started_at_utc",
+    ):
+        raise shadow.ShadowPredictionError(
+            "L'horloge a recule avant la reservation d'observation."
+        )
+    reservation = reserve_scoring_observation_slot(
+        authority,
+        target,
+        checkpoint,
+        reserved_at_utc=reserved_at,
+        project_directory=project,
+    )
+    evidence_publication = capture_and_publish_scoring_outcome_evidence(
+        reservation,
+        project_directory=project,
+    )
+    if type(evidence_publication) is ScoringObservationFailure:
+        return evidence_publication
+    if type(evidence_publication) is not ScoringOutcomeEvidencePublication:
+        raise ScoringAdjudicationError(
+            "La capture MLB n'a produit aucune publication exacte."
+        )
+
+    batch = adjudicate_scoring_predictions(
+        source.predictions,
+        evidence_publication.evidence,
+    )
+    documents_publication = publish_scoring_observation_documents(
+        authority,
+        reservation,
+        evidence_publication,
+        source,
+        batch,
+        project_directory=project,
+    )
+    receipt_publication = publish_scoring_observation_receipt(
+        authority,
+        reservation,
+        evidence_publication,
+        documents_publication,
+        started_at_utc=_parse_utc_timestamp(
+            started_text,
+            field_name="started_at_utc",
+        ),
+        receipt_finalized_at_utc=_utc_now(),
+        project_directory=project,
+    )
+    return publish_scoring_observation_completion(
+        authority,
+        receipt_publication,
+        completed_at_utc=_utc_now(),
+        project_directory=project,
     )

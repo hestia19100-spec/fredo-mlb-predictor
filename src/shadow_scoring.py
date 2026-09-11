@@ -8,6 +8,7 @@ SQLite ni modele pendant le scoring.
 
 from __future__ import annotations
 
+import argparse
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_EVEN
@@ -22,6 +23,7 @@ import math
 from pathlib import Path, PurePosixPath
 import re
 import stat
+import sys
 from typing import Any, Mapping, Sequence
 import zlib
 
@@ -4577,3 +4579,121 @@ def execute_scoring_observation(
         completed_at_utc=_utc_now(),
         project_directory=project,
     )
+
+
+def _canonical_scoring_execution_output_bytes(
+    result: ScoringObservationExecutionResult,
+) -> bytes:
+    """Relit la preuve terminale exacte destinee a la sortie du CLI."""
+    if type(result) is ScoringObservationFailure:
+        content = _read_exact_local_file(
+            result.failed_path,
+            description="marqueur FAILED publie",
+        )
+        expected = shadow._canonical_json_file_bytes(result.failed_marker)
+        if (
+            content != expected
+            or hashlib.sha256(content).hexdigest()
+            != result.failed_marker_sha256
+            or result.failed_marker.get("stage") != result.stage
+            or result.failed_marker.get("error_type") != result.error_type
+        ):
+            raise shadow.ShadowPredictionError(
+                "Le marqueur FAILED publie diverge de sa preuve de sortie."
+            )
+        return content
+    if type(result) is not ScoringObservationCompletionPublication:
+        raise shadow.ShadowPredictionError(
+            "Le scoring n'a pas produit une preuve terminale exacte."
+        )
+    receipt_publication = result.receipt_publication
+    receipt = receipt_publication.receipt
+    content = _read_exact_local_file(
+        receipt_publication.receipt_path,
+        description="recu d'observation publie",
+    )
+    if (
+        content != receipt.canonical_json_bytes
+        or hashlib.sha256(content).hexdigest()
+        != receipt_publication.receipt_sha256
+        or receipt.receipt_sha256 != receipt_publication.receipt_sha256
+        or len(content) != receipt_publication.receipt_size_bytes
+        or receipt.target_official_date
+        != result.completion.target_official_date
+        or receipt.checkpoint_utc_date
+        != result.completion.checkpoint_utc_date
+        or receipt.observation_id != result.completion.observation_id
+    ):
+        raise shadow.ShadowPredictionError(
+            "Le recu publie diverge de la preuve de completion."
+        )
+    completion = result.completion
+    completed_content = _read_exact_local_file(
+        result.completed_path,
+        description="marqueur COMPLETED publie",
+    )
+    if (
+        completed_content != completion.canonical_json_bytes
+        or hashlib.sha256(completed_content).hexdigest()
+        != result.completed_sha256
+        or completion.completed_sha256 != result.completed_sha256
+        or len(completed_content) != result.completed_size_bytes
+        or completion.completed_marker.get("observation_receipt_sha256")
+        != receipt_publication.receipt_sha256
+    ):
+        raise shadow.ShadowPredictionError(
+            "Le marqueur COMPLETED publie diverge de sa preuve de sortie."
+        )
+    return content
+
+
+def _build_argument_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="python -m src.shadow_scoring",
+        description=(
+            "Observe MLB puis publie le scoring quotidien append-only d'un "
+            "lot de predictions certifie, sans lire SQLite ou le modele."
+        ),
+    )
+    parser.add_argument(
+        "--target-official-date",
+        metavar="YYYY-MM-DD",
+        required=True,
+        help="Date officielle MLB des predictions a verifier.",
+    )
+    parser.add_argument(
+        "--checkpoint-utc-date",
+        metavar="YYYY-MM-DD",
+        required=True,
+        help="Date UTC du point d'observation prevu par le protocole.",
+    )
+    parser.add_argument(
+        "--execute-scoring",
+        action="store_true",
+        help="Autorise explicitement l'observation MLB append-only.",
+    )
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Execute uniquement le chemin public et affiche sa preuve exacte."""
+    parser = _build_argument_parser()
+    arguments = parser.parse_args(argv)
+    if not arguments.execute_scoring:
+        parser.error(
+            "--execute-scoring est obligatoire pour ouvrir l'observation."
+        )
+    try:
+        result = execute_scoring_observation(
+            arguments.target_official_date,
+            arguments.checkpoint_utc_date,
+        )
+        output = _canonical_scoring_execution_output_bytes(result)
+    except shadow.ShadowPredictionError as error:
+        parser.error(str(error))
+    sys.stdout.write(output.decode("utf-8"))
+    return 1 if type(result) is ScoringObservationFailure else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

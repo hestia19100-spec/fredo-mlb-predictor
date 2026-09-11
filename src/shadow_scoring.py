@@ -71,6 +71,7 @@ OUTCOME_EVIDENCE_FILENAME = "outcome_observation.remote.json.gz"
 ADJUDICATIONS_FILENAME = "adjudications.csv"
 DAILY_REPORT_FILENAME = "daily_report.json"
 OBSERVATION_RECEIPT_FILENAME = "observation_receipt.json"
+COMPLETED_FILENAME = "COMPLETED"
 FAILED_FILENAME = "FAILED.json"
 
 _OUTCOME_EVIDENCE_KEYS = frozenset(
@@ -238,6 +239,15 @@ _OBSERVATION_NEGATIVE_ATTESTATIONS_KEYS = frozenset(
         "ODDS_NOT_READ",
         "BETTING_RECOMMENDATION_NOT_COMPUTED",
         "CUMULATIVE_OR_FINAL_VERDICT_NOT_COMPUTED",
+    }
+)
+_COMPLETED_MARKER_KEYS = frozenset(
+    {
+        "marker_schema_version",
+        "observation_id",
+        "observation_receipt_path",
+        "observation_receipt_sha256",
+        "completed_at_utc",
     }
 )
 
@@ -546,6 +556,32 @@ class ScoringObservationReceiptPublication:
     receipt_path: Path
     receipt_sha256: str
     receipt_size_bytes: int
+
+
+@dataclass(frozen=True, slots=True)
+class ScoringObservationCompletion:
+    """Marqueur terminal canonique construit en memoire."""
+
+    target_official_date: str
+    checkpoint_utc_date: str
+    observation_id: str
+    completed_marker: dict[str, Any] = field(repr=False)
+    canonical_json_bytes: bytes = field(repr=False)
+    completed_sha256: str
+    completed_at_utc: str
+
+
+@dataclass(frozen=True, slots=True)
+class ScoringObservationCompletionPublication:
+    """Publication append-only du sixieme et dernier fichier."""
+
+    receipt_publication: ScoringObservationReceiptPublication = field(
+        repr=False
+    )
+    completion: ScoringObservationCompletion = field(repr=False)
+    completed_path: Path
+    completed_sha256: str
+    completed_size_bytes: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -4103,4 +4139,298 @@ def publish_scoring_observation_receipt(
         receipt_path=receipt_path,
         receipt_sha256=receipt_sha256,
         receipt_size_bytes=len(receipt.canonical_json_bytes),
+    )
+
+
+def _validate_observation_completion_protocol(
+    authority: ScoringExecutionAuthority,
+) -> None:
+    """Verifie le schema et l'ordre figes du marqueur terminal."""
+    _validate_observation_receipt_protocol(authority)
+    try:
+        publication = authority.protocol["output_publication"]
+        marker_keys = publication["schemas"][
+            "completed_marker_keys_exact_set"
+        ]
+        marker_version = publication["schema_versions_exact"][
+            "completed_marker"
+        ]
+        write_order = publication["observation_success_write_order_exact"]
+    except (KeyError, TypeError) as error:
+        raise ScoringAdjudicationError(
+            "Le contrat COMPLETED est absent du protocole."
+        ) from error
+    if (
+        type(marker_keys) is not list
+        or frozenset(marker_keys) != _COMPLETED_MARKER_KEYS
+        or len(marker_keys) != len(_COMPLETED_MARKER_KEYS)
+        or marker_version != 1
+        or write_order
+        != [
+            "RESERVED",
+            OUTCOME_EVIDENCE_FILENAME,
+            ADJUDICATIONS_FILENAME,
+            DAILY_REPORT_FILENAME,
+            OBSERVATION_RECEIPT_FILENAME,
+            COMPLETED_FILENAME,
+        ]
+    ):
+        raise ScoringAdjudicationError(
+            "Le contrat COMPLETED diverge du protocole fige."
+        )
+
+
+def build_scoring_observation_completion(
+    authority: ScoringExecutionAuthority,
+    receipt_publication: ScoringObservationReceiptPublication,
+    *,
+    completed_at_utc: datetime,
+) -> ScoringObservationCompletion:
+    """Construit le marqueur terminal sans lire ni publier aucun fichier."""
+    _validate_observation_completion_protocol(authority)
+    if (
+        type(receipt_publication)
+        is not ScoringObservationReceiptPublication
+    ):
+        raise ScoringAdjudicationError(
+            "Une publication exacte du recu d'observation est requise."
+        )
+    receipt = receipt_publication.receipt
+    reservation = receipt_publication.reservation
+    if type(receipt) is not ScoringObservationReceipt:
+        raise ScoringAdjudicationError(
+            "Le recu d'observation en memoire est invalide."
+        )
+    target = _parse_horizon_target(receipt.target_official_date)
+    checkpoint = _parse_checkpoint_date(
+        receipt.checkpoint_utc_date,
+        target=target,
+    )
+    expected_observation_id = build_observation_id(
+        scoring_protocol_sha256=authority.scoring_protocol_sha256,
+        target_official_date=target,
+        checkpoint_utc_date=checkpoint,
+    )
+    completed_text = _format_utc_seconds(
+        completed_at_utc,
+        field_name="completed_at_utc",
+    )
+    finalized = _parse_utc_timestamp(
+        receipt.receipt_finalized_at_utc,
+        field_name="receipt_finalized_at_utc",
+    )
+    completed = _parse_utc_timestamp(
+        completed_text,
+        field_name="completed_at_utc",
+    )
+    expected_receipt_path = _observation_relative_file_path(
+        target.isoformat(),
+        checkpoint.isoformat(),
+        OBSERVATION_RECEIPT_FILENAME,
+    )
+    receipt_object = receipt.receipt
+    if type(receipt_object) is not dict:
+        raise ScoringAdjudicationError(
+            "Le recu publie ne peut pas fermer cette observation."
+        )
+    receipt_bytes = receipt.canonical_json_bytes
+    canonical_receipt_bytes = shadow._canonical_json_file_bytes(
+        receipt_object
+    )
+    receipt_counts = receipt_object.get("counts")
+    receipt_attestations = receipt_object.get("negative_attestations")
+    if (
+        completed < finalized
+        or frozenset(receipt_object) != _OBSERVATION_RECEIPT_KEYS
+        or receipt_object.get("receipt_schema_version") != 1
+        or receipt_object.get("protocol_id")
+        != scoring_registration.EXPECTED_PROTOCOL_ID
+        or receipt_object.get("scoring_protocol_sha256")
+        != authority.scoring_protocol_sha256
+        or receipt_object.get("target_official_date") != target.isoformat()
+        or receipt_object.get("checkpoint_utc_date") != checkpoint.isoformat()
+        or type(receipt_counts) is not dict
+        or frozenset(receipt_counts) != _OBSERVATION_COUNTS_KEYS
+        or type(receipt_attestations) is not dict
+        or frozenset(receipt_attestations)
+        != _OBSERVATION_NEGATIVE_ATTESTATIONS_KEYS
+        or not all(value is True for value in receipt_attestations.values())
+        or receipt.observation_id != expected_observation_id
+        or reservation.observation_id != expected_observation_id
+        or receipt_publication.evidence_publication.reservation
+        != reservation
+        or receipt_publication.documents_publication.reservation
+        != reservation
+        or receipt_publication.documents_publication.evidence_publication
+        != receipt_publication.evidence_publication
+        or receipt_publication.receipt_path.name
+        != OBSERVATION_RECEIPT_FILENAME
+        or receipt_publication.receipt_path.parent != reservation.slot_path
+        or receipt.receipt.get("observation_id") != expected_observation_id
+        or receipt.receipt.get("runtime_code_commit")
+        != authority.runtime_code_commit
+        or receipt.receipt.get("receipt_finalized_at_utc")
+        != receipt.receipt_finalized_at_utc
+        or receipt_bytes != canonical_receipt_bytes
+        or hashlib.sha256(receipt_bytes).hexdigest()
+        != receipt.receipt_sha256
+        or receipt_publication.receipt_sha256 != receipt.receipt_sha256
+        or receipt_publication.receipt_size_bytes != len(receipt_bytes)
+    ):
+        raise ScoringAdjudicationError(
+            "Le recu publie ne peut pas fermer cette observation."
+        )
+    marker: dict[str, Any] = {
+        "marker_schema_version": 1,
+        "observation_id": expected_observation_id,
+        "observation_receipt_path": expected_receipt_path,
+        "observation_receipt_sha256": receipt.receipt_sha256,
+        "completed_at_utc": completed_text,
+    }
+    if frozenset(marker) != _COMPLETED_MARKER_KEYS:
+        raise ScoringAdjudicationError(
+            "Le marqueur COMPLETED ne respecte pas son schema fige."
+        )
+    marker_bytes = shadow._canonical_json_file_bytes(marker)
+    return ScoringObservationCompletion(
+        target_official_date=target.isoformat(),
+        checkpoint_utc_date=checkpoint.isoformat(),
+        observation_id=expected_observation_id,
+        completed_marker=marker,
+        canonical_json_bytes=marker_bytes,
+        completed_sha256=hashlib.sha256(marker_bytes).hexdigest(),
+        completed_at_utc=completed_text,
+    )
+
+
+def _validate_published_receipt_for_completion(
+    receipt_publication: ScoringObservationReceiptPublication,
+    completion: ScoringObservationCompletion,
+    *,
+    project_directory: Path,
+) -> Path:
+    project = shadow._preflight_project_directory(project_directory)
+    reservation = receipt_publication.reservation
+    evidence_publication = receipt_publication.evidence_publication
+    documents_publication = receipt_publication.documents_publication
+    receipt = receipt_publication.receipt
+    target = _parse_horizon_target(completion.target_official_date)
+    checkpoint = _parse_checkpoint_date(
+        completion.checkpoint_utc_date,
+        target=target,
+    )
+    slot = _observation_slot_path(project, target, checkpoint)
+    if (
+        reservation.slot_path != slot
+        or receipt_publication.receipt_path
+        != slot / OBSERVATION_RECEIPT_FILENAME
+        or completion.observation_id != reservation.observation_id
+    ):
+        raise shadow.ShadowPredictionError(
+            "Le marqueur COMPLETED ne vise pas le recu publie."
+        )
+    _require_local_directory(slot, description="creneau d'observation")
+    try:
+        names = sorted(path.name for path in slot.iterdir())
+    except OSError as error:
+        raise shadow.ShadowPredictionError(
+            "Le creneau d'observation ne peut pas etre inspecte."
+        ) from error
+    if names != [
+        "RESERVED",
+        ADJUDICATIONS_FILENAME,
+        DAILY_REPORT_FILENAME,
+        OBSERVATION_RECEIPT_FILENAME,
+        OUTCOME_EVIDENCE_FILENAME,
+    ]:
+        raise shadow.ShadowPredictionSlotConsumedError(
+            "COMPLETED n'est pas le prochain fichier du creneau."
+        )
+    expected_files = (
+        (
+            slot / "RESERVED",
+            shadow._canonical_json_file_bytes(reservation.reserved_marker),
+            reservation.reserved_marker_sha256,
+            "marqueur RESERVED",
+        ),
+        (
+            evidence_publication.evidence_path,
+            evidence_publication.evidence.canonical_gzip_bytes,
+            evidence_publication.evidence_sha256,
+            "preuve MLB",
+        ),
+        (
+            documents_publication.adjudications_path,
+            documents_publication.documents.adjudications_csv_bytes,
+            documents_publication.adjudications_sha256,
+            "adjudications",
+        ),
+        (
+            documents_publication.daily_report_path,
+            documents_publication.documents.daily_report_bytes,
+            documents_publication.daily_report_sha256,
+            "rapport quotidien",
+        ),
+        (
+            receipt_publication.receipt_path,
+            receipt.canonical_json_bytes,
+            receipt_publication.receipt_sha256,
+            "recu d'observation",
+        ),
+    )
+    for path, expected_bytes, expected_sha256, description in expected_files:
+        persisted = _read_exact_local_file(path, description=description)
+        if (
+            persisted != expected_bytes
+            or hashlib.sha256(persisted).hexdigest() != expected_sha256
+        ):
+            raise shadow.ShadowPredictionError(
+                f"Le fichier persiste {description} diverge avant COMPLETED."
+            )
+    return slot
+
+
+def publish_scoring_observation_completion(
+    authority: ScoringExecutionAuthority,
+    receipt_publication: ScoringObservationReceiptPublication,
+    *,
+    completed_at_utc: datetime,
+    project_directory: Path = PROJECT_DIRECTORY,
+) -> ScoringObservationCompletionPublication:
+    """Publie exclusivement le marqueur terminal en sixieme position."""
+    completion = build_scoring_observation_completion(
+        authority,
+        receipt_publication,
+        completed_at_utc=completed_at_utc,
+    )
+    slot = _validate_published_receipt_for_completion(
+        receipt_publication,
+        completion,
+        project_directory=project_directory,
+    )
+    completed_path = slot / COMPLETED_FILENAME
+    completed_sha256 = shadow._publish_exclusive_verified(
+        completed_path,
+        completion.canonical_json_bytes,
+    )
+    if completed_sha256 != completion.completed_sha256:
+        raise shadow.ShadowPredictionError(
+            "L'empreinte publiee de COMPLETED diverge."
+        )
+    if (
+        _read_exact_local_file(
+            completed_path,
+            description="marqueur COMPLETED publie",
+        )
+        != completion.canonical_json_bytes
+    ):
+        raise shadow.ShadowPredictionError(
+            "Le marqueur COMPLETED diverge apres relecture."
+        )
+    return ScoringObservationCompletionPublication(
+        receipt_publication=receipt_publication,
+        completion=completion,
+        completed_path=completed_path,
+        completed_sha256=completed_sha256,
+        completed_size_bytes=len(completion.canonical_json_bytes),
     )

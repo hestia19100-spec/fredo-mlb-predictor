@@ -70,6 +70,7 @@ OUTCOME_REQUEST_TIMEOUT_SECONDS = 30
 OUTCOME_EVIDENCE_FILENAME = "outcome_observation.remote.json.gz"
 ADJUDICATIONS_FILENAME = "adjudications.csv"
 DAILY_REPORT_FILENAME = "daily_report.json"
+OBSERVATION_RECEIPT_FILENAME = "observation_receipt.json"
 FAILED_FILENAME = "FAILED.json"
 
 _OUTCOME_EVIDENCE_KEYS = frozenset(
@@ -193,6 +194,50 @@ _DAILY_REPORT_KEYS = frozenset(
         "mean_log_loss",
         "mean_brier_score",
         "disclaimer",
+    }
+)
+_OBSERVATION_RECEIPT_KEYS = frozenset(
+    {
+        "receipt_schema_version",
+        "protocol_id",
+        "scoring_protocol_sha256",
+        "target_official_date",
+        "checkpoint_utc_date",
+        "observation_id",
+        "runtime_code_commit",
+        "started_at_utc",
+        "reserved_at_utc",
+        "outcome_http_date_utc",
+        "outcome_response_received_at_utc",
+        "receipt_finalized_at_utc",
+        "outcome_evidence_path",
+        "outcome_evidence_sha256",
+        "adjudications_path",
+        "adjudications_sha256",
+        "daily_report_path",
+        "daily_report_sha256",
+        "counts",
+        "negative_attestations",
+    }
+)
+_OBSERVATION_COUNTS_KEYS = frozenset(
+    {
+        "certified_prediction_count",
+        "scored_count",
+        "void_count",
+        "pending_count",
+        "correct_count",
+        "incorrect_count",
+    }
+)
+_OBSERVATION_NEGATIVE_ATTESTATIONS_KEYS = frozenset(
+    {
+        "MODEL_NOT_READ_OR_DESERIALIZED",
+        "PREDICT_PROBA_NOT_CALLED",
+        "FIT_OR_RECALIBRATION_NOT_CALLED",
+        "ODDS_NOT_READ",
+        "BETTING_RECOMMENDATION_NOT_COMPUTED",
+        "CUMULATIVE_OR_FINAL_VERDICT_NOT_COMPUTED",
     }
 )
 
@@ -473,6 +518,34 @@ class ScoringObservationDocumentsPublication:
     daily_report_path: Path
     daily_report_sha256: str
     daily_report_size_bytes: int
+
+
+@dataclass(frozen=True, slots=True)
+class ScoringObservationReceipt:
+    """Recu canonique reliant les quatre preuves deja publiees."""
+
+    target_official_date: str
+    checkpoint_utc_date: str
+    observation_id: str
+    receipt: dict[str, Any] = field(repr=False)
+    canonical_json_bytes: bytes = field(repr=False)
+    receipt_sha256: str
+    receipt_finalized_at_utc: str
+
+
+@dataclass(frozen=True, slots=True)
+class ScoringObservationReceiptPublication:
+    """Publication append-only du cinquieme fichier d'une observation."""
+
+    reservation: ScoringObservationReservation = field(repr=False)
+    evidence_publication: ScoringOutcomeEvidencePublication = field(repr=False)
+    documents_publication: ScoringObservationDocumentsPublication = field(
+        repr=False
+    )
+    receipt: ScoringObservationReceipt = field(repr=False)
+    receipt_path: Path
+    receipt_sha256: str
+    receipt_size_bytes: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -3623,4 +3696,411 @@ def publish_scoring_observation_documents(
         daily_report_path=daily_report_path,
         daily_report_sha256=daily_report_sha256,
         daily_report_size_bytes=len(documents.daily_report_bytes),
+    )
+
+
+def _validate_observation_receipt_protocol(
+    authority: ScoringExecutionAuthority,
+) -> str:
+    """Verifie le contrat fige propre au recu d'observation."""
+    protocol_id = _validate_daily_output_protocol(authority)
+    try:
+        publication = authority.protocol["output_publication"]
+        schemas = publication["schemas"]
+        receipt_keys = schemas["observation_receipt_keys_exact_set"]
+        count_keys = schemas["observation_counts_keys_exact_set"]
+        attestation_keys = schemas[
+            "observation_negative_attestations_keys_exact_set"
+        ]
+        write_order = publication["observation_success_write_order_exact"]
+        hash_direction = publication["observation_hash_direction"]
+        receipt_version = publication["schema_versions_exact"][
+            "observation_receipt"
+        ]
+    except (KeyError, TypeError) as error:
+        raise ScoringAdjudicationError(
+            "Le contrat du recu d'observation est absent du protocole."
+        ) from error
+    if (
+        type(receipt_keys) is not list
+        or frozenset(receipt_keys) != _OBSERVATION_RECEIPT_KEYS
+        or len(receipt_keys) != len(_OBSERVATION_RECEIPT_KEYS)
+        or type(count_keys) is not list
+        or frozenset(count_keys) != _OBSERVATION_COUNTS_KEYS
+        or len(count_keys) != len(_OBSERVATION_COUNTS_KEYS)
+        or type(attestation_keys) is not list
+        or frozenset(attestation_keys)
+        != _OBSERVATION_NEGATIVE_ATTESTATIONS_KEYS
+        or len(attestation_keys)
+        != len(_OBSERVATION_NEGATIVE_ATTESTATIONS_KEYS)
+        or write_order
+        != [
+            "RESERVED",
+            OUTCOME_EVIDENCE_FILENAME,
+            ADJUDICATIONS_FILENAME,
+            DAILY_REPORT_FILENAME,
+            OBSERVATION_RECEIPT_FILENAME,
+            "COMPLETED",
+        ]
+        or hash_direction
+        != (
+            "observation_receipt.json_HASHES_THE_RAW_EVIDENCE_"
+            "ADJUDICATIONS_AND_DAILY_REPORT;_COMPLETED_HASHES_"
+            "observation_receipt.json;_NO_PRECEDING_FILE_CONTAINS_"
+            "THE_RECEIPT_OR_COMPLETED_HASH"
+        )
+        or receipt_version != 1
+    ):
+        raise ScoringAdjudicationError(
+            "Le contrat du recu d'observation diverge du protocole fige."
+        )
+    return protocol_id
+
+
+def _observation_relative_file_path(
+    target_official_date: str,
+    checkpoint_utc_date: str,
+    filename: str,
+) -> str:
+    return SCORING_OUTPUT_ROOT_RELATIVE_PATH.joinpath(
+        target_official_date,
+        "observations",
+        checkpoint_utc_date,
+        filename,
+    ).as_posix()
+
+
+def build_scoring_observation_receipt(
+    authority: ScoringExecutionAuthority,
+    reservation: ScoringObservationReservation,
+    evidence_publication: ScoringOutcomeEvidencePublication,
+    documents_publication: ScoringObservationDocumentsPublication,
+    *,
+    started_at_utc: datetime,
+    receipt_finalized_at_utc: datetime,
+) -> ScoringObservationReceipt:
+    """Construit le recu canonique sans lire ni publier aucun fichier."""
+    protocol_id = _validate_observation_receipt_protocol(authority)
+    if type(reservation) is not ScoringObservationReservation:
+        raise ScoringAdjudicationError(
+            "Une reservation d'observation exacte est requise."
+        )
+    if type(evidence_publication) is not ScoringOutcomeEvidencePublication:
+        raise ScoringAdjudicationError(
+            "Une publication de preuve MLB exacte est requise."
+        )
+    if (
+        type(documents_publication)
+        is not ScoringObservationDocumentsPublication
+    ):
+        raise ScoringAdjudicationError(
+            "Une publication de documents quotidiens exacte est requise."
+        )
+    documents = documents_publication.documents
+    evidence = evidence_publication.evidence
+    _, _, validated_evidence_bytes = _validate_outcome_evidence(evidence)
+    report = documents.daily_report
+    if type(report) is not dict or frozenset(report) != _DAILY_REPORT_KEYS:
+        raise ScoringAdjudicationError(
+            "Le rapport quotidien ne peut pas alimenter le recu."
+        )
+    target = _parse_horizon_target(reservation.target_official_date)
+    checkpoint = _parse_checkpoint_date(
+        reservation.checkpoint_utc_date,
+        target=target,
+    )
+    expected_observation_id = build_observation_id(
+        scoring_protocol_sha256=authority.scoring_protocol_sha256,
+        target_official_date=target,
+        checkpoint_utc_date=checkpoint,
+    )
+    marker = reservation.reserved_marker
+    reserved_at_text = marker.get("reserved_at_utc") if type(marker) is dict else None
+    reserved_at = _parse_utc_timestamp(
+        reserved_at_text,
+        field_name="RESERVED.reserved_at_utc",
+    )
+    started_text = _format_utc_seconds(
+        started_at_utc,
+        field_name="started_at_utc",
+    )
+    finalized_text = _format_utc_seconds(
+        receipt_finalized_at_utc,
+        field_name="receipt_finalized_at_utc",
+    )
+    started = _parse_utc_timestamp(started_text, field_name="started_at_utc")
+    finalized = _parse_utc_timestamp(
+        finalized_text,
+        field_name="receipt_finalized_at_utc",
+    )
+    outcome_http = _parse_utc_timestamp(
+        evidence_publication.outcome_http_date_utc,
+        field_name="outcome_http_date_utc",
+    )
+    outcome_received = _parse_utc_timestamp(
+        evidence_publication.response_received_at_utc,
+        field_name="outcome_response_received_at_utc",
+    )
+    if not (started <= reserved_at <= outcome_received <= finalized):
+        raise ScoringAdjudicationError(
+            "La chronologie du recu d'observation est invalide."
+        )
+    if outcome_http > outcome_received + timedelta(seconds=300):
+        raise ScoringAdjudicationError(
+            "La date HTTP du recu depasse la tolerance autorisee."
+        )
+    marker_bytes = shadow._canonical_json_file_bytes(marker)
+    evidence_bytes = evidence.canonical_gzip_bytes
+    adjudications_bytes = documents.adjudications_csv_bytes
+    report_bytes = documents.daily_report_bytes
+    if (
+        reservation.observation_id != expected_observation_id
+        or frozenset(marker) != _RESERVED_MARKER_KEYS
+        or marker.get("marker_schema_version") != 1
+        or marker.get("protocol_id") != protocol_id
+        or marker.get("scoring_protocol_sha256")
+        != authority.scoring_protocol_sha256
+        or marker.get("target_official_date") != target.isoformat()
+        or marker.get("checkpoint_utc_date") != checkpoint.isoformat()
+        or marker.get("observation_id") != expected_observation_id
+        or marker.get("runtime_code_commit") != authority.runtime_code_commit
+        or documents.target_official_date != target.isoformat()
+        or documents.checkpoint_utc_date != checkpoint.isoformat()
+        or documents.observation_id != expected_observation_id
+        or evidence.target_official_date != target.isoformat()
+        or evidence.checkpoint_utc_date != checkpoint.isoformat()
+        or evidence_publication.reservation != reservation
+        or documents_publication.reservation != reservation
+        or documents_publication.evidence_publication != evidence_publication
+        or hashlib.sha256(marker_bytes).hexdigest()
+        != reservation.reserved_marker_sha256
+        or hashlib.sha256(evidence_bytes).hexdigest()
+        != evidence_publication.evidence_sha256
+        or evidence_bytes != validated_evidence_bytes
+        or len(evidence_bytes) != evidence_publication.evidence_size_bytes
+        or hashlib.sha256(adjudications_bytes).hexdigest()
+        != documents.adjudications_sha256
+        or documents.adjudications_sha256
+        != documents_publication.adjudications_sha256
+        or len(adjudications_bytes)
+        != documents_publication.adjudications_size_bytes
+        or hashlib.sha256(report_bytes).hexdigest()
+        != documents.daily_report_sha256
+        or documents.daily_report_sha256
+        != documents_publication.daily_report_sha256
+        or len(report_bytes) != documents_publication.daily_report_size_bytes
+        or report.get("protocol_id") != protocol_id
+        or report.get("target_official_date") != target.isoformat()
+        or report.get("checkpoint_utc_date") != checkpoint.isoformat()
+        or report.get("observation_id") != expected_observation_id
+    ):
+        raise ScoringAdjudicationError(
+            "Les sources du recu d'observation divergent."
+        )
+    counts = {key: report[key] for key in _OBSERVATION_COUNTS_KEYS}
+    if (
+        frozenset(counts) != _OBSERVATION_COUNTS_KEYS
+        or any(type(value) is not int or value < 0 for value in counts.values())
+        or counts["scored_count"]
+        + counts["void_count"]
+        + counts["pending_count"]
+        != counts["certified_prediction_count"]
+        or counts["correct_count"] + counts["incorrect_count"]
+        != counts["scored_count"]
+    ):
+        raise ScoringAdjudicationError(
+            "Les compteurs du recu d'observation sont invalides."
+        )
+    negative_attestations = {
+        key: True for key in _OBSERVATION_NEGATIVE_ATTESTATIONS_KEYS
+    }
+    receipt: dict[str, Any] = {
+        "receipt_schema_version": 1,
+        "protocol_id": protocol_id,
+        "scoring_protocol_sha256": authority.scoring_protocol_sha256,
+        "target_official_date": target.isoformat(),
+        "checkpoint_utc_date": checkpoint.isoformat(),
+        "observation_id": expected_observation_id,
+        "runtime_code_commit": authority.runtime_code_commit,
+        "started_at_utc": started_text,
+        "reserved_at_utc": reserved_at_text,
+        "outcome_http_date_utc": evidence_publication.outcome_http_date_utc,
+        "outcome_response_received_at_utc": (
+            evidence_publication.response_received_at_utc
+        ),
+        "receipt_finalized_at_utc": finalized_text,
+        "outcome_evidence_path": _observation_relative_file_path(
+            target.isoformat(), checkpoint.isoformat(), OUTCOME_EVIDENCE_FILENAME
+        ),
+        "outcome_evidence_sha256": evidence_publication.evidence_sha256,
+        "adjudications_path": _observation_relative_file_path(
+            target.isoformat(), checkpoint.isoformat(), ADJUDICATIONS_FILENAME
+        ),
+        "adjudications_sha256": documents_publication.adjudications_sha256,
+        "daily_report_path": _observation_relative_file_path(
+            target.isoformat(), checkpoint.isoformat(), DAILY_REPORT_FILENAME
+        ),
+        "daily_report_sha256": documents_publication.daily_report_sha256,
+        "counts": counts,
+        "negative_attestations": negative_attestations,
+    }
+    if (
+        frozenset(receipt) != _OBSERVATION_RECEIPT_KEYS
+        or frozenset(negative_attestations)
+        != _OBSERVATION_NEGATIVE_ATTESTATIONS_KEYS
+        or not all(negative_attestations.values())
+    ):
+        raise ScoringAdjudicationError(
+            "Le recu d'observation ne respecte pas son schema fige."
+        )
+    receipt_bytes = shadow._canonical_json_file_bytes(receipt)
+    return ScoringObservationReceipt(
+        target_official_date=target.isoformat(),
+        checkpoint_utc_date=checkpoint.isoformat(),
+        observation_id=expected_observation_id,
+        receipt=receipt,
+        canonical_json_bytes=receipt_bytes,
+        receipt_sha256=hashlib.sha256(receipt_bytes).hexdigest(),
+        receipt_finalized_at_utc=finalized_text,
+    )
+
+
+def _validate_published_documents_for_receipt(
+    reservation: ScoringObservationReservation,
+    evidence_publication: ScoringOutcomeEvidencePublication,
+    documents_publication: ScoringObservationDocumentsPublication,
+    receipt: ScoringObservationReceipt,
+    *,
+    project_directory: Path,
+) -> Path:
+    project = shadow._preflight_project_directory(project_directory)
+    target = _parse_horizon_target(reservation.target_official_date)
+    checkpoint = _parse_checkpoint_date(
+        reservation.checkpoint_utc_date,
+        target=target,
+    )
+    slot = _observation_slot_path(project, target, checkpoint)
+    if (
+        reservation.slot_path != slot
+        or evidence_publication.reservation != reservation
+        or documents_publication.reservation != reservation
+        or documents_publication.evidence_publication != evidence_publication
+        or receipt.observation_id != reservation.observation_id
+        or evidence_publication.evidence_path
+        != slot / OUTCOME_EVIDENCE_FILENAME
+        or documents_publication.adjudications_path
+        != slot / ADJUDICATIONS_FILENAME
+        or documents_publication.daily_report_path
+        != slot / DAILY_REPORT_FILENAME
+    ):
+        raise shadow.ShadowPredictionError(
+            "Les publications precedentes ne visent pas le meme creneau."
+        )
+    _require_local_directory(slot, description="creneau d'observation")
+    try:
+        names = sorted(path.name for path in slot.iterdir())
+    except OSError as error:
+        raise shadow.ShadowPredictionError(
+            "Le creneau d'observation ne peut pas etre inspecte."
+        ) from error
+    if names != [
+        "RESERVED",
+        ADJUDICATIONS_FILENAME,
+        DAILY_REPORT_FILENAME,
+        OUTCOME_EVIDENCE_FILENAME,
+    ]:
+        raise shadow.ShadowPredictionSlotConsumedError(
+            "Le recu n'est pas le prochain fichier du creneau."
+        )
+    expected_files = (
+        (
+            slot / "RESERVED",
+            shadow._canonical_json_file_bytes(reservation.reserved_marker),
+            reservation.reserved_marker_sha256,
+            "marqueur RESERVED",
+        ),
+        (
+            evidence_publication.evidence_path,
+            evidence_publication.evidence.canonical_gzip_bytes,
+            evidence_publication.evidence_sha256,
+            "preuve MLB",
+        ),
+        (
+            documents_publication.adjudications_path,
+            documents_publication.documents.adjudications_csv_bytes,
+            documents_publication.adjudications_sha256,
+            "adjudications",
+        ),
+        (
+            documents_publication.daily_report_path,
+            documents_publication.documents.daily_report_bytes,
+            documents_publication.daily_report_sha256,
+            "rapport quotidien",
+        ),
+    )
+    for path, expected_bytes, expected_sha256, description in expected_files:
+        persisted = _read_exact_local_file(path, description=description)
+        if (
+            persisted != expected_bytes
+            or hashlib.sha256(persisted).hexdigest() != expected_sha256
+        ):
+            raise shadow.ShadowPredictionError(
+                f"Le fichier persiste {description} diverge avant le recu."
+            )
+    return slot
+
+
+def publish_scoring_observation_receipt(
+    authority: ScoringExecutionAuthority,
+    reservation: ScoringObservationReservation,
+    evidence_publication: ScoringOutcomeEvidencePublication,
+    documents_publication: ScoringObservationDocumentsPublication,
+    *,
+    started_at_utc: datetime,
+    receipt_finalized_at_utc: datetime,
+    project_directory: Path = PROJECT_DIRECTORY,
+) -> ScoringObservationReceiptPublication:
+    """Publie exclusivement le cinquieme fichier de l'observation."""
+    receipt = build_scoring_observation_receipt(
+        authority,
+        reservation,
+        evidence_publication,
+        documents_publication,
+        started_at_utc=started_at_utc,
+        receipt_finalized_at_utc=receipt_finalized_at_utc,
+    )
+    slot = _validate_published_documents_for_receipt(
+        reservation,
+        evidence_publication,
+        documents_publication,
+        receipt,
+        project_directory=project_directory,
+    )
+    receipt_path = slot / OBSERVATION_RECEIPT_FILENAME
+    receipt_sha256 = shadow._publish_exclusive_verified(
+        receipt_path,
+        receipt.canonical_json_bytes,
+    )
+    if receipt_sha256 != receipt.receipt_sha256:
+        raise shadow.ShadowPredictionError(
+            "L'empreinte publiee du recu d'observation diverge."
+        )
+    if (
+        _read_exact_local_file(
+            receipt_path,
+            description="recu d'observation publie",
+        )
+        != receipt.canonical_json_bytes
+    ):
+        raise shadow.ShadowPredictionError(
+            "Le recu d'observation diverge apres relecture."
+        )
+    return ScoringObservationReceiptPublication(
+        reservation=reservation,
+        evidence_publication=evidence_publication,
+        documents_publication=documents_publication,
+        receipt=receipt,
+        receipt_path=receipt_path,
+        receipt_sha256=receipt_sha256,
+        receipt_size_bytes=len(receipt.canonical_json_bytes),
     )

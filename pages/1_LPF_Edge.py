@@ -4,24 +4,21 @@ from __future__ import annotations
 
 from datetime import datetime
 import html
-import sqlite3
 
 import streamlit as st
 
-from src.ingestion_service import ScheduleIngestionError
 from src.lpf_edge_daily_operations import (
+    DailyAfternoonAutomationError,
     DailyBackupAutomationError,
     DailyActionState,
     DailyOperationsError,
-    DailyPredictionAutomationError,
     DailyResultsAutomationError,
-    execute_daily_prediction_publication,
+    execute_afternoon_prediction_routine,
     execute_daily_results_publication,
     execute_verified_local_backup,
     inspect_daily_operations,
     list_local_backup_names,
     load_verified_local_backup,
-    refresh_daily_mlb_data,
 )
 from src.lpf_edge_dashboard import (
     LPFEdgeDashboardError,
@@ -34,9 +31,6 @@ from src.lpf_edge_dashboard import (
     probability_percent,
     team_label,
 )
-from src.mlb_api import MLBAPIError
-
-
 st.set_page_config(
     page_title="LPF Edge · MLB",
     page_icon="⚾",
@@ -152,48 +146,53 @@ except (DailyOperationsError, OSError, ValueError) as error:
 if daily is not None:
     st.caption(
         f"Journée MLB du {daily.target_date.strftime('%d/%m/%Y')}. "
-        "Chaque bouton vérifie automatiquement si l’action est autorisée."
+        "Le matin est réservé aux résultats ; l’après-midi aux nouvelles "
+        "données et aux prédictions."
     )
-    data_column, prediction_column, result_column, backup_column = st.columns(4)
-    with data_column:
-        st.markdown("#### Données MLB")
-        render_action_status(daily.data_action)
-        refresh_clicked = st.button(
-            daily.data_action.label,
-            type="primary",
-            disabled=not daily.data_action.can_execute,
-            use_container_width=True,
+    morning_column, afternoon_column = st.columns(2)
+    with morning_column:
+        st.markdown("### Matin — Résultats")
+        st.caption(
+            "À utiliser après 08:00, heure de Paris. Cette routine ne lance "
+            "jamais le modèle de prédiction."
         )
-    with prediction_column:
-        st.markdown("#### Prédictions")
-        render_action_status(daily.prediction_action)
-        prediction_clicked = st.button(
-            daily.prediction_action.label,
-            type="primary",
-            disabled=not daily.prediction_action.can_execute,
-            use_container_width=True,
-            help=(
-                None
-                if daily.prediction_action.can_execute
-                else daily.prediction_action.message
-            ),
-        )
-    with result_column:
-        st.markdown("#### Résultats")
-        render_action_status(daily.results_action)
+        render_action_status(daily.morning_action)
         results_clicked = st.button(
-            daily.results_action.label,
+            daily.morning_action.label,
             type="primary",
-            disabled=not daily.results_action.can_execute,
+            disabled=not daily.morning_action.can_execute,
             use_container_width=True,
             help=(
                 None
-                if daily.results_action.can_execute
-                else daily.results_action.message
+                if daily.morning_action.can_execute
+                else daily.morning_action.message
             ),
+            key="morning_results_routine",
         )
-    with backup_column:
-        st.markdown("#### Sauvegarde")
+    with afternoon_column:
+        st.markdown("### Après-midi — Prédictions")
+        st.caption(
+            "À partir de 12:00, MLB est d’abord actualisé. Les lanceurs, "
+            "l’horaire du premier match et le délai minimal sont ensuite "
+            "revérifiés avant toute prédiction."
+        )
+        render_action_status(daily.afternoon_action)
+        afternoon_clicked = st.button(
+            daily.afternoon_action.label,
+            type="primary",
+            disabled=not daily.afternoon_action.can_execute,
+            use_container_width=True,
+            help=(
+                None
+                if daily.afternoon_action.can_execute
+                else daily.afternoon_action.message
+            ),
+            key="afternoon_prediction_routine",
+        )
+
+    st.markdown("### Sauvegarde indépendante")
+    backup_status_column, backup_button_column = st.columns((2, 1))
+    with backup_status_column:
         backup_ready = daily.git.ready_for_publication
         st.markdown(
             '<span class="lpf-action-state lpf-action-'
@@ -206,6 +205,7 @@ if daily is not None:
             if backup_ready
             else "Le dépôt doit être propre, sur main et synchronisé."
         )
+    with backup_button_column:
         backup_clicked = st.button(
             "Créer une sauvegarde",
             type="primary",
@@ -218,36 +218,18 @@ if daily is not None:
             ),
         )
 
-    if refresh_clicked:
-        with st.spinner("Récupération et archivage des données MLB en cours..."):
-            try:
-                refresh = refresh_daily_mlb_data(daily.target_date)
-            except MLBAPIError as error:
-                st.error(f"MLB ne répond pas correctement : {error}")
-            except sqlite3.Error as error:
-                st.error(f"La base locale ne peut pas être actualisée : {error}")
-            except (ScheduleIngestionError, DailyOperationsError, OSError, ValueError) as error:
-                st.error(f"L’actualisation a été arrêtée en sécurité : {error}")
-            else:
-                st.success(
-                    f"Collecte auditée n° {refresh.run_id} terminée : "
-                    f"{refresh.games_received} match(s) reçu(s), "
-                    f"{refresh.games_saved} enregistré(s)."
-                )
-                st.caption(
-                    f"Archive : `{refresh.archive_relative_path}`  \n"
-                    f"SHA-256 : `{refresh.response_sha256}`"
-                )
-
     prediction_feedback = st.session_state.pop(
         "lpf_edge_prediction_success",
         None,
     )
     if prediction_feedback is not None:
         st.success(
-            "Prédictions créées, publiées et certifiées sur GitHub."
+            "Routine de l’après-midi terminée : données MLB actualisées, "
+            "prédictions créées, publiées et certifiées."
         )
         st.caption(
+            f"Collecte auditée n° {prediction_feedback['run_id']} : "
+            f"{prediction_feedback['games_received']} match(s) reçu(s)  \n"
             f"Lot : `{prediction_feedback['batch_id']}`  \n"
             f"Commit des prédictions : "
             f"`{prediction_feedback['results_commit']}`  \n"
@@ -255,28 +237,37 @@ if daily is not None:
             f"`{prediction_feedback['certification_commit']}`"
         )
 
-    if prediction_clicked:
+    if afternoon_clicked:
         with st.spinner(
-            "Création, publication et certification des prédictions en cours..."
+            "Actualisation MLB, contrôles, prédictions et certification en cours..."
         ):
             try:
-                publication = execute_daily_prediction_publication(
+                publication = execute_afternoon_prediction_routine(
                     daily.target_date
                 )
-            except DailyPredictionAutomationError as error:
+            except DailyAfternoonAutomationError as error:
                 st.error(
-                    f"Opération arrêtée à l’étape {error.stage.value} : {error}"
+                    f"Routine arrêtée à l’étape {error.stage.value} : {error}"
                 )
+                if error.data_refresh is not None:
+                    st.info(
+                        "Les données MLB ont bien été actualisées avant cet arrêt : "
+                        f"collecte auditée n° {error.data_refresh.run_id}."
+                    )
             except OSError as error:
                 st.error(
-                    "Opération arrêtée avant sa fin : "
+                    "Routine arrêtée avant sa fin : "
                     f"{error}"
                 )
             else:
                 st.session_state["lpf_edge_prediction_success"] = {
-                    "batch_id": publication.batch_id,
-                    "results_commit": publication.results_commit,
-                    "certification_commit": publication.certification_commit,
+                    "run_id": publication.data_refresh.run_id,
+                    "games_received": publication.data_refresh.games_received,
+                    "batch_id": publication.prediction.batch_id,
+                    "results_commit": publication.prediction.results_commit,
+                    "certification_commit": (
+                        publication.prediction.certification_commit
+                    ),
                 }
                 st.rerun()
 

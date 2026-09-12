@@ -126,6 +126,58 @@ class LPFEdgeDailyOperationsTests(unittest.TestCase):
         )
         self.assertEqual(overview.results_action.state, operations.DailyActionState.TOO_EARLY)
 
+    def test_morning_routine_is_exactly_the_results_decision(self) -> None:
+        overview = self._overview()
+        self.assertEqual(
+            overview.morning_action.state,
+            overview.results_action.state,
+        )
+        self.assertEqual(
+            overview.morning_action.can_execute,
+            overview.results_action.can_execute,
+        )
+        self.assertIn("matin", overview.morning_action.label.lower())
+
+    def test_afternoon_routine_waits_until_noon_in_paris(self) -> None:
+        before_noon = self._overview(
+            now_utc=datetime(2026, 9, 13, 9, 59, 59, tzinfo=timezone.utc),
+        )
+        at_noon = self._overview(
+            now_utc=datetime(2026, 9, 13, 10, 0, 0, tzinfo=timezone.utc),
+        )
+        self.assertEqual(
+            before_noon.afternoon_action.state,
+            operations.DailyActionState.TOO_EARLY,
+        )
+        self.assertEqual(
+            at_noon.afternoon_action.state,
+            operations.DailyActionState.READY,
+        )
+
+    def test_afternoon_routine_can_fetch_missing_games_itself(self) -> None:
+        overview = self._overview(
+            now_utc=datetime(2026, 9, 13, 10, 0, tzinfo=timezone.utc),
+            game_day=self._games(count=0, first_start=None),
+        )
+        self.assertEqual(
+            overview.prediction_action.state,
+            operations.DailyActionState.NEED_DATA,
+        )
+        self.assertEqual(
+            overview.afternoon_action.state,
+            operations.DailyActionState.READY,
+        )
+
+    def test_afternoon_routine_preserves_terminal_prediction_state(self) -> None:
+        overview = self._overview(
+            now_utc=datetime(2026, 9, 13, 10, 0, tzinfo=timezone.utc),
+            prediction_slot_state=operations.PredictionSlotState.FAILED,
+        )
+        self.assertEqual(
+            overview.afternoon_action.state,
+            operations.DailyActionState.BLOCKED,
+        )
+
     def test_paris_midnight_does_not_open_previous_results_early(self) -> None:
         overview = self._overview(
             now_utc=datetime(2026, 9, 12, 22, 30, tzinfo=timezone.utc)
@@ -284,7 +336,11 @@ class LPFEdgeDailyOperationsTests(unittest.TestCase):
                 "list_certified_prediction_dates",
                 return_value=[],
             ),
-            mock.patch("requests.get", side_effect=forbidden) as network,
+            mock.patch(
+                "requests.get",
+                side_effect=forbidden,
+                create=True,
+            ) as network,
         ):
             overview = operations.inspect_daily_operations(
                 TARGET,

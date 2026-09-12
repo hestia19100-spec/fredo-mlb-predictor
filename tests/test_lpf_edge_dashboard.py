@@ -393,9 +393,8 @@ class LPFEdgeDashboardTests(unittest.TestCase):
             "pages", "1_LPF_Edge.py"
         ).read_text(encoding="utf-8")
         self.assertIn("st.button", source)
-        self.assertIn("refresh_daily_mlb_data", source)
-        self.assertIn("execute_daily_prediction_publication", source)
-        self.assertIn("DailyPredictionAutomationError", source)
+        self.assertIn("execute_afternoon_prediction_routine", source)
+        self.assertIn("DailyAfternoonAutomationError", source)
         self.assertIn("execute_daily_results_publication", source)
         self.assertIn("DailyResultsAutomationError", source)
         self.assertIn("execute_verified_local_backup", source)
@@ -410,15 +409,15 @@ class LPFEdgeDashboardTests(unittest.TestCase):
         self.assertIn("load_verified_local_backup", source)
         self.assertIn("selected_backup.archive_bytes", source)
         self.assertIn('key="download_existing_backup"', source)
-        self.assertIn("prediction_clicked", source)
+        self.assertIn("afternoon_clicked", source)
         self.assertIn(
-            "disabled=not daily.prediction_action.can_execute",
+            "disabled=not daily.afternoon_action.can_execute",
             source,
         )
         self.assertIn("lpf_edge_prediction_success", source)
         self.assertIn("results_clicked", source)
         self.assertIn(
-            "disabled=not daily.results_action.can_execute",
+            "disabled=not daily.morning_action.can_execute",
             source,
         )
         self.assertIn("lpf_edge_results_success", source)
@@ -432,7 +431,10 @@ class LPFEdgeDashboardTests(unittest.TestCase):
         self.assertNotIn("shadow_scoring", source)
         self.assertNotIn("Cette page ne relance jamais le modèle", source)
         self.assertIn("une action explicite", source)
-        self.assertIn("daily.results_action.label", source)
+        self.assertIn("daily.morning_action.label", source)
+        self.assertIn("daily.afternoon_action.label", source)
+        self.assertIn("Matin — Résultats", source)
+        self.assertIn("Après-midi — Prédictions", source)
         self.assertIn("Centre d’actions quotidien", source)
         self.assertIn("lpf-result-correct", source)
         self.assertIn("lpf-result-incorrect", source)

@@ -22,6 +22,7 @@ from zoneinfo import ZoneInfo
 
 from src.database import DATA_DIR, DATABASE_PATH
 from src.ingestion_service import (
+    ScheduleIngestionError,
     ScheduleIngestionResult,
     run_schedule_ingestion,
 )
@@ -31,12 +32,14 @@ from src.lpf_edge_dashboard import (
     load_certified_prediction_day,
     load_latest_score_summary,
 )
+from src.mlb_api import MLBAPIError
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PARIS_TIMEZONE = ZoneInfo("Europe/Paris")
 MINIMUM_PREDICTION_LEAD_MINUTES = 120
 SCORING_CHECKPOINT_TIME_UTC = time(6, 0, 0)
+AFTERNOON_ROUTINE_START_PARIS = time(12, 0, 0)
 PREDICTION_ROOT = Path(
     "shadow_results/logistic_team_form_v1_platt_shadow_v2"
 )
@@ -115,6 +118,30 @@ class DailyPredictionAutomationError(DailyOperationsError):
 
     def __init__(self, stage: DailyPredictionStage, message: str) -> None:
         self.stage = stage
+        super().__init__(message)
+
+
+class DailyAfternoonStage(str, Enum):
+    """Etape atteinte par la routine donnees puis predictions."""
+
+    PREFLIGHT = "PREFLIGHT"
+    DATA_REFRESH = "DATA_REFRESH"
+    PREDICTION_PREFLIGHT = "PREDICTION_PREFLIGHT"
+    PREDICTION = "PREDICTION"
+
+
+class DailyAfternoonAutomationError(DailyOperationsError):
+    """Echec ferme de la routine de l'apres-midi."""
+
+    def __init__(
+        self,
+        stage: DailyAfternoonStage,
+        message: str,
+        *,
+        data_refresh: ScheduleIngestionResult | None = None,
+    ) -> None:
+        self.stage = stage
+        self.data_refresh = data_refresh
         super().__init__(message)
 
 
@@ -214,6 +241,8 @@ class DailyOperationsOverview:
     data_action: DailyAction
     prediction_action: DailyAction
     results_action: DailyAction
+    morning_action: DailyAction
+    afternoon_action: DailyAction
     integrity_errors: tuple[str, ...]
 
 
@@ -227,6 +256,15 @@ class DailyPredictionPublication:
     certification_commit: str
     results_paths: tuple[str, ...]
     certification_paths: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class DailyAfternoonPublication:
+    """Recu de l'actualisation MLB suivie de la prediction certifiee."""
+
+    target_date: date
+    data_refresh: ScheduleIngestionResult
+    prediction: DailyPredictionPublication
 
 
 @dataclass(frozen=True, slots=True)
@@ -476,6 +514,63 @@ def _results_action(
     )
 
 
+def _morning_routine_action(results_action: DailyAction) -> DailyAction:
+    """Presente le scoring existant comme la routine reservee au matin."""
+    return _action(
+        "morning_results",
+        "Routine du matin : récupérer les résultats",
+        results_action.state,
+        results_action.message,
+    )
+
+
+def _afternoon_routine_action(
+    *,
+    now_utc: datetime,
+    prediction_action: DailyAction,
+) -> DailyAction:
+    """Autorise l'actualisation puis la prediction a partir de midi a Paris."""
+    label = "Routine de l’après-midi : actualiser et prédire"
+    terminal_states = {
+        DailyActionState.DONE,
+        DailyActionState.ACTION_REQUIRED,
+        DailyActionState.BLOCKED,
+        DailyActionState.NOT_AVAILABLE,
+        DailyActionState.TOO_LATE,
+    }
+    if prediction_action.state in terminal_states:
+        return _action(
+            "afternoon_prediction",
+            label,
+            prediction_action.state,
+            prediction_action.message,
+        )
+    paris_now = now_utc.astimezone(PARIS_TIMEZONE)
+    if paris_now.time().replace(tzinfo=None) < AFTERNOON_ROUTINE_START_PARIS:
+        return _action(
+            "afternoon_prediction",
+            label,
+            DailyActionState.TOO_EARLY,
+            "Attends 12:00, heure de Paris, pour disposer d’informations plus récentes.",
+        )
+    if prediction_action.state not in (
+        DailyActionState.READY,
+        DailyActionState.NEED_DATA,
+    ):
+        return _action(
+            "afternoon_prediction",
+            label,
+            DailyActionState.BLOCKED,
+            "La routine de l’après-midi ne peut pas établir un état sûr.",
+        )
+    return _action(
+        "afternoon_prediction",
+        label,
+        DailyActionState.READY,
+        "MLB sera d’abord actualisé, puis le délai et les lanceurs seront revérifiés avant la prédiction.",
+    )
+
+
 def build_daily_operations_overview(
     *,
     target_date: date,
@@ -546,6 +641,11 @@ def build_daily_operations_overview(
         git_ready=git.ready_for_publication,
         integrity_errors=errors,
     )
+    morning_action = _morning_routine_action(results_action)
+    afternoon_action = _afternoon_routine_action(
+        now_utc=now_utc,
+        prediction_action=prediction_action,
+    )
     return DailyOperationsOverview(
         target_date=target_date,
         previous_date=target_date - timedelta(days=1),
@@ -560,6 +660,8 @@ def build_daily_operations_overview(
         data_action=data_action,
         prediction_action=prediction_action,
         results_action=results_action,
+        morning_action=morning_action,
+        afternoon_action=afternoon_action,
         integrity_errors=errors,
     )
 
@@ -1402,6 +1504,110 @@ def execute_daily_prediction_publication(
     )
 
 
+def execute_afternoon_prediction_routine(
+    target_date: date | None = None,
+    *,
+    project_directory: Path = PROJECT_ROOT,
+    database_path: Path = DATABASE_PATH,
+    data_directory: Path = DATA_DIR,
+) -> DailyAfternoonPublication:
+    """Actualise MLB puis lance la prediction seulement apres un second controle."""
+    instant = _utc_now()
+    if not isinstance(instant, datetime) or instant.tzinfo is None:
+        raise DailyAfternoonAutomationError(
+            DailyAfternoonStage.PREFLIGHT,
+            "L'horloge de la routine doit etre un instant UTC valide.",
+        )
+    instant = instant.astimezone(timezone.utc)
+    paris_today = instant.astimezone(PARIS_TIMEZONE).date()
+    selected = target_date or paris_today
+    if not isinstance(selected, date) or isinstance(selected, datetime):
+        raise TypeError("target_date doit etre une date exacte.")
+    if selected != paris_today:
+        raise DailyAfternoonAutomationError(
+            DailyAfternoonStage.PREFLIGHT,
+            "La routine de l'apres-midi peut seulement traiter aujourd'hui.",
+        )
+    project = Path(project_directory).resolve(strict=True)
+    overview = inspect_daily_operations(
+        selected,
+        now_utc=instant,
+        project_directory=project,
+        database_path=database_path,
+    )
+    if overview.afternoon_action.state is not DailyActionState.READY:
+        raise DailyAfternoonAutomationError(
+            DailyAfternoonStage.PREFLIGHT,
+            overview.afternoon_action.message,
+        )
+
+    try:
+        refresh = refresh_daily_mlb_data(
+            selected,
+            now_utc=instant,
+            database_path=database_path,
+            data_directory=data_directory,
+        )
+    except (
+        DailyOperationsError,
+        MLBAPIError,
+        OSError,
+        ScheduleIngestionError,
+        sqlite3.Error,
+        ValueError,
+    ) as error:
+        raise DailyAfternoonAutomationError(
+            DailyAfternoonStage.DATA_REFRESH,
+            "L'actualisation MLB s'est arretee avant toute prediction.",
+        ) from error
+
+    refreshed_instant = _utc_now()
+    if not isinstance(refreshed_instant, datetime) or refreshed_instant.tzinfo is None:
+        raise DailyAfternoonAutomationError(
+            DailyAfternoonStage.PREDICTION_PREFLIGHT,
+            "L'horloge du second controle est invalide.",
+            data_refresh=refresh,
+        )
+    refreshed_instant = refreshed_instant.astimezone(timezone.utc)
+    refreshed = inspect_daily_operations(
+        selected,
+        now_utc=refreshed_instant,
+        project_directory=project,
+        database_path=database_path,
+    )
+    if refreshed.prediction_action.state is not DailyActionState.READY:
+        raise DailyAfternoonAutomationError(
+            DailyAfternoonStage.PREDICTION_PREFLIGHT,
+            refreshed.prediction_action.message,
+            data_refresh=refresh,
+        )
+
+    try:
+        prediction = execute_daily_prediction_publication(
+            selected,
+            project_directory=project,
+            database_path=database_path,
+            data_directory=data_directory,
+        )
+    except DailyPredictionAutomationError as error:
+        raise DailyAfternoonAutomationError(
+            DailyAfternoonStage.PREDICTION,
+            "Les données MLB sont actualisées, mais la prédiction n'a pas pu être terminée.",
+            data_refresh=refresh,
+        ) from error
+    if prediction.target_date != selected:
+        raise DailyAfternoonAutomationError(
+            DailyAfternoonStage.PREDICTION,
+            "La prédiction produite concerne une date inattendue.",
+            data_refresh=refresh,
+        )
+    return DailyAfternoonPublication(
+        target_date=selected,
+        data_refresh=refresh,
+        prediction=prediction,
+    )
+
+
 def _execute_scoring_engine(
     target_date: date,
     checkpoint_date: date,
@@ -1575,6 +1781,10 @@ def execute_daily_results_publication(
 
 
 __all__ = [
+    "AFTERNOON_ROUTINE_START_PARIS",
+    "DailyAfternoonAutomationError",
+    "DailyAfternoonPublication",
+    "DailyAfternoonStage",
     "DailyBackupAutomationError",
     "DailyBackupPublication",
     "DailyBackupStage",
@@ -1593,6 +1803,7 @@ __all__ = [
     "PredictionSlotState",
     "VerifiedLocalBackup",
     "build_daily_operations_overview",
+    "execute_afternoon_prediction_routine",
     "execute_daily_prediction_publication",
     "execute_daily_results_publication",
     "execute_verified_local_backup",

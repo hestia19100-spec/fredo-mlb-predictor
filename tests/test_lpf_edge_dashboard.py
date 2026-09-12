@@ -388,16 +388,26 @@ class LPFEdgeDashboardTests(unittest.TestCase):
         self.assertNotIn("import joblib", source)
         self.assertNotIn("predict_proba", source)
 
-    def test_streamlit_page_only_enables_the_controlled_data_action(self) -> None:
+    def test_streamlit_page_enables_only_controlled_data_and_prediction_actions(self) -> None:
         source = Path(__file__).parents[1].joinpath(
             "pages", "1_LPF_Edge.py"
         ).read_text(encoding="utf-8")
         self.assertIn("st.button", source)
         self.assertIn("refresh_daily_mlb_data", source)
+        self.assertIn("execute_daily_prediction_publication", source)
+        self.assertIn("DailyPredictionAutomationError", source)
+        self.assertIn("prediction_clicked", source)
+        self.assertIn(
+            "disabled=not daily.prediction_action.can_execute",
+            source,
+        )
+        self.assertIn("lpf_edge_prediction_success", source)
+        self.assertIn("st.rerun()", source)
         self.assertNotIn("run_schedule_ingestion", source)
         self.assertNotIn("shadow_prediction", source)
         self.assertNotIn("shadow_certification", source)
         self.assertNotIn("shadow_scoring", source)
+        self.assertIn("daily.results_action.label", source)
         self.assertIn('disabled=True', source)
         self.assertIn("Centre d’actions quotidien", source)
         self.assertIn("lpf-result-correct", source)

@@ -11,6 +11,8 @@ from src.ingestion_service import ScheduleIngestionError
 from src.lpf_edge_daily_operations import (
     DailyActionState,
     DailyOperationsError,
+    DailyPredictionAutomationError,
+    execute_daily_prediction_publication,
     inspect_daily_operations,
     refresh_daily_mlb_data,
 )
@@ -157,11 +159,16 @@ if daily is not None:
     with prediction_column:
         st.markdown("#### Prédictions")
         render_action_status(daily.prediction_action)
-        st.button(
+        prediction_clicked = st.button(
             daily.prediction_action.label,
-            disabled=True,
+            type="primary",
+            disabled=not daily.prediction_action.can_execute,
             use_container_width=True,
-            help="Ce bouton sera activé lors de la prochaine étape sécurisée.",
+            help=(
+                None
+                if daily.prediction_action.can_execute
+                else daily.prediction_action.message
+            ),
         )
     with result_column:
         st.markdown("#### Résultats")
@@ -193,6 +200,47 @@ if daily is not None:
                     f"Archive : `{refresh.archive_relative_path}`  \n"
                     f"SHA-256 : `{refresh.response_sha256}`"
                 )
+
+    prediction_feedback = st.session_state.pop(
+        "lpf_edge_prediction_success",
+        None,
+    )
+    if prediction_feedback is not None:
+        st.success(
+            "Prédictions créées, publiées et certifiées sur GitHub."
+        )
+        st.caption(
+            f"Lot : `{prediction_feedback['batch_id']}`  \n"
+            f"Commit des prédictions : "
+            f"`{prediction_feedback['results_commit']}`  \n"
+            f"Commit de certification : "
+            f"`{prediction_feedback['certification_commit']}`"
+        )
+
+    if prediction_clicked:
+        with st.spinner(
+            "Création, publication et certification des prédictions en cours..."
+        ):
+            try:
+                publication = execute_daily_prediction_publication(
+                    daily.target_date
+                )
+            except DailyPredictionAutomationError as error:
+                st.error(
+                    f"Opération arrêtée à l’étape {error.stage.value} : {error}"
+                )
+            except OSError as error:
+                st.error(
+                    "Opération arrêtée avant sa fin : "
+                    f"{error}"
+                )
+            else:
+                st.session_state["lpf_edge_prediction_success"] = {
+                    "batch_id": publication.batch_id,
+                    "results_commit": publication.results_commit,
+                    "certification_commit": publication.certification_commit,
+                }
+                st.rerun()
 
 st.divider()
 st.subheader("Consultation des prédictions certifiées")

@@ -1,8 +1,9 @@
-"""Etat local et sans effet de bord des futures actions quotidiennes LPF Edge.
+"""Controle explicite des futures actions quotidiennes LPF Edge.
 
-Ce module ne collecte rien et ne lance ni modele, ni certification, ni scoring.
-Il rassemble uniquement les informations locales necessaires pour que
-l'interface puisse expliquer si chaque action est prete, terminee ou bloquee.
+Les fonctions d'inspection restent strictement locales et sans effet de bord.
+La collecte MLB n'est possible que par ``refresh_daily_mlb_data`` : cette
+fonction publique exige la date du jour et ne lance ni modele, ni
+certification, ni scoring.
 """
 
 from __future__ import annotations
@@ -17,7 +18,11 @@ import subprocess
 from typing import Sequence
 from zoneinfo import ZoneInfo
 
-from src.database import DATABASE_PATH
+from src.database import DATA_DIR, DATABASE_PATH
+from src.ingestion_service import (
+    ScheduleIngestionResult,
+    run_schedule_ingestion,
+)
 from src.lpf_edge_dashboard import (
     LPFEdgeDashboardError,
     list_certified_prediction_dates,
@@ -598,6 +603,34 @@ def inspect_daily_operations(
     )
 
 
+def refresh_daily_mlb_data(
+    target_date: date | None = None,
+    *,
+    now_utc: datetime | None = None,
+    database_path: Path = DATABASE_PATH,
+    data_directory: Path = DATA_DIR,
+) -> ScheduleIngestionResult:
+    """Recupere les matchs du jour par l'unique service auditable existant."""
+    instant = now_utc or datetime.now(timezone.utc)
+    if not isinstance(instant, datetime) or instant.tzinfo is None:
+        raise DailyOperationsError("L'horloge de la collecte doit etre en UTC.")
+    instant = instant.astimezone(timezone.utc)
+    paris_today = instant.astimezone(PARIS_TIMEZONE).date()
+    selected = target_date or paris_today
+    if not isinstance(selected, date) or isinstance(selected, datetime):
+        raise TypeError("target_date doit etre une date exacte.")
+    if selected != paris_today:
+        raise DailyOperationsError(
+            "Le bouton quotidien peut seulement actualiser les matchs d'aujourd'hui."
+        )
+    return run_schedule_ingestion(
+        start_date=selected,
+        end_date=selected,
+        database_path=database_path,
+        data_directory=data_directory,
+    )
+
+
 __all__ = [
     "DailyAction",
     "DailyActionState",
@@ -611,4 +644,5 @@ __all__ = [
     "inspect_git_workspace",
     "inspect_prediction_slot",
     "load_local_game_day_state",
+    "refresh_daily_mlb_data",
 ]

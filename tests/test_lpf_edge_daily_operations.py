@@ -6,6 +6,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 import sqlite3
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest import mock
 
@@ -276,6 +277,53 @@ class LPFEdgeDailyOperationsTests(unittest.TestCase):
             )
         self.assertEqual(overview.target_date, TARGET)
         network.assert_not_called()
+
+    def test_daily_data_refresh_uses_only_audited_ingestion_service(self) -> None:
+        expected = SimpleNamespace(run_id=42, games_received=15, games_saved=15)
+        database = Path("daily.db")
+        data_directory = Path("daily-data")
+        with mock.patch.object(
+            operations,
+            "run_schedule_ingestion",
+            return_value=expected,
+        ) as ingestion:
+            result = operations.refresh_daily_mlb_data(
+                TARGET,
+                now_utc=NOW,
+                database_path=database,
+                data_directory=data_directory,
+            )
+        self.assertIs(result, expected)
+        ingestion.assert_called_once_with(
+            start_date=TARGET,
+            end_date=TARGET,
+            database_path=database,
+            data_directory=data_directory,
+        )
+
+    def test_daily_data_refresh_rejects_another_day_before_ingestion(self) -> None:
+        with mock.patch.object(operations, "run_schedule_ingestion") as ingestion:
+            with self.assertRaisesRegex(
+                operations.DailyOperationsError,
+                "seulement actualiser les matchs d'aujourd'hui",
+            ):
+                operations.refresh_daily_mlb_data(
+                    TARGET - timedelta(days=1),
+                    now_utc=NOW,
+                )
+        ingestion.assert_not_called()
+
+    def test_daily_data_refresh_rejects_a_naive_clock(self) -> None:
+        with mock.patch.object(operations, "run_schedule_ingestion") as ingestion:
+            with self.assertRaisesRegex(
+                operations.DailyOperationsError,
+                "horloge de la collecte",
+            ):
+                operations.refresh_daily_mlb_data(
+                    TARGET,
+                    now_utc=datetime(2026, 9, 13, 8, 0),
+                )
+        ingestion.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -3,9 +3,17 @@
 from __future__ import annotations
 
 import html
+import sqlite3
 
 import streamlit as st
 
+from src.ingestion_service import ScheduleIngestionError
+from src.lpf_edge_daily_operations import (
+    DailyActionState,
+    DailyOperationsError,
+    inspect_daily_operations,
+    refresh_daily_mlb_data,
+)
 from src.lpf_edge_dashboard import (
     LPFEdgeDashboardError,
     format_paris_datetime,
@@ -17,6 +25,7 @@ from src.lpf_edge_dashboard import (
     probability_percent,
     team_label,
 )
+from src.mlb_api import MLBAPIError
 
 
 st.set_page_config(
@@ -47,6 +56,18 @@ st.markdown(
         margin-bottom: 0.7rem;
     }
     .lpf-note {color: #566174; font-size: 0.95rem;}
+    .lpf-action-state {
+        display: inline-block;
+        border-radius: 999px;
+        padding: 0.2rem 0.55rem;
+        font-size: 0.76rem;
+        font-weight: 700;
+        margin-bottom: 0.5rem;
+    }
+    .lpf-action-ready {color: #12513c; background: #dcf7e9;}
+    .lpf-action-done {color: #174c76; background: #e2f0fb;}
+    .lpf-action-wait {color: #76530b; background: #fff4ce;}
+    .lpf-action-blocked {color: #8c2424; background: #fde7e7;}
     .lpf-results-table {
         overflow-x: auto;
         border: 1px solid #dfe5ee;
@@ -88,6 +109,93 @@ st.caption(
     "Les probabilités affichées sont relues depuis les fichiers immuables "
     "déjà publiés. Cette page ne relance jamais le modèle."
 )
+
+ACTION_PRESENTATION = {
+    DailyActionState.READY: ("PRÊT", "ready"),
+    DailyActionState.DONE: ("TERMINÉ", "done"),
+    DailyActionState.NEED_DATA: ("DONNÉES REQUISES", "wait"),
+    DailyActionState.TOO_EARLY: ("TROP TÔT", "wait"),
+    DailyActionState.TOO_LATE: ("TROP TARD", "blocked"),
+    DailyActionState.ACTION_REQUIRED: ("ACTION REQUISE", "wait"),
+    DailyActionState.BLOCKED: ("BLOQUÉ", "blocked"),
+    DailyActionState.NOT_AVAILABLE: ("NON DISPONIBLE", "wait"),
+}
+
+
+def render_action_status(action) -> None:
+    label, tone = ACTION_PRESENTATION[action.state]
+    st.markdown(
+        f'<span class="lpf-action-state lpf-action-{tone}">{label}</span>',
+        unsafe_allow_html=True,
+    )
+    st.caption(action.message)
+
+
+st.divider()
+st.subheader("Centre d’actions quotidien")
+try:
+    daily = inspect_daily_operations()
+except (DailyOperationsError, OSError, ValueError) as error:
+    st.error(f"Le centre d’actions ne peut pas être contrôlé : {error}")
+    daily = None
+
+if daily is not None:
+    st.caption(
+        f"Journée MLB du {daily.target_date.strftime('%d/%m/%Y')}. "
+        "Chaque bouton vérifie automatiquement si l’action est autorisée."
+    )
+    data_column, prediction_column, result_column = st.columns(3)
+    with data_column:
+        st.markdown("#### Données MLB")
+        render_action_status(daily.data_action)
+        refresh_clicked = st.button(
+            daily.data_action.label,
+            type="primary",
+            disabled=not daily.data_action.can_execute,
+            use_container_width=True,
+        )
+    with prediction_column:
+        st.markdown("#### Prédictions")
+        render_action_status(daily.prediction_action)
+        st.button(
+            daily.prediction_action.label,
+            disabled=True,
+            use_container_width=True,
+            help="Ce bouton sera activé lors de la prochaine étape sécurisée.",
+        )
+    with result_column:
+        st.markdown("#### Résultats")
+        render_action_status(daily.results_action)
+        st.button(
+            daily.results_action.label,
+            disabled=True,
+            use_container_width=True,
+            help="Ce bouton sera activé lors de son étape sécurisée.",
+        )
+
+    if refresh_clicked:
+        with st.spinner("Récupération et archivage des données MLB en cours..."):
+            try:
+                refresh = refresh_daily_mlb_data(daily.target_date)
+            except MLBAPIError as error:
+                st.error(f"MLB ne répond pas correctement : {error}")
+            except sqlite3.Error as error:
+                st.error(f"La base locale ne peut pas être actualisée : {error}")
+            except (ScheduleIngestionError, DailyOperationsError, OSError, ValueError) as error:
+                st.error(f"L’actualisation a été arrêtée en sécurité : {error}")
+            else:
+                st.success(
+                    f"Collecte auditée n° {refresh.run_id} terminée : "
+                    f"{refresh.games_received} match(s) reçu(s), "
+                    f"{refresh.games_saved} enregistré(s)."
+                )
+                st.caption(
+                    f"Archive : `{refresh.archive_relative_path}`  \n"
+                    f"SHA-256 : `{refresh.response_sha256}`"
+                )
+
+st.divider()
+st.subheader("Consultation des prédictions certifiées")
 
 available_dates = list_certified_prediction_dates()
 if not available_dates:

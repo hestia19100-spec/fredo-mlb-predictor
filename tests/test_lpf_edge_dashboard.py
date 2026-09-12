@@ -405,6 +405,11 @@ class LPFEdgeDashboardTests(unittest.TestCase):
         self.assertIn('on_click="ignore"', source)
         self.assertIn("backup.archive_bytes", source)
         self.assertIn("backup.archive_sha256", source)
+        self.assertIn("Historique des sauvegardes", source)
+        self.assertIn("list_local_backup_names", source)
+        self.assertIn("load_verified_local_backup", source)
+        self.assertIn("selected_backup.archive_bytes", source)
+        self.assertIn('key="download_existing_backup"', source)
         self.assertIn("prediction_clicked", source)
         self.assertIn(
             "disabled=not daily.prediction_action.can_execute",

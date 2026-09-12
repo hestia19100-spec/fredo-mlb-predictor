@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 import html
 import sqlite3
 
@@ -18,6 +19,8 @@ from src.lpf_edge_daily_operations import (
     execute_daily_results_publication,
     execute_verified_local_backup,
     inspect_daily_operations,
+    list_local_backup_names,
+    load_verified_local_backup,
     refresh_daily_mlb_data,
 )
 from src.lpf_edge_dashboard import (
@@ -351,8 +354,63 @@ if daily is not None:
                     file_name=backup.filename,
                     mime="application/gzip",
                     on_click="ignore",
+                    key="download_new_backup",
                     use_container_width=True,
                 )
+
+st.markdown("#### Historique des sauvegardes")
+try:
+    backup_names = list_local_backup_names()
+except DailyBackupAutomationError as error:
+    st.error(f"L’historique des sauvegardes ne peut pas être lu : {error}")
+    backup_names = ()
+
+if not backup_names:
+    st.info("Aucune sauvegarde locale n’est encore disponible.")
+else:
+    selected_backup_name = st.selectbox(
+        "Sauvegarde à consulter",
+        options=backup_names,
+        format_func=lambda value: value.removeprefix(
+            "fredo-mlb-backup-"
+        ).removesuffix(".tar.gz"),
+    )
+    try:
+        selected_backup = load_verified_local_backup(selected_backup_name)
+        backup_created_at = datetime.fromisoformat(
+            selected_backup.created_at_utc
+        )
+    except (DailyBackupAutomationError, OSError, ValueError) as error:
+        st.error(f"La sauvegarde sélectionnée ne peut pas être vérifiée : {error}")
+    else:
+        backup_date_column, backup_size_column, backup_files_column = st.columns(3)
+        backup_date_column.metric(
+            "Créée le",
+            format_paris_datetime(backup_created_at),
+        )
+        backup_size_column.metric(
+            "Taille",
+            f"{selected_backup.archive_size_bytes / (1024 * 1024):.2f} Mo",
+        )
+        backup_files_column.metric(
+            "Fichiers protégés",
+            selected_backup.file_count,
+        )
+        st.caption(
+            f"Archive : `{selected_backup.relative_path}`  \n"
+            f"Archives MLB : {selected_backup.raw_archive_count}  \n"
+            f"Version du code : `{selected_backup.code_version}`  \n"
+            f"SHA-256 : `{selected_backup.archive_sha256}`"
+        )
+        st.download_button(
+            "Télécharger cette sauvegarde vérifiée",
+            data=selected_backup.archive_bytes,
+            file_name=selected_backup.filename,
+            mime="application/gzip",
+            on_click="ignore",
+            key="download_existing_backup",
+            use_container_width=True,
+        )
 
 st.divider()
 st.subheader("Consultation des prédictions certifiées")

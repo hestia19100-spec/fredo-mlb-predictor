@@ -15,6 +15,7 @@ import hashlib
 import os
 from pathlib import Path
 import sqlite3
+import stat
 import subprocess
 from typing import Sequence
 from zoneinfo import ZoneInfo
@@ -251,6 +252,21 @@ class DailyBackupPublication:
     file_count: int
     raw_archive_count: int
     code_version: str
+    archive_bytes: bytes
+
+
+@dataclass(frozen=True, slots=True)
+class VerifiedLocalBackup:
+    """Sauvegarde existante reverifiee avant son telechargement."""
+
+    filename: str
+    relative_path: str
+    archive_sha256: str
+    archive_size_bytes: int
+    file_count: int
+    raw_archive_count: int
+    code_version: str
+    created_at_utc: str
     archive_bytes: bytes
 
 
@@ -874,6 +890,161 @@ def execute_verified_local_backup(
     )
 
 
+def _backup_timestamp_from_filename(filename: str) -> datetime | None:
+    prefix = "fredo-mlb-backup-"
+    suffix = ".tar.gz"
+    if not filename.startswith(prefix) or not filename.endswith(suffix):
+        return None
+    timestamp = filename[len(prefix) : -len(suffix)]
+    try:
+        parsed = datetime.strptime(timestamp, "%Y%m%dT%H%M%SZ")
+    except ValueError:
+        return None
+    return parsed.replace(tzinfo=timezone.utc)
+
+
+def _existing_backup_directory(project: Path) -> Path | None:
+    backup_directory = project / "backups"
+    try:
+        directory_stat = backup_directory.lstat()
+    except FileNotFoundError:
+        return None
+    if stat.S_ISLNK(directory_stat.st_mode) or not stat.S_ISDIR(
+        directory_stat.st_mode
+    ):
+        raise DailyBackupAutomationError(
+            DailyBackupStage.VERIFICATION,
+            "Le chemin des sauvegardes locales n'est pas un dossier sur.",
+        )
+    return backup_directory
+
+
+def list_local_backup_names(
+    *,
+    project_directory: Path = PROJECT_ROOT,
+) -> tuple[str, ...]:
+    """Liste sans ecriture les archives locales au nom canonique."""
+    project = Path(project_directory).resolve(strict=True)
+    backup_directory = _existing_backup_directory(project)
+    if backup_directory is None:
+        return ()
+    candidates: list[tuple[datetime, str]] = []
+    try:
+        paths = tuple(backup_directory.iterdir())
+    except OSError as error:
+        raise DailyBackupAutomationError(
+            DailyBackupStage.VERIFICATION,
+            "Le dossier des sauvegardes locales ne peut pas etre lu.",
+        ) from error
+    for path in paths:
+        timestamp = _backup_timestamp_from_filename(path.name)
+        if timestamp is None:
+            continue
+        try:
+            file_stat = path.lstat()
+        except OSError as error:
+            raise DailyBackupAutomationError(
+                DailyBackupStage.VERIFICATION,
+                "Une sauvegarde locale ne peut pas etre inspectee.",
+            ) from error
+        if stat.S_ISLNK(file_stat.st_mode) or not stat.S_ISREG(file_stat.st_mode):
+            raise DailyBackupAutomationError(
+                DailyBackupStage.VERIFICATION,
+                "Une sauvegarde locale canonique n'est pas un fichier regulier.",
+            )
+        candidates.append((timestamp, path.name))
+    return tuple(
+        filename
+        for _, filename in sorted(candidates, reverse=True)
+    )
+
+
+def load_verified_local_backup(
+    filename: str,
+    *,
+    project_directory: Path = PROJECT_ROOT,
+) -> VerifiedLocalBackup:
+    """Reverifie une archive choisie avant de livrer ses octets."""
+    if type(filename) is not str or _backup_timestamp_from_filename(filename) is None:
+        raise DailyBackupAutomationError(
+            DailyBackupStage.VERIFICATION,
+            "Le nom de sauvegarde demande n'est pas canonique.",
+        )
+    project = Path(project_directory).resolve(strict=True)
+    backup_directory = _existing_backup_directory(project)
+    if backup_directory is None:
+        raise DailyBackupAutomationError(
+            DailyBackupStage.VERIFICATION,
+            "Aucune sauvegarde locale n'est disponible.",
+        )
+    archive_path = backup_directory / filename
+    try:
+        file_stat = archive_path.lstat()
+    except FileNotFoundError as error:
+        raise DailyBackupAutomationError(
+            DailyBackupStage.VERIFICATION,
+            "La sauvegarde selectionnee n'existe plus.",
+        ) from error
+    if stat.S_ISLNK(file_stat.st_mode) or not stat.S_ISREG(file_stat.st_mode):
+        raise DailyBackupAutomationError(
+            DailyBackupStage.VERIFICATION,
+            "La sauvegarde selectionnee n'est pas un fichier regulier.",
+        )
+
+    from src import backup_service
+
+    try:
+        verification = backup_service.verify_backup_bundle(archive_path)
+        archive_bytes = archive_path.read_bytes()
+    except (backup_service.BackupError, OSError) as error:
+        raise DailyBackupAutomationError(
+            DailyBackupStage.VERIFICATION,
+            "La sauvegarde selectionnee ne peut pas etre verifiee.",
+        ) from error
+    calculated_sha256 = hashlib.sha256(archive_bytes).hexdigest()
+    try:
+        created_at = datetime.fromisoformat(verification.created_at_utc)
+    except (AttributeError, TypeError, ValueError):
+        created_at_valid = False
+    else:
+        created_at_valid = (
+            created_at.tzinfo is not None
+            and created_at.utcoffset() == timedelta(0)
+        )
+    valid = (
+        type(verification) is backup_service.BackupVerification
+        and verification.absolute_path == archive_path.resolve()
+        and verification.archive_sha256 == calculated_sha256
+        and verification.archive_size_bytes == len(archive_bytes)
+        and verification.archive_size_bytes > 0
+        and verification.file_count > 0
+        and 0 <= verification.raw_archive_count <= verification.file_count
+        and created_at_valid
+        and type(verification.code_version) is str
+        and len(verification.code_version) == 40
+        and all(
+            character in "0123456789abcdef"
+            for character in verification.code_version
+        )
+    )
+    if not valid:
+        raise DailyBackupAutomationError(
+            DailyBackupStage.VERIFICATION,
+            "La relecture de la sauvegarde selectionnee est incoherente.",
+        )
+    return VerifiedLocalBackup(
+        filename=filename,
+        relative_path=f"backups/{filename}",
+        archive_sha256=verification.archive_sha256,
+        archive_size_bytes=verification.archive_size_bytes,
+        file_count=verification.file_count,
+        raw_archive_count=verification.raw_archive_count,
+        code_version=verification.code_version,
+        created_at_utc=verification.created_at_utc,
+        archive_bytes=archive_bytes,
+    )
+
+
 def _run_git_mutation(
     project_directory: Path,
     arguments: Sequence[str],
@@ -1420,6 +1591,7 @@ __all__ = [
     "GitWorkspaceState",
     "LocalGameDayState",
     "PredictionSlotState",
+    "VerifiedLocalBackup",
     "build_daily_operations_overview",
     "execute_daily_prediction_publication",
     "execute_daily_results_publication",
@@ -1427,6 +1599,8 @@ __all__ = [
     "inspect_daily_operations",
     "inspect_git_workspace",
     "inspect_prediction_slot",
+    "list_local_backup_names",
+    "load_verified_local_backup",
     "load_local_game_day_state",
     "refresh_daily_mlb_data",
 ]

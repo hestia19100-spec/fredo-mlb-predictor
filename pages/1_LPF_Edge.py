@@ -480,6 +480,7 @@ for prediction in day.predictions:
 st.dataframe(
     table_rows,
     width="stretch",
+    height="content",
     hide_index=True,
     column_config={
         "Heure de Paris": st.column_config.TextColumn(width="small"),

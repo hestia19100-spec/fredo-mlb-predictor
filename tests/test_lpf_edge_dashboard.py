@@ -438,6 +438,7 @@ class LPFEdgeDashboardTests(unittest.TestCase):
         self.assertIn("lpf-result-incorrect", source)
         self.assertIn("Prédictions réussies", source)
         self.assertIn("Score final (ext. – dom.)", source)
+        self.assertIn('height="content"', source)
 
 
 if __name__ == "__main__":

@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from enum import Enum
+import hashlib
 import os
 from pathlib import Path
 import sqlite3
@@ -132,6 +133,22 @@ class DailyResultsAutomationError(DailyOperationsError):
         super().__init__(message)
 
 
+class DailyBackupStage(str, Enum):
+    """Etape exacte atteinte par la sauvegarde locale."""
+
+    PREFLIGHT = "PREFLIGHT"
+    CREATION = "CREATION"
+    VERIFICATION = "VERIFICATION"
+
+
+class DailyBackupAutomationError(DailyOperationsError):
+    """Echec ferme de la creation ou de la verification d'une sauvegarde."""
+
+    def __init__(self, stage: DailyBackupStage, message: str) -> None:
+        self.stage = stage
+        super().__init__(message)
+
+
 @dataclass(frozen=True, slots=True)
 class GitWorkspaceState:
     """Etat Git local lu sans acces reseau et sans ecriture."""
@@ -221,6 +238,20 @@ class DailyResultsPublication:
     outcome: str
     results_commit: str
     results_paths: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class DailyBackupPublication:
+    """Archive locale verifiee et prete au telechargement."""
+
+    filename: str
+    relative_path: str
+    archive_sha256: str
+    archive_size_bytes: int
+    file_count: int
+    raw_archive_count: int
+    code_version: str
+    archive_bytes: bytes
 
 
 @dataclass(frozen=True, slots=True)
@@ -758,6 +789,91 @@ def refresh_daily_mlb_data(
     )
 
 
+def execute_verified_local_backup(
+    *,
+    project_directory: Path = PROJECT_ROOT,
+) -> DailyBackupPublication:
+    """Cree, reverifie et charge une sauvegarde locale telechargeable."""
+    project = Path(project_directory).resolve(strict=True)
+    git = inspect_git_workspace(project_directory=project)
+    if not git.ready_for_publication or git.head_commit is None:
+        raise DailyBackupAutomationError(
+            DailyBackupStage.PREFLIGHT,
+            "Le depot doit etre propre, sur main et synchronise avant la sauvegarde.",
+        )
+
+    from src import backup_service
+
+    try:
+        result = backup_service.create_backup_bundle(
+            database_path=project / "data" / "fredo_mlb.db",
+            data_directory=project / "data",
+            backup_directory=project / "backups",
+            code_version=git.head_commit,
+        )
+    except backup_service.BackupError as error:
+        raise DailyBackupAutomationError(
+            DailyBackupStage.CREATION,
+            str(error),
+        ) from error
+
+    if type(result) is not backup_service.BackupResult:
+        raise DailyBackupAutomationError(
+            DailyBackupStage.CREATION,
+            "Le service a retourne un recu de sauvegarde inattendu.",
+        )
+
+    try:
+        archive_path = Path(result.absolute_path).resolve(strict=True)
+        backup_directory = (project / "backups").resolve(strict=True)
+        verification = backup_service.verify_backup_bundle(archive_path)
+        archive_bytes = archive_path.read_bytes()
+    except (backup_service.BackupError, OSError) as error:
+        raise DailyBackupAutomationError(
+            DailyBackupStage.VERIFICATION,
+            "La sauvegarde creee ne peut pas etre reverifiee.",
+        ) from error
+
+    filename = archive_path.name
+    calculated_sha256 = hashlib.sha256(archive_bytes).hexdigest()
+    valid = (
+        type(verification) is backup_service.BackupVerification
+        and archive_path.parent == backup_directory
+        and filename.startswith("fredo-mlb-backup-")
+        and filename.endswith(".tar.gz")
+        and result.relative_path == f"backups/{filename}"
+        and result.absolute_path == archive_path
+        and result.archive_sha256 == calculated_sha256
+        and result.archive_size_bytes == len(archive_bytes)
+        and result.archive_size_bytes > 0
+        and result.file_count > 0
+        and 0 <= result.raw_archive_count <= result.file_count
+        and result.code_version == git.head_commit
+        and verification.absolute_path == archive_path
+        and verification.archive_sha256 == result.archive_sha256
+        and verification.archive_size_bytes == result.archive_size_bytes
+        and verification.file_count == result.file_count
+        and verification.raw_archive_count == result.raw_archive_count
+        and verification.code_version == result.code_version
+    )
+    if not valid:
+        raise DailyBackupAutomationError(
+            DailyBackupStage.VERIFICATION,
+            "Le recu et la relecture de la sauvegarde divergent.",
+        )
+
+    return DailyBackupPublication(
+        filename=filename,
+        relative_path=result.relative_path,
+        archive_sha256=result.archive_sha256,
+        archive_size_bytes=result.archive_size_bytes,
+        file_count=result.file_count,
+        raw_archive_count=result.raw_archive_count,
+        code_version=result.code_version,
+        archive_bytes=archive_bytes,
+    )
+
+
 def _run_git_mutation(
     project_directory: Path,
     arguments: Sequence[str],
@@ -1288,6 +1404,9 @@ def execute_daily_results_publication(
 
 
 __all__ = [
+    "DailyBackupAutomationError",
+    "DailyBackupPublication",
+    "DailyBackupStage",
     "DailyAction",
     "DailyActionState",
     "DailyOperationsError",
@@ -1304,6 +1423,7 @@ __all__ = [
     "build_daily_operations_overview",
     "execute_daily_prediction_publication",
     "execute_daily_results_publication",
+    "execute_verified_local_backup",
     "inspect_daily_operations",
     "inspect_git_workspace",
     "inspect_prediction_slot",

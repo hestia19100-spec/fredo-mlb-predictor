@@ -398,6 +398,13 @@ class LPFEdgeDashboardTests(unittest.TestCase):
         self.assertIn("DailyPredictionAutomationError", source)
         self.assertIn("execute_daily_results_publication", source)
         self.assertIn("DailyResultsAutomationError", source)
+        self.assertIn("execute_verified_local_backup", source)
+        self.assertIn("DailyBackupAutomationError", source)
+        self.assertIn("backup_clicked", source)
+        self.assertIn("st.download_button", source)
+        self.assertIn('on_click="ignore"', source)
+        self.assertIn("backup.archive_bytes", source)
+        self.assertIn("backup.archive_sha256", source)
         self.assertIn("prediction_clicked", source)
         self.assertIn(
             "disabled=not daily.prediction_action.can_execute",

@@ -9,12 +9,14 @@ import streamlit as st
 
 from src.ingestion_service import ScheduleIngestionError
 from src.lpf_edge_daily_operations import (
+    DailyBackupAutomationError,
     DailyActionState,
     DailyOperationsError,
     DailyPredictionAutomationError,
     DailyResultsAutomationError,
     execute_daily_prediction_publication,
     execute_daily_results_publication,
+    execute_verified_local_backup,
     inspect_daily_operations,
     refresh_daily_mlb_data,
 )
@@ -149,7 +151,7 @@ if daily is not None:
         f"Journée MLB du {daily.target_date.strftime('%d/%m/%Y')}. "
         "Chaque bouton vérifie automatiquement si l’action est autorisée."
     )
-    data_column, prediction_column, result_column = st.columns(3)
+    data_column, prediction_column, result_column, backup_column = st.columns(4)
     with data_column:
         st.markdown("#### Données MLB")
         render_action_status(daily.data_action)
@@ -185,6 +187,31 @@ if daily is not None:
                 None
                 if daily.results_action.can_execute
                 else daily.results_action.message
+            ),
+        )
+    with backup_column:
+        st.markdown("#### Sauvegarde")
+        backup_ready = daily.git.ready_for_publication
+        st.markdown(
+            '<span class="lpf-action-state lpf-action-'
+            f'{"ready" if backup_ready else "blocked"}">'
+            f'{"PRÊT" if backup_ready else "BLOQUÉ"}</span>',
+            unsafe_allow_html=True,
+        )
+        st.caption(
+            "Crée une archive locale vérifiée et téléchargeable."
+            if backup_ready
+            else "Le dépôt doit être propre, sur main et synchronisé."
+        )
+        backup_clicked = st.button(
+            "Créer une sauvegarde",
+            type="primary",
+            disabled=not backup_ready,
+            use_container_width=True,
+            help=(
+                None
+                if backup_ready
+                else "Publie ou annule les changements locaux avant la sauvegarde."
             ),
         )
 
@@ -298,6 +325,34 @@ if daily is not None:
                     "results_commit": publication.results_commit,
                 }
                 st.rerun()
+
+    if backup_clicked:
+        with st.spinner("Création et vérification de la sauvegarde en cours..."):
+            try:
+                backup = execute_verified_local_backup()
+            except DailyBackupAutomationError as error:
+                st.error(
+                    f"Sauvegarde arrêtée à l’étape {error.stage.value} : {error}"
+                )
+            except OSError as error:
+                st.error(f"La sauvegarde locale a été interrompue : {error}")
+            else:
+                st.success("Sauvegarde créée et vérifiée.")
+                st.caption(
+                    f"Archive : `{backup.relative_path}`  \n"
+                    f"Taille : {backup.archive_size_bytes} octets  \n"
+                    f"Fichiers : {backup.file_count}, dont "
+                    f"{backup.raw_archive_count} archives MLB  \n"
+                    f"SHA-256 : `{backup.archive_sha256}`"
+                )
+                st.download_button(
+                    "Télécharger la sauvegarde",
+                    data=backup.archive_bytes,
+                    file_name=backup.filename,
+                    mime="application/gzip",
+                    on_click="ignore",
+                    use_container_width=True,
+                )
 
 st.divider()
 st.subheader("Consultation des prédictions certifiées")

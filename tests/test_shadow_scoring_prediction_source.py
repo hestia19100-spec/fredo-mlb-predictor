@@ -592,6 +592,32 @@ class ShadowScoringPredictionSourceTests(unittest.TestCase):
                         replace(batch, predictions_bytes=forged)
                     )
 
+    def test_canonical_float_complements_survive_decimal_rendering(self) -> None:
+        """Le texte canonique peut sommer a 1 plus ou moins 6e-17."""
+        batch = self._real_batch()
+        original_rows = [
+            line.split(",")
+            for line in batch.predictions_bytes.decode("utf-8").splitlines()[1:]
+        ]
+        probability_pairs = (
+            ("0.46839344147795409", "0.53160655852204597"),
+            ("0.4806587455251356", "0.51934125447486434"),
+        )
+        for p_home, p_away in probability_pairs:
+            with self.subTest(p_home=p_home, p_away=p_away):
+                rows = [list(row) for row in original_rows]
+                rows[0][22] = p_home
+                rows[0][23] = p_away
+                rendered = shadow._canonical_csv_bytes(
+                    shadow._PREDICTIONS_COLUMNS,
+                    rows,
+                )
+                predictions = scoring._read_certified_predictions_from_blob(
+                    replace(batch, predictions_bytes=rendered)
+                )
+                self.assertEqual(predictions[0].p_home_win, p_home)
+                self.assertEqual(predictions[0].p_away_win, p_away)
+
     def test_loader_has_no_outcome_network_sqlite_or_model_side_effect(self) -> None:
         """La barriere de provenance ne consulte aucune source du lendemain."""
         source_text = inspect.getsource(

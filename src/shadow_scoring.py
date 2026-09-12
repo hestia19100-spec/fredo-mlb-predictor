@@ -1506,11 +1506,11 @@ def _read_certified_predictions_from_blob(
         try:
             home_float = float(row[22])
             away_float = float(row[23])
-            home_decimal = _parse_probability_text(
+            _parse_probability_text(
                 row[22],
                 field_name=f"predictions[{row_number}].p_home_win",
             )
-            away_decimal = _parse_probability_text(
+            _parse_probability_text(
                 row[23],
                 field_name=f"predictions[{row_number}].p_away_win",
             )
@@ -1546,7 +1546,6 @@ def _read_certified_predictions_from_blob(
             or shadow._format_probability_float(home_float) != row[22]
             or shadow._format_probability_float(away_float) != row[23]
             or away_float != 1.0 - home_float
-            or home_decimal + away_decimal != Decimal("1")
         ):
             raise shadow.ShadowPredictionError(
                 "Une ligne Git certifiee diverge du contrat shadow v2."

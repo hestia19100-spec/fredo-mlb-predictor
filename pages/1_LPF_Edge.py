@@ -12,7 +12,9 @@ from src.lpf_edge_daily_operations import (
     DailyActionState,
     DailyOperationsError,
     DailyPredictionAutomationError,
+    DailyResultsAutomationError,
     execute_daily_prediction_publication,
+    execute_daily_results_publication,
     inspect_daily_operations,
     refresh_daily_mlb_data,
 )
@@ -173,11 +175,16 @@ if daily is not None:
     with result_column:
         st.markdown("#### Résultats")
         render_action_status(daily.results_action)
-        st.button(
+        results_clicked = st.button(
             daily.results_action.label,
-            disabled=True,
+            type="primary",
+            disabled=not daily.results_action.can_execute,
             use_container_width=True,
-            help="Ce bouton sera activé lors de son étape sécurisée.",
+            help=(
+                None
+                if daily.results_action.can_execute
+                else daily.results_action.message
+            ),
         )
 
     if refresh_clicked:
@@ -239,6 +246,50 @@ if daily is not None:
                     "batch_id": publication.batch_id,
                     "results_commit": publication.results_commit,
                     "certification_commit": publication.certification_commit,
+                }
+                st.rerun()
+
+    results_feedback = st.session_state.pop(
+        "lpf_edge_results_success",
+        None,
+    )
+    if results_feedback is not None:
+        if results_feedback["outcome"] == "COMPLETED":
+            st.success(
+                "Résultats récupérés, vérifiés et publiés sur GitHub."
+            )
+        else:
+            st.warning(
+                "La réponse MLB a échoué de façon contrôlée. "
+                "Les preuves de cette tentative ont été publiées sur GitHub."
+            )
+        st.caption(
+            f"Observation : `{results_feedback['observation_id']}`  \n"
+            f"Commit du scoring : `{results_feedback['results_commit']}`"
+        )
+
+    if results_clicked:
+        with st.spinner(
+            "Récupération, vérification et publication des résultats en cours..."
+        ):
+            try:
+                publication = execute_daily_results_publication(
+                    daily.target_date
+                )
+            except DailyResultsAutomationError as error:
+                st.error(
+                    f"Opération arrêtée à l’étape {error.stage.value} : {error}"
+                )
+            except OSError as error:
+                st.error(
+                    "Opération arrêtée avant sa fin : "
+                    f"{error}"
+                )
+            else:
+                st.session_state["lpf_edge_results_success"] = {
+                    "observation_id": publication.observation_id,
+                    "outcome": publication.outcome,
+                    "results_commit": publication.results_commit,
                 }
                 st.rerun()
 

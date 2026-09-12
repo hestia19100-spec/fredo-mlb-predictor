@@ -388,7 +388,7 @@ class LPFEdgeDashboardTests(unittest.TestCase):
         self.assertNotIn("import joblib", source)
         self.assertNotIn("predict_proba", source)
 
-    def test_streamlit_page_enables_only_controlled_data_and_prediction_actions(self) -> None:
+    def test_streamlit_page_enables_only_controlled_daily_actions(self) -> None:
         source = Path(__file__).parents[1].joinpath(
             "pages", "1_LPF_Edge.py"
         ).read_text(encoding="utf-8")
@@ -396,19 +396,28 @@ class LPFEdgeDashboardTests(unittest.TestCase):
         self.assertIn("refresh_daily_mlb_data", source)
         self.assertIn("execute_daily_prediction_publication", source)
         self.assertIn("DailyPredictionAutomationError", source)
+        self.assertIn("execute_daily_results_publication", source)
+        self.assertIn("DailyResultsAutomationError", source)
         self.assertIn("prediction_clicked", source)
         self.assertIn(
             "disabled=not daily.prediction_action.can_execute",
             source,
         )
         self.assertIn("lpf_edge_prediction_success", source)
+        self.assertIn("results_clicked", source)
+        self.assertIn(
+            "disabled=not daily.results_action.can_execute",
+            source,
+        )
+        self.assertIn("lpf_edge_results_success", source)
+        self.assertIn("publication.observation_id", source)
+        self.assertIn("publication.results_commit", source)
         self.assertIn("st.rerun()", source)
         self.assertNotIn("run_schedule_ingestion", source)
         self.assertNotIn("shadow_prediction", source)
         self.assertNotIn("shadow_certification", source)
         self.assertNotIn("shadow_scoring", source)
         self.assertIn("daily.results_action.label", source)
-        self.assertIn('disabled=True', source)
         self.assertIn("Centre d’actions quotidien", source)
         self.assertIn("lpf-result-correct", source)
         self.assertIn("lpf-result-incorrect", source)

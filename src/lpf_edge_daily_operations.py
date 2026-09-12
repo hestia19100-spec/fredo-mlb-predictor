@@ -44,6 +44,16 @@ CERTIFICATION_ROOT = Path(
 SCORING_ROOT = Path(
     "shadow_scores/logistic_team_form_v1_platt_shadow_v2_2026_v1"
 )
+PREDICTION_SUCCESS_FILENAMES = (
+    "COMPLETED",
+    "RESERVED",
+    "activation_reverification.remote.json.gz",
+    "candidate_ledger.csv",
+    "features.csv",
+    "predictions.csv",
+    "receipt.json",
+    "source_snapshot.json.gz",
+)
 _FINAL_STATUS_CODES = frozenset({"F", "FG", "FO", "FR"})
 _FINAL_STATUS_DETAILS = frozenset(
     {"FINAL", "GAME OVER", "COMPLETED EARLY"}
@@ -76,6 +86,24 @@ class PredictionSlotState(str, Enum):
     PARTIAL = "PARTIAL"
 
 
+class DailyPredictionStage(str, Enum):
+    """Etape exacte atteinte par l'automatisation des predictions."""
+
+    PREFLIGHT = "PREFLIGHT"
+    PREDICTION = "PREDICTION"
+    RESULTS_PUBLICATION = "RESULTS_PUBLICATION"
+    CERTIFICATION = "CERTIFICATION"
+    CERTIFICATION_PUBLICATION = "CERTIFICATION_PUBLICATION"
+
+
+class DailyPredictionAutomationError(DailyOperationsError):
+    """Echec ferme de la chaine prediction, GitHub et certification."""
+
+    def __init__(self, stage: DailyPredictionStage, message: str) -> None:
+        self.stage = stage
+        super().__init__(message)
+
+
 @dataclass(frozen=True, slots=True)
 class GitWorkspaceState:
     """Etat Git local lu sans acces reseau et sans ecriture."""
@@ -92,6 +120,8 @@ class GitWorkspaceState:
         return (
             self.available
             and self.branch == "main"
+            and self.head_commit is not None
+            and self.origin_main_commit is not None
             and self.clean
             and self.synchronized
         )
@@ -138,6 +168,34 @@ class DailyOperationsOverview:
     prediction_action: DailyAction
     results_action: DailyAction
     integrity_errors: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class DailyPredictionPublication:
+    """Recu final d'une prediction publiee et certifiee sur GitHub."""
+
+    target_date: date
+    batch_id: str
+    results_commit: str
+    certification_commit: str
+    results_paths: tuple[str, ...]
+    certification_paths: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _PredictionEngineOutcome:
+    slot_path: Path
+    batch_id: str
+    batch_status: str
+    receipt_sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class _CertificationOutcome:
+    batch_id: str
+    results_commit: str
+    certification_path: Path
+    evidence_path: Path
 
 
 def _action(
@@ -631,15 +689,370 @@ def refresh_daily_mlb_data(
     )
 
 
+def _run_git_mutation(
+    project_directory: Path,
+    arguments: Sequence[str],
+    *,
+    timeout_seconds: int = 120,
+) -> str:
+    """Execute une commande Git explicite, sans shell ni invite interactive."""
+    environment = os.environ.copy()
+    environment["GIT_TERMINAL_PROMPT"] = "0"
+    completed = subprocess.run(
+        ["git", *arguments],
+        cwd=project_directory,
+        env=environment,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=timeout_seconds,
+    )
+    return completed.stdout.strip()
+
+
+def _git_paths(project_directory: Path, arguments: Sequence[str]) -> tuple[str, ...]:
+    output = _run_git_mutation(project_directory, arguments)
+    return tuple(line for line in output.splitlines() if line)
+
+
+def _require_exact_publication_changes(
+    project_directory: Path,
+    expected_paths: tuple[str, ...],
+    *,
+    staged: bool,
+    stage: DailyPredictionStage,
+) -> None:
+    expected = set(expected_paths)
+    untracked = set(
+        _git_paths(
+            project_directory,
+            ("ls-files", "--others", "--exclude-standard"),
+        )
+    )
+    unstaged = set(
+        _git_paths(project_directory, ("diff", "--name-only"))
+    )
+    cached = set(
+        _git_paths(project_directory, ("diff", "--cached", "--name-only"))
+    )
+    valid = (
+        not untracked
+        and not unstaged
+        and cached == expected
+        if staged
+        else untracked == expected and not unstaged and not cached
+    )
+    if not valid:
+        raise DailyPredictionAutomationError(
+            stage,
+            "Les changements Git ne correspondent pas exactement aux preuves attendues.",
+        )
+
+
+def _commit_and_push_exact_paths(
+    *,
+    project_directory: Path,
+    expected_paths: tuple[str, ...],
+    expected_parent_commit: str,
+    commit_message: str,
+    stage: DailyPredictionStage,
+) -> str:
+    """Ajoute, commite et pousse uniquement une liste fermee de preuves."""
+    try:
+        branch = _run_git_mutation(
+            project_directory,
+            ("branch", "--show-current"),
+        )
+        head_before = _run_git_mutation(
+            project_directory,
+            ("rev-parse", "HEAD"),
+        )
+        remote_before = _run_git_mutation(
+            project_directory,
+            ("rev-parse", "origin/main"),
+        )
+        if (
+            branch != "main"
+            or head_before != expected_parent_commit
+            or remote_before != expected_parent_commit
+        ):
+            raise DailyPredictionAutomationError(
+                stage,
+                "La base Git a change depuis le controle precedent.",
+            )
+        _require_exact_publication_changes(
+            project_directory,
+            expected_paths,
+            staged=False,
+            stage=stage,
+        )
+        _run_git_mutation(project_directory, ("add", "--", *expected_paths))
+        _require_exact_publication_changes(
+            project_directory,
+            expected_paths,
+            staged=True,
+            stage=stage,
+        )
+        _run_git_mutation(project_directory, ("diff", "--cached", "--check"))
+        _run_git_mutation(
+            project_directory,
+            ("commit", "-m", commit_message),
+        )
+        commit = _run_git_mutation(project_directory, ("rev-parse", "HEAD"))
+        if len(commit) != 40 or any(character not in "0123456789abcdef" for character in commit):
+            raise DailyPredictionAutomationError(
+                stage,
+                "Le commit produit par Git est invalide.",
+            )
+        _run_git_mutation(
+            project_directory,
+            ("push", "origin", "main"),
+            timeout_seconds=180,
+        )
+        remote = _run_git_mutation(
+            project_directory,
+            ("rev-parse", "origin/main"),
+        )
+        status = _run_git_mutation(
+            project_directory,
+            ("status", "--porcelain=v1", "--untracked-files=all"),
+        )
+    except DailyPredictionAutomationError:
+        raise
+    except (OSError, subprocess.SubprocessError, UnicodeError) as error:
+        raise DailyPredictionAutomationError(
+            stage,
+            "La publication GitHub a ete interrompue ; aucune nouvelle etape "
+            "n'a ete lancee apres cet echec.",
+        ) from error
+    if remote != commit or status:
+        raise DailyPredictionAutomationError(
+            stage,
+            "Le commit local n'est pas proprement synchronise avec origin/main.",
+        )
+    return commit
+
+
+def _execute_prediction_engine(
+    target_date: date,
+    *,
+    project_directory: Path,
+    database_path: Path,
+    data_directory: Path,
+) -> _PredictionEngineOutcome:
+    from src import shadow_prediction
+
+    result = shadow_prediction.execute_shadow_prediction(
+        target_date,
+        project_directory=project_directory,
+        database_path=database_path,
+        data_directory=data_directory,
+    )
+    if type(result) is not shadow_prediction.ShadowCompletionPublication:
+        raise DailyPredictionAutomationError(
+            DailyPredictionStage.PREDICTION,
+            "Le moteur n'a pas produit une nouvelle fermeture terminale exacte.",
+        )
+    return _PredictionEngineOutcome(
+        slot_path=result.slot_path,
+        batch_id=result.batch_id,
+        batch_status=result.batch_status,
+        receipt_sha256=result.receipt_sha256,
+    )
+
+
+def _certify_prediction(
+    target_date: date,
+    results_commit: str,
+    *,
+    project_directory: Path,
+) -> _CertificationOutcome:
+    from src import shadow_certification
+
+    result = shadow_certification.certify_shadow_prediction(
+        target_date.isoformat(),
+        results_commit,
+        project_directory=project_directory,
+    )
+    if type(result) is not shadow_certification.ShadowCertificationPublication:
+        raise DailyPredictionAutomationError(
+            DailyPredictionStage.CERTIFICATION,
+            "Le service n'a pas produit une certification terminale exacte.",
+        )
+    return _CertificationOutcome(
+        batch_id=result.batch_id,
+        results_commit=result.results_commit,
+        certification_path=result.certification_path,
+        evidence_path=result.raw_evidence_path,
+    )
+
+
+def _french_date_label(value: date) -> str:
+    months = (
+        "janvier", "fevrier", "mars", "avril", "mai", "juin",
+        "juillet", "aout", "septembre", "octobre", "novembre", "decembre",
+    )
+    return f"{value.day} {months[value.month - 1]} {value.year}"
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def execute_daily_prediction_publication(
+    target_date: date | None = None,
+    *,
+    project_directory: Path = PROJECT_ROOT,
+    database_path: Path = DATABASE_PATH,
+    data_directory: Path = DATA_DIR,
+) -> DailyPredictionPublication:
+    """Cree, pousse et certifie le lot du jour sans option de contournement."""
+    instant = _utc_now()
+    if not isinstance(instant, datetime) or instant.tzinfo is None:
+        raise DailyPredictionAutomationError(
+            DailyPredictionStage.PREFLIGHT,
+            "L'horloge de la prediction doit etre un instant UTC valide.",
+        )
+    instant = instant.astimezone(timezone.utc)
+    paris_today = instant.astimezone(PARIS_TIMEZONE).date()
+    selected = target_date or paris_today
+    if not isinstance(selected, date) or isinstance(selected, datetime):
+        raise TypeError("target_date doit etre une date exacte.")
+    if selected != paris_today:
+        raise DailyPredictionAutomationError(
+            DailyPredictionStage.PREFLIGHT,
+            "Le moteur quotidien peut seulement traiter aujourd'hui.",
+        )
+    project = Path(project_directory).resolve(strict=True)
+    overview = inspect_daily_operations(
+        selected,
+        now_utc=instant,
+        project_directory=project,
+        database_path=database_path,
+    )
+    if overview.prediction_action.state is not DailyActionState.READY:
+        raise DailyPredictionAutomationError(
+            DailyPredictionStage.PREFLIGHT,
+            overview.prediction_action.message,
+        )
+    starting_commit = overview.git.head_commit
+    if starting_commit is None:
+        raise DailyPredictionAutomationError(
+            DailyPredictionStage.PREFLIGHT,
+            "Le commit Git de depart est absent.",
+        )
+
+    try:
+        prediction = _execute_prediction_engine(
+            selected,
+            project_directory=project,
+            database_path=database_path,
+            data_directory=data_directory,
+        )
+    except DailyPredictionAutomationError:
+        raise
+    except Exception as error:
+        raise DailyPredictionAutomationError(
+            DailyPredictionStage.PREDICTION,
+            "Le moteur de prediction s'est arrete en conservant ses preuves locales.",
+        ) from error
+
+    expected_slot = project / PREDICTION_ROOT / selected.isoformat()
+    if prediction.slot_path.resolve() != expected_slot.resolve():
+        raise DailyPredictionAutomationError(
+            DailyPredictionStage.PREDICTION,
+            "Le moteur a retourne un dossier de prediction inattendu.",
+        )
+    results_paths = tuple(
+        (PREDICTION_ROOT / selected.isoformat() / name).as_posix()
+        for name in PREDICTION_SUCCESS_FILENAMES
+    )
+    label = _french_date_label(selected)
+    results_commit = _commit_and_push_exact_paths(
+        project_directory=project,
+        expected_paths=results_paths,
+        expected_parent_commit=starting_commit,
+        commit_message=f"Enregistrer le lot fantome MLB du {label}",
+        stage=DailyPredictionStage.RESULTS_PUBLICATION,
+    )
+
+    try:
+        certification = _certify_prediction(
+            selected,
+            results_commit,
+            project_directory=project,
+        )
+    except DailyPredictionAutomationError:
+        raise
+    except Exception as error:
+        raise DailyPredictionAutomationError(
+            DailyPredictionStage.CERTIFICATION,
+            "La certification s'est arretee en conservant ses preuves locales.",
+        ) from error
+    if (
+        certification.batch_id != prediction.batch_id
+        or certification.results_commit != results_commit
+    ):
+        raise DailyPredictionAutomationError(
+            DailyPredictionStage.CERTIFICATION,
+            "La certification ne correspond pas au lot qui vient d'etre publie.",
+        )
+    certification_paths = tuple(
+        sorted(
+            (
+                certification.certification_path.relative_to(project).as_posix(),
+                certification.evidence_path.relative_to(project).as_posix(),
+            )
+        )
+    )
+    expected_certification_paths = tuple(
+        sorted(
+            (
+                (CERTIFICATION_ROOT / f"{selected.isoformat()}.json").as_posix(),
+                (
+                    CERTIFICATION_ROOT
+                    / f"{selected.isoformat()}.remote.json.gz"
+                ).as_posix(),
+            )
+        )
+    )
+    if certification_paths != expected_certification_paths:
+        raise DailyPredictionAutomationError(
+            DailyPredictionStage.CERTIFICATION,
+            "Les chemins de certification produits sont inattendus.",
+        )
+    certification_commit = _commit_and_push_exact_paths(
+        project_directory=project,
+        expected_paths=certification_paths,
+        expected_parent_commit=results_commit,
+        commit_message=(
+            f"Enregistrer la certification prospective MLB du {label}"
+        ),
+        stage=DailyPredictionStage.CERTIFICATION_PUBLICATION,
+    )
+    return DailyPredictionPublication(
+        target_date=selected,
+        batch_id=prediction.batch_id,
+        results_commit=results_commit,
+        certification_commit=certification_commit,
+        results_paths=results_paths,
+        certification_paths=certification_paths,
+    )
+
+
 __all__ = [
     "DailyAction",
     "DailyActionState",
     "DailyOperationsError",
     "DailyOperationsOverview",
+    "DailyPredictionAutomationError",
+    "DailyPredictionPublication",
+    "DailyPredictionStage",
     "GitWorkspaceState",
     "LocalGameDayState",
     "PredictionSlotState",
     "build_daily_operations_overview",
+    "execute_daily_prediction_publication",
     "inspect_daily_operations",
     "inspect_git_workspace",
     "inspect_prediction_slot",

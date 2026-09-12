@@ -559,6 +559,33 @@ class ShadowScoringAdjudicationTests(unittest.TestCase):
                         self._evidence([self._game(70)]),
                     )
 
+    def test_binary_float_complements_survive_decimal_rendering(self) -> None:
+        """Les complements .17g reels restent valides pendant l'adjudication."""
+        probability_pairs = (
+            ("0.46839344147795409", "0.53160655852204597"),
+            ("0.4806587455251356", "0.51934125447486434"),
+        )
+        for index, (p_home, p_away) in enumerate(
+            probability_pairs,
+            start=71,
+        ):
+            with self.subTest(p_home=p_home, p_away=p_away):
+                row = scoring.adjudicate_scoring_predictions(
+                    [
+                        self._prediction(
+                            index,
+                            p_home_win=p_home,
+                            p_away_win=p_away,
+                        )
+                    ],
+                    self._evidence([self._game(index)]),
+                ).adjudications[0]
+                self.assertEqual(
+                    (row.p_home_win, row.p_away_win),
+                    (p_home, p_away),
+                )
+                self.assertEqual(row.outcome_status, "SCORED_FINAL")
+
     def test_every_prediction_is_retained_in_prediction_id_order(self) -> None:
         """Le resultat ne peut filtrer ni reordonner la cohorte selon l'issue."""
         predictions = [

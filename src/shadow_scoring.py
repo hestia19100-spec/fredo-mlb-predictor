@@ -2944,9 +2944,16 @@ def _validate_certified_prediction(
         prediction.p_away_win,
         field_name="p_away_win",
     )
-    if home_probability + away_probability != Decimal(1):
+    # Le moteur de prediction fige calcule d'abord p_home en binaire puis
+    # p_away avec exactement ``1.0 - p_home`` avant le rendu decimal .17g.
+    # Ces deux textes canoniques peuvent donc sommer a 1 +/- 6e-17 en Decimal
+    # tout en etant les complements binaires exacts publies par le moteur.
+    home_float = float(prediction.p_home_win)
+    away_float = float(prediction.p_away_win)
+    if away_float != 1.0 - home_float:
         raise ScoringAdjudicationError(
-            "Les probabilites domicile et exterieur ne totalisent pas exactement 1."
+            "Les probabilites domicile et exterieur ne sont pas les "
+            "complements binaires attendus."
         )
     return home_probability, away_probability
 

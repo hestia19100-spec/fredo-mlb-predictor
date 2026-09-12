@@ -14,7 +14,7 @@ from src import shadow_scoring
 
 
 TODAY = date(2026, 9, 13)
-TARGET = date(2026, 9, 12)
+TARGET = date(2026, 9, 11)
 NOW = datetime(2026, 9, 13, 8, 0, tzinfo=timezone.utc)
 RESULTS_COMMIT = "a" * 40
 OBSERVATION_ID = "b" * 64
@@ -49,6 +49,7 @@ class LPFEdgeDailyResultsExecutionTests(unittest.TestCase):
     def _overview(self, action: operations.DailyAction | None = None) -> mock.Mock:
         return mock.Mock(
             results_action=action or self._action(),
+            results_target_date=TARGET,
             git=mock.Mock(head_commit="e" * 40),
         )
 

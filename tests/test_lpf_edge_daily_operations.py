@@ -46,7 +46,8 @@ class LPFEdgeDailyOperationsTests(unittest.TestCase):
             "git": self._git(),
             "prediction_slot_state": operations.PredictionSlotState.ABSENT,
             "prediction_certified": False,
-            "previous_certified": True,
+            "results_target_date": TARGET - timedelta(days=1),
+            "has_past_certified": True,
             "latest_score_pending_count": None,
             "checkpoint_slot_exists": False,
             "integrity_errors": (),
@@ -132,19 +133,35 @@ class LPFEdgeDailyOperationsTests(unittest.TestCase):
         self.assertEqual(overview.results_action.state, operations.DailyActionState.TOO_EARLY)
 
     def test_completed_results_are_not_run_again(self) -> None:
-        overview = self._overview(latest_score_pending_count=0)
+        overview = self._overview(
+            results_target_date=None,
+            latest_score_pending_count=None,
+        )
         self.assertEqual(overview.results_action.state, operations.DailyActionState.DONE)
 
     def test_consumed_checkpoint_is_never_reopened(self) -> None:
         overview = self._overview(checkpoint_slot_exists=True)
         self.assertEqual(overview.results_action.state, operations.DailyActionState.BLOCKED)
 
-    def test_missing_certified_previous_day_disables_results(self) -> None:
-        overview = self._overview(previous_certified=False)
+    def test_missing_past_certified_day_disables_results(self) -> None:
+        overview = self._overview(
+            results_target_date=None,
+            has_past_certified=False,
+        )
         self.assertEqual(
             overview.results_action.state,
             operations.DailyActionState.NOT_AVAILABLE,
         )
+
+    def test_older_pending_certified_day_can_be_selected(self) -> None:
+        older = TARGET - timedelta(days=2)
+        overview = self._overview(
+            results_target_date=older,
+            latest_score_pending_count=2,
+        )
+        self.assertEqual(overview.results_target_date, older)
+        self.assertEqual(overview.results_action.state, operations.DailyActionState.READY)
+        self.assertIn(older.strftime("%d/%m/%Y"), overview.results_action.message)
 
     def test_git_problem_blocks_prediction_and_results_not_data(self) -> None:
         overview = self._overview(git=self._git(ready=False))
@@ -277,6 +294,63 @@ class LPFEdgeDailyOperationsTests(unittest.TestCase):
             )
         self.assertEqual(overview.target_date, TARGET)
         network.assert_not_called()
+
+    def test_inspector_selects_oldest_certified_day_still_pending(self) -> None:
+        oldest = TARGET - timedelta(days=3)
+        pending = TARGET - timedelta(days=2)
+        newest = TARGET - timedelta(days=1)
+        summaries = {
+            oldest: SimpleNamespace(pending_count=0),
+            pending: SimpleNamespace(pending_count=2),
+        }
+
+        def load_day(value, **_kwargs):
+            return SimpleNamespace(predictions=(value.isoformat(),))
+
+        def load_summary(value, **_kwargs):
+            return summaries[value]
+
+        with (
+            mock.patch.object(
+                operations,
+                "load_local_game_day_state",
+                return_value=self._games(),
+            ),
+            mock.patch.object(
+                operations,
+                "inspect_git_workspace",
+                return_value=self._git(),
+            ),
+            mock.patch.object(
+                operations,
+                "inspect_prediction_slot",
+                return_value=operations.PredictionSlotState.ABSENT,
+            ),
+            mock.patch.object(
+                operations,
+                "list_certified_prediction_dates",
+                return_value=[oldest, pending, newest],
+            ),
+            mock.patch.object(
+                operations,
+                "load_certified_prediction_day",
+                side_effect=load_day,
+            ),
+            mock.patch.object(
+                operations,
+                "load_latest_score_summary",
+                side_effect=load_summary,
+            ) as scores,
+        ):
+            overview = operations.inspect_daily_operations(
+                TARGET,
+                now_utc=NOW,
+                project_directory=Path("project"),
+                database_path=Path("database"),
+            )
+        self.assertEqual(overview.results_target_date, pending)
+        self.assertEqual(overview.latest_score_pending_count, 2)
+        self.assertEqual(scores.call_count, 2)
 
     def test_daily_data_refresh_uses_only_audited_ingestion_service(self) -> None:
         expected = SimpleNamespace(run_id=42, games_received=15, games_saved=15)

@@ -191,6 +191,7 @@ class DailyOperationsOverview:
     git: GitWorkspaceState
     prediction_slot_state: PredictionSlotState
     prediction_certified: bool
+    results_target_date: date | None
     latest_score_pending_count: int | None
     data_action: DailyAction
     prediction_action: DailyAction
@@ -357,7 +358,8 @@ def _results_action(
     target_date: date,
     paris_today: date,
     now_utc: datetime,
-    previous_certified: bool,
+    results_target_date: date | None,
+    has_past_certified: bool,
     latest_pending_count: int | None,
     checkpoint_slot_exists: bool,
     git_ready: bool,
@@ -378,19 +380,19 @@ def _results_action(
             DailyActionState.NOT_AVAILABLE,
             "Le centre quotidien doit être positionné sur la date d’aujourd’hui.",
         )
-    if not previous_certified:
+    if results_target_date is None and not has_past_certified:
         return _action(
             "results",
             label,
             DailyActionState.NOT_AVAILABLE,
-            "Aucune prédiction certifiée de la veille n’est à vérifier.",
+            "Aucune ancienne journée certifiée n’est à vérifier.",
         )
-    if latest_pending_count == 0:
+    if results_target_date is None:
         return _action(
             "results",
             label,
             DailyActionState.DONE,
-            "Toutes les prédictions certifiées de la veille sont déjà vérifiées.",
+            "Toutes les anciennes journées certifiées sont entièrement vérifiées.",
         )
     checkpoint_instant = datetime.combine(
         target_date,
@@ -422,7 +424,8 @@ def _results_action(
         "results",
         label,
         DailyActionState.READY,
-        "Le contrôle officiel des résultats de la veille peut être lancé.",
+        "Le contrôle officiel des résultats du "
+        f"{results_target_date.strftime('%d/%m/%Y')} peut être lancé.",
     )
 
 
@@ -435,7 +438,8 @@ def build_daily_operations_overview(
     git: GitWorkspaceState,
     prediction_slot_state: PredictionSlotState,
     prediction_certified: bool,
-    previous_certified: bool,
+    results_target_date: date | None,
+    has_past_certified: bool,
     latest_score_pending_count: int | None,
     checkpoint_slot_exists: bool,
     integrity_errors: Sequence[str] = (),
@@ -455,6 +459,14 @@ def build_daily_operations_overview(
         raise ValueError("Une erreur d’intégrité ne peut pas être vide.")
     if latest_score_pending_count is not None and latest_score_pending_count < 0:
         raise ValueError("Le nombre de résultats en attente est invalide.")
+    if results_target_date is not None and results_target_date >= target_date:
+        raise ValueError("La date de résultats doit précéder la journée courante.")
+    if results_target_date is None and latest_score_pending_count is not None:
+        raise ValueError("Un compteur de résultats exige une date à vérifier.")
+    if results_target_date is not None and not has_past_certified:
+        raise ValueError("Une date de résultats doit être certifiée.")
+    if results_target_date is not None and latest_score_pending_count == 0:
+        raise ValueError("Une journée entièrement vérifiée ne doit pas être relancée.")
     data_message = (
         f"{game_day.game_count} match(s) en base ; une actualisation MLB est possible."
         if game_day.game_count
@@ -480,7 +492,8 @@ def build_daily_operations_overview(
         target_date=target_date,
         paris_today=paris_today,
         now_utc=now_utc,
-        previous_certified=previous_certified,
+        results_target_date=results_target_date,
+        has_past_certified=has_past_certified,
         latest_pending_count=latest_score_pending_count,
         checkpoint_slot_exists=checkpoint_slot_exists,
         git_ready=git.ready_for_publication,
@@ -495,6 +508,7 @@ def build_daily_operations_overview(
         git=git,
         prediction_slot_state=prediction_slot_state,
         prediction_certified=prediction_certified,
+        results_target_date=results_target_date,
         latest_score_pending_count=latest_score_pending_count,
         data_action=data_action,
         prediction_action=prediction_action,
@@ -635,7 +649,6 @@ def inspect_daily_operations(
     instant = instant.astimezone(timezone.utc)
     paris_today = instant.astimezone(PARIS_TIMEZONE).date()
     selected = target_date or paris_today
-    previous = selected - timedelta(days=1)
     errors: list[str] = []
 
     try:
@@ -660,7 +673,8 @@ def inspect_daily_operations(
         certified_dates = []
         errors.append("Les certifications locales ne peuvent pas être inspectées.")
     certified = selected in certified_dates
-    previous_certified = previous in certified_dates
+    past_certified_dates = [value for value in certified_dates if value < selected]
+    results_target: date | None = None
     latest_pending: int | None = None
     try:
         if certified:
@@ -668,31 +682,37 @@ def inspect_daily_operations(
                 selected,
                 project_directory=project_directory,
             )
-        if previous_certified:
-            previous_day = load_certified_prediction_day(
-                previous,
+        for candidate in past_certified_dates:
+            candidate_day = load_certified_prediction_day(
+                candidate,
                 project_directory=project_directory,
             )
             summary = load_latest_score_summary(
-                previous,
-                certified_predictions=previous_day.predictions,
+                candidate,
+                certified_predictions=candidate_day.predictions,
                 project_directory=project_directory,
             )
-            if summary is not None:
-                latest_pending = summary.pending_count
+            if summary is None or summary.pending_count > 0:
+                results_target = candidate
+                latest_pending = (
+                    None if summary is None else summary.pending_count
+                )
+                break
     except LPFEdgeDashboardError as error:
         errors.append(str(error))
 
-    checkpoint_slot = (
-        project_directory
-        / SCORING_ROOT
-        / previous.isoformat()
-        / "observations"
-        / instant.date().isoformat()
-    )
-    checkpoint_exists = checkpoint_slot.exists()
-    if checkpoint_exists and checkpoint_slot.is_symlink():
-        errors.append("Le créneau de scoring local est un lien interdit.")
+    checkpoint_exists = False
+    if results_target is not None:
+        checkpoint_slot = (
+            project_directory
+            / SCORING_ROOT
+            / results_target.isoformat()
+            / "observations"
+            / instant.date().isoformat()
+        )
+        checkpoint_exists = checkpoint_slot.exists()
+        if checkpoint_exists and checkpoint_slot.is_symlink():
+            errors.append("Le créneau de scoring local est un lien interdit.")
 
     return build_daily_operations_overview(
         target_date=selected,
@@ -702,7 +722,8 @@ def inspect_daily_operations(
         git=git,
         prediction_slot_state=slot_state,
         prediction_certified=certified,
-        previous_certified=previous_certified,
+        results_target_date=results_target,
+        has_past_certified=bool(past_certified_dates),
         latest_score_pending_count=latest_pending,
         checkpoint_slot_exists=checkpoint_exists,
         integrity_errors=errors,
@@ -1162,7 +1183,7 @@ def execute_daily_results_publication(
     *,
     project_directory: Path = PROJECT_ROOT,
 ) -> DailyResultsPublication:
-    """Observe la veille, puis pousse uniquement les preuves exactes produites."""
+    """Observe la plus ancienne journee en attente et pousse ses preuves."""
     instant = _utc_now()
     if not isinstance(instant, datetime) or instant.tzinfo is None:
         raise DailyResultsAutomationError(
@@ -1196,7 +1217,12 @@ def execute_daily_results_publication(
             DailyResultsStage.PREFLIGHT,
             "Le commit Git de depart est absent.",
         )
-    scoring_target = selected - timedelta(days=1)
+    scoring_target = overview.results_target_date
+    if scoring_target is None:
+        raise DailyResultsAutomationError(
+            DailyResultsStage.PREFLIGHT,
+            "Aucune journée certifiée en attente n'a été sélectionnée.",
+        )
     checkpoint = instant.date()
     try:
         scoring = _execute_scoring_engine(

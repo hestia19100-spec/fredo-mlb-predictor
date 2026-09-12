@@ -111,7 +111,8 @@ st.markdown('<div class="lpf-badge">PRÉDICTIONS CERTIFIÉES</div>', unsafe_allo
 st.title("LPF Edge · MLB")
 st.caption(
     "Les probabilités affichées sont relues depuis les fichiers immuables "
-    "déjà publiés. Cette page ne relance jamais le modèle."
+    "déjà publiés. Le modèle est lancé uniquement par une action explicite "
+    "et autorisée dans le centre quotidien."
 )
 
 ACTION_PRESENTATION = {
@@ -256,7 +257,9 @@ if daily is not None:
     if results_feedback is not None:
         if results_feedback["outcome"] == "COMPLETED":
             st.success(
-                "Résultats récupérés, vérifiés et publiés sur GitHub."
+                "Résultats du "
+                f"{results_feedback['target_date']} récupérés, vérifiés "
+                "et publiés sur GitHub."
             )
         else:
             st.warning(
@@ -287,6 +290,9 @@ if daily is not None:
                 )
             else:
                 st.session_state["lpf_edge_results_success"] = {
+                    "target_date": publication.target_date.strftime(
+                        "%d/%m/%Y"
+                    ),
                     "observation_id": publication.observation_id,
                     "outcome": publication.outcome,
                     "results_commit": publication.results_commit,

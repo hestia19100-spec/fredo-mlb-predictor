@@ -13,6 +13,7 @@ from datetime import date
 from pathlib import Path
 
 from src.lpf_edge_dashboard import (
+    ADJUDICATION_COLUMNS,
     CERTIFICATION_ROOT,
     PREDICTION_COLUMNS,
     PREDICTION_ROOT,
@@ -123,6 +124,119 @@ class LPFEdgeDashboardTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary.cleanup()
 
+    def _write_score_observation(
+        self,
+        *,
+        correct: bool = True,
+        actual_winner_override: str | None = None,
+    ) -> Path:
+        checkpoint = date(2026, 9, 12)
+        observation_id = "e" * 64
+        slot = (
+            self.project
+            / SCORING_ROOT
+            / self.target.isoformat()
+            / "observations"
+            / checkpoint.isoformat()
+        )
+        slot.mkdir(parents=True)
+
+        away_score, home_score = ((3, 5) if correct else (5, 3))
+        actual_winner = "HOME" if correct else "AWAY"
+        row = {column: "" for column in ADJUDICATION_COLUMNS}
+        row.update(
+            {
+                "prediction_id": "b" * 64,
+                "batch_id": self.batch_id,
+                "game_id": "123",
+                "occurrence_key": "c" * 64,
+                "target_official_date": self.target.isoformat(),
+                "away_team_id": "10",
+                "home_team_id": "20",
+                "p_away_win": "0.375",
+                "p_home_win": "0.625",
+                "predicted_side": "HOME",
+                "outcome_status": "SCORED_FINAL",
+                "away_score": str(away_score),
+                "home_score": str(home_score),
+                "home_win": "1" if correct else "0",
+                "actual_winner": actual_winner_override or actual_winner,
+                "classification_correct": "1" if correct else "0",
+                "individual_log_loss": "0.470003629246",
+                "individual_brier_score": "0.140625000000",
+                "status_code_normalized": "F",
+                "status_detail_normalized": "FINAL",
+                "final_official_date": self.target.isoformat(),
+                "outcome_http_date_utc": "2026-09-12T06:00:00Z",
+                "outcome_response_received_at_utc": "2026-09-12T06:00:01Z",
+                "outcome_evidence_sha256": "f" * 64,
+            }
+        )
+        stream = io.StringIO(newline="")
+        writer = csv.DictWriter(
+            stream,
+            fieldnames=ADJUDICATION_COLUMNS,
+            lineterminator="\n",
+        )
+        writer.writeheader()
+        writer.writerow(row)
+        adjudications_bytes = stream.getvalue().encode("utf-8")
+        (slot / "adjudications.csv").write_bytes(adjudications_bytes)
+
+        report = {
+            "accuracy": 1.0 if correct else 0.0,
+            "certified_prediction_count": 1,
+            "checkpoint_utc_date": checkpoint.isoformat(),
+            "correct_count": 1 if correct else 0,
+            "disclaimer": (
+                "PROVISIONAL_DAILY_NO_VERDICT_SMALL_SAMPLE_"
+                "DO_NOT_CHANGE_MODEL_OR_PROTOCOL"
+            ),
+            "incorrect_count": 0 if correct else 1,
+            "mean_brier_score": 0.140625,
+            "mean_log_loss": 0.470003629246,
+            "observation_id": observation_id,
+            "pending_count": 0,
+            "protocol_id": (
+                "logistic_team_form_v1_platt_shadow_v2_2026_scoring_v1"
+            ),
+            "report_schema_version": 1,
+            "scored_count": 1,
+            "status": "PROVISIONAL_DAILY_NO_VERDICT",
+            "target_official_date": self.target.isoformat(),
+            "void_count": 0,
+        }
+        report_bytes = canonical_json(report)
+        (slot / "daily_report.json").write_bytes(report_bytes)
+        counts = {
+            "certified_prediction_count": 1,
+            "correct_count": 1 if correct else 0,
+            "incorrect_count": 0 if correct else 1,
+            "pending_count": 0,
+            "scored_count": 1,
+            "void_count": 0,
+        }
+        receipt = {
+            "adjudications_sha256": hashlib.sha256(
+                adjudications_bytes
+            ).hexdigest(),
+            "checkpoint_utc_date": checkpoint.isoformat(),
+            "counts": counts,
+            "daily_report_sha256": hashlib.sha256(report_bytes).hexdigest(),
+            "observation_id": observation_id,
+            "target_official_date": self.target.isoformat(),
+        }
+        receipt_bytes = canonical_json(receipt)
+        (slot / "observation_receipt.json").write_bytes(receipt_bytes)
+        completed = {
+            "observation_id": observation_id,
+            "observation_receipt_sha256": hashlib.sha256(
+                receipt_bytes
+            ).hexdigest(),
+        }
+        (slot / "COMPLETED").write_bytes(canonical_json(completed))
+        return slot
+
     def test_discovery_and_loading_of_certified_day(self) -> None:
         self.assertEqual(
             list_certified_prediction_dates(project_directory=self.project),
@@ -213,35 +327,58 @@ class LPFEdgeDashboardTests(unittest.TestCase):
                 self.target, project_directory=self.project
             )
         )
-        slot = (
-            self.project
-            / SCORING_ROOT
-            / self.target.isoformat()
-            / "observations"
-            / "2026-09-12"
-        )
-        slot.mkdir(parents=True)
-        (slot / "COMPLETED").write_text("complete\n", encoding="utf-8")
-        report = {
-            "accuracy": 0.8,
-            "checkpoint_utc_date": "2026-09-12",
-            "correct_count": 4,
-            "incorrect_count": 1,
-            "mean_brier_score": 0.2,
-            "mean_log_loss": 0.6,
-            "pending_count": 0,
-            "scored_count": 5,
-            "target_official_date": self.target.isoformat(),
-            "void_count": 0,
-        }
-        (slot / "daily_report.json").write_bytes(canonical_json(report))
-        summary = load_latest_score_summary(
+        self._write_score_observation(correct=True)
+        day = load_certified_prediction_day(
             self.target, project_directory=self.project
+        )
+        summary = load_latest_score_summary(
+            self.target,
+            certified_predictions=day.predictions,
+            project_directory=self.project,
         )
         self.assertIsNotNone(summary)
         assert summary is not None
-        self.assertEqual(summary.scored_count, 5)
-        self.assertEqual(summary.accuracy, 0.8)
+        self.assertEqual(summary.scored_count, 1)
+        self.assertEqual(summary.accuracy, 1.0)
+        self.assertEqual(len(summary.results), 1)
+        self.assertEqual(summary.results[0].display_status, "Réussie")
+        self.assertEqual(summary.results[0].display_tone, "correct")
+        self.assertEqual(summary.results[0].home_score, 5)
+
+    def test_incorrect_prediction_is_exposed_as_red_result(self) -> None:
+        self._write_score_observation(correct=False)
+        day = load_certified_prediction_day(
+            self.target, project_directory=self.project
+        )
+        summary = load_latest_score_summary(
+            self.target,
+            certified_predictions=day.predictions,
+            project_directory=self.project,
+        )
+        assert summary is not None
+        self.assertEqual(summary.correct_count, 0)
+        self.assertEqual(summary.incorrect_count, 1)
+        self.assertEqual(summary.results[0].display_status, "Ratée")
+        self.assertEqual(summary.results[0].display_tone, "incorrect")
+        self.assertEqual(summary.results[0].actual_winner, "AWAY")
+
+    def test_score_and_winner_disagreement_is_rejected(self) -> None:
+        self._write_score_observation(
+            correct=True,
+            actual_winner_override="AWAY",
+        )
+        day = load_certified_prediction_day(
+            self.target, project_directory=self.project
+        )
+        with self.assertRaisesRegex(
+            LPFEdgeDashboardError,
+            "vainqueur ne correspond pas au score final",
+        ):
+            load_latest_score_summary(
+                self.target,
+                certified_predictions=day.predictions,
+                project_directory=self.project,
+            )
 
     def test_reader_has_no_network_or_model_dependency(self) -> None:
         source = Path(__file__).parents[1].joinpath(
@@ -259,6 +396,10 @@ class LPFEdgeDashboardTests(unittest.TestCase):
         self.assertNotIn("run_schedule_ingestion", source)
         self.assertNotIn("shadow_prediction", source)
         self.assertNotIn("shadow_certification", source)
+        self.assertIn("lpf-result-correct", source)
+        self.assertIn("lpf-result-incorrect", source)
+        self.assertIn("Prédictions réussies", source)
+        self.assertIn("Score final (ext. – dom.)", source)
 
 
 if __name__ == "__main__":

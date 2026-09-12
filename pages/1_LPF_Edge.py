@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import html
+
 import streamlit as st
 
 from src.lpf_edge_dashboard import (
@@ -45,6 +47,36 @@ st.markdown(
         margin-bottom: 0.7rem;
     }
     .lpf-note {color: #566174; font-size: 0.95rem;}
+    .lpf-results-table {
+        overflow-x: auto;
+        border: 1px solid #dfe5ee;
+        border-radius: 14px;
+        margin-top: 1rem;
+    }
+    .lpf-results-table table {
+        width: 100%;
+        border-collapse: collapse;
+        min-width: 780px;
+        font-size: 0.95rem;
+    }
+    .lpf-results-table th,
+    .lpf-results-table td {
+        padding: 0.8rem 0.9rem;
+        text-align: left;
+        border-bottom: 1px solid #dfe5ee;
+        vertical-align: middle;
+    }
+    .lpf-results-table th {
+        color: #4b5565;
+        background: #f5f7fb;
+        font-weight: 650;
+    }
+    .lpf-results-table tbody tr:last-child td {border-bottom: none;}
+    .lpf-result-correct td {background: #eaf8ef; color: #185c37;}
+    .lpf-result-incorrect td {background: #fdeeee; color: #8c2424;}
+    .lpf-result-neutral td {background: #f4f5f7; color: #525b68;}
+    .lpf-result-status {font-weight: 700; white-space: nowrap;}
+    .lpf-results-table .lpf-match {color: #202735; font-weight: 550;}
     </style>
     """,
     unsafe_allow_html=True,
@@ -70,7 +102,10 @@ selected_date = st.selectbox(
 
 try:
     day = load_certified_prediction_day(selected_date)
-    score = load_latest_score_summary(selected_date)
+    score = load_latest_score_summary(
+        selected_date,
+        certified_predictions=day.predictions,
+    )
 except LPFEdgeDashboardError as error:
     st.error(f"Contrôle d'intégrité impossible : {error}")
     st.stop()
@@ -144,15 +179,69 @@ if score is None:
 else:
     scored_column, correct_column, pending_column, accuracy_column = st.columns(4)
     scored_column.metric("Matchs évalués", score.scored_count)
-    correct_column.metric("Classements corrects", score.correct_count)
+    correct_column.metric("Prédictions réussies", score.correct_count)
     pending_column.metric("Encore en attente", score.pending_count)
     accuracy_column.metric(
-        "Réussite descriptive",
+        "Réussite du jour",
         "—" if score.accuracy is None else f"{score.accuracy * 100:.1f} %",
     )
     st.caption(
         f"Dernier contrôle officiel : {score.checkpoint_date.strftime('%d/%m/%Y')}. "
         "Ces chiffres sont provisoires et ne constituent pas encore le verdict final du modèle."
+    )
+    predictions_by_id = {
+        prediction.prediction_id: prediction for prediction in day.predictions
+    }
+    result_rows: list[str] = []
+    for result in score.results:
+        prediction = predictions_by_id[result.prediction_id]
+        away_name = team_label(result.away_team_id, team_names)
+        home_name = team_label(result.home_team_id, team_names)
+        predicted_name = (
+            home_name if result.predicted_side == "HOME" else away_name
+        )
+        if result.away_score is None or result.home_score is None:
+            score_text = "—"
+        else:
+            score_text = f"{result.away_score} – {result.home_score}"
+        status_icon = {
+            "correct": "✓",
+            "incorrect": "✕",
+            "neutral": "•",
+        }[result.display_tone]
+        time_text = html.escape(format_paris_time(prediction.scheduled_start_utc))
+        match_text = html.escape(f"{away_name} @ {home_name}")
+        predicted_text = html.escape(predicted_name)
+        probability_text = html.escape(
+            probability_percent(result.predicted_probability)
+        )
+        score_text = html.escape(score_text)
+        status_text = html.escape(f"{status_icon} {result.display_status}")
+        rendered_cells = (
+            f"<td>{time_text}</td>"
+            f'<td class="lpf-match">{match_text}</td>'
+            f"<td>{predicted_text}</td>"
+            f"<td>{probability_text}</td>"
+            f"<td>{score_text}</td>"
+            f'<td class="lpf-result-status">{status_text}</td>'
+        )
+        result_rows.append(
+            f'<tr class="lpf-result-{result.display_tone}">'
+            f"{rendered_cells}</tr>"
+        )
+    st.markdown(
+        '<div class="lpf-results-table"><table>'
+        "<thead><tr>"
+        "<th>Heure de Paris</th>"
+        "<th>Match</th>"
+        "<th>Équipe pronostiquée</th>"
+        "<th>Probabilité</th>"
+        "<th>Score final (ext. – dom.)</th>"
+        "<th>Résultat</th>"
+        "</tr></thead><tbody>"
+        + "".join(result_rows)
+        + "</tbody></table></div>",
+        unsafe_allow_html=True,
     )
 
 with st.expander("Voir les preuves de cette journée"):

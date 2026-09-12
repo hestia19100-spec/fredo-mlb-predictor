@@ -54,6 +54,18 @@ PREDICTION_SUCCESS_FILENAMES = (
     "receipt.json",
     "source_snapshot.json.gz",
 )
+SCORING_SUCCESS_FILENAMES = (
+    "COMPLETED",
+    "RESERVED",
+    "adjudications.csv",
+    "daily_report.json",
+    "observation_receipt.json",
+    "outcome_observation.remote.json.gz",
+)
+SCORING_FAILURE_FILENAMES = (
+    "FAILED.json",
+    "RESERVED",
+)
 _FINAL_STATUS_CODES = frozenset({"F", "FG", "FO", "FR"})
 _FINAL_STATUS_DETAILS = frozenset(
     {"FINAL", "GAME OVER", "COMPLETED EARLY"}
@@ -100,6 +112,22 @@ class DailyPredictionAutomationError(DailyOperationsError):
     """Echec ferme de la chaine prediction, GitHub et certification."""
 
     def __init__(self, stage: DailyPredictionStage, message: str) -> None:
+        self.stage = stage
+        super().__init__(message)
+
+
+class DailyResultsStage(str, Enum):
+    """Etape exacte atteinte par l'automatisation du scoring."""
+
+    PREFLIGHT = "PREFLIGHT"
+    SCORING = "SCORING"
+    RESULTS_PUBLICATION = "RESULTS_PUBLICATION"
+
+
+class DailyResultsAutomationError(DailyOperationsError):
+    """Echec ferme de la chaine de scoring et de publication GitHub."""
+
+    def __init__(self, stage: DailyResultsStage, message: str) -> None:
         self.stage = stage
         super().__init__(message)
 
@@ -183,6 +211,18 @@ class DailyPredictionPublication:
 
 
 @dataclass(frozen=True, slots=True)
+class DailyResultsPublication:
+    """Recu final d'un scoring quotidien publie sur GitHub."""
+
+    target_date: date
+    checkpoint_date: date
+    observation_id: str
+    outcome: str
+    results_commit: str
+    results_paths: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class _PredictionEngineOutcome:
     slot_path: Path
     batch_id: str
@@ -196,6 +236,14 @@ class _CertificationOutcome:
     results_commit: str
     certification_path: Path
     evidence_path: Path
+
+
+@dataclass(frozen=True, slots=True)
+class _ScoringEngineOutcome:
+    slot_path: Path
+    observation_id: str
+    outcome: str
+    expected_filenames: tuple[str, ...]
 
 
 def _action(
@@ -720,7 +768,9 @@ def _require_exact_publication_changes(
     expected_paths: tuple[str, ...],
     *,
     staged: bool,
-    stage: DailyPredictionStage,
+    stage: DailyPredictionStage | DailyResultsStage,
+    error_type: type[DailyPredictionAutomationError]
+    | type[DailyResultsAutomationError] = DailyPredictionAutomationError,
 ) -> None:
     expected = set(expected_paths)
     untracked = set(
@@ -743,7 +793,7 @@ def _require_exact_publication_changes(
         else untracked == expected and not unstaged and not cached
     )
     if not valid:
-        raise DailyPredictionAutomationError(
+        raise error_type(
             stage,
             "Les changements Git ne correspondent pas exactement aux preuves attendues.",
         )
@@ -755,7 +805,9 @@ def _commit_and_push_exact_paths(
     expected_paths: tuple[str, ...],
     expected_parent_commit: str,
     commit_message: str,
-    stage: DailyPredictionStage,
+    stage: DailyPredictionStage | DailyResultsStage,
+    error_type: type[DailyPredictionAutomationError]
+    | type[DailyResultsAutomationError] = DailyPredictionAutomationError,
 ) -> str:
     """Ajoute, commite et pousse uniquement une liste fermee de preuves."""
     try:
@@ -776,7 +828,7 @@ def _commit_and_push_exact_paths(
             or head_before != expected_parent_commit
             or remote_before != expected_parent_commit
         ):
-            raise DailyPredictionAutomationError(
+            raise error_type(
                 stage,
                 "La base Git a change depuis le controle precedent.",
             )
@@ -785,6 +837,7 @@ def _commit_and_push_exact_paths(
             expected_paths,
             staged=False,
             stage=stage,
+            error_type=error_type,
         )
         _run_git_mutation(project_directory, ("add", "--", *expected_paths))
         _require_exact_publication_changes(
@@ -792,6 +845,7 @@ def _commit_and_push_exact_paths(
             expected_paths,
             staged=True,
             stage=stage,
+            error_type=error_type,
         )
         _run_git_mutation(project_directory, ("diff", "--cached", "--check"))
         _run_git_mutation(
@@ -800,7 +854,7 @@ def _commit_and_push_exact_paths(
         )
         commit = _run_git_mutation(project_directory, ("rev-parse", "HEAD"))
         if len(commit) != 40 or any(character not in "0123456789abcdef" for character in commit):
-            raise DailyPredictionAutomationError(
+            raise error_type(
                 stage,
                 "Le commit produit par Git est invalide.",
             )
@@ -817,16 +871,16 @@ def _commit_and_push_exact_paths(
             project_directory,
             ("status", "--porcelain=v1", "--untracked-files=all"),
         )
-    except DailyPredictionAutomationError:
+    except (DailyPredictionAutomationError, DailyResultsAutomationError):
         raise
     except (OSError, subprocess.SubprocessError, UnicodeError) as error:
-        raise DailyPredictionAutomationError(
+        raise error_type(
             stage,
             "La publication GitHub a ete interrompue ; aucune nouvelle etape "
             "n'a ete lancee apres cet echec.",
         ) from error
     if remote != commit or status:
-        raise DailyPredictionAutomationError(
+        raise error_type(
             stage,
             "Le commit local n'est pas proprement synchronise avec origin/main.",
         )
@@ -1040,6 +1094,173 @@ def execute_daily_prediction_publication(
     )
 
 
+def _execute_scoring_engine(
+    target_date: date,
+    checkpoint_date: date,
+    *,
+    project_directory: Path,
+) -> _ScoringEngineOutcome:
+    from src import shadow_scoring
+
+    result = shadow_scoring.execute_scoring_observation(
+        target_date,
+        checkpoint_date,
+        project_directory=project_directory,
+    )
+    if type(result) is shadow_scoring.ScoringObservationFailure:
+        reservation = result.reservation
+        if (
+            result.failed_path != reservation.slot_path / "FAILED.json"
+            or type(reservation.observation_id) is not str
+            or len(reservation.observation_id) != 64
+            or any(
+                character not in "0123456789abcdef"
+                for character in reservation.observation_id
+            )
+        ):
+            raise DailyResultsAutomationError(
+                DailyResultsStage.SCORING,
+                "Le moteur a retourne une preuve d'echec incoherente.",
+            )
+        return _ScoringEngineOutcome(
+            slot_path=reservation.slot_path,
+            observation_id=reservation.observation_id,
+            outcome="FAILED",
+            expected_filenames=SCORING_FAILURE_FILENAMES,
+        )
+    if type(result) is not shadow_scoring.ScoringObservationCompletionPublication:
+        raise DailyResultsAutomationError(
+            DailyResultsStage.SCORING,
+            "Le moteur n'a pas produit une fermeture de scoring exacte.",
+        )
+    completion = result.completion
+    if (
+        result.completed_path.name != "COMPLETED"
+        or completion.target_official_date != target_date.isoformat()
+        or completion.checkpoint_utc_date != checkpoint_date.isoformat()
+        or type(completion.observation_id) is not str
+        or len(completion.observation_id) != 64
+        or any(
+            character not in "0123456789abcdef"
+            for character in completion.observation_id
+        )
+    ):
+        raise DailyResultsAutomationError(
+            DailyResultsStage.SCORING,
+            "Le moteur a retourne une preuve de completion incoherente.",
+        )
+    return _ScoringEngineOutcome(
+        slot_path=result.completed_path.parent,
+        observation_id=completion.observation_id,
+        outcome="COMPLETED",
+        expected_filenames=SCORING_SUCCESS_FILENAMES,
+    )
+
+
+def execute_daily_results_publication(
+    target_date: date | None = None,
+    *,
+    project_directory: Path = PROJECT_ROOT,
+) -> DailyResultsPublication:
+    """Observe la veille, puis pousse uniquement les preuves exactes produites."""
+    instant = _utc_now()
+    if not isinstance(instant, datetime) or instant.tzinfo is None:
+        raise DailyResultsAutomationError(
+            DailyResultsStage.PREFLIGHT,
+            "L'horloge du scoring doit etre un instant UTC valide.",
+        )
+    instant = instant.astimezone(timezone.utc)
+    paris_today = instant.astimezone(PARIS_TIMEZONE).date()
+    selected = target_date or paris_today
+    if not isinstance(selected, date) or isinstance(selected, datetime):
+        raise TypeError("target_date doit etre une date exacte.")
+    if selected != paris_today or instant.date() != selected:
+        raise DailyResultsAutomationError(
+            DailyResultsStage.PREFLIGHT,
+            "Le moteur quotidien peut seulement verifier la veille au checkpoint UTC du jour.",
+        )
+    project = Path(project_directory).resolve(strict=True)
+    overview = inspect_daily_operations(
+        selected,
+        now_utc=instant,
+        project_directory=project,
+    )
+    if overview.results_action.state is not DailyActionState.READY:
+        raise DailyResultsAutomationError(
+            DailyResultsStage.PREFLIGHT,
+            overview.results_action.message,
+        )
+    starting_commit = overview.git.head_commit
+    if starting_commit is None:
+        raise DailyResultsAutomationError(
+            DailyResultsStage.PREFLIGHT,
+            "Le commit Git de depart est absent.",
+        )
+    scoring_target = selected - timedelta(days=1)
+    checkpoint = instant.date()
+    try:
+        scoring = _execute_scoring_engine(
+            scoring_target,
+            checkpoint,
+            project_directory=project,
+        )
+    except DailyResultsAutomationError:
+        raise
+    except Exception as error:
+        raise DailyResultsAutomationError(
+            DailyResultsStage.SCORING,
+            "Le moteur de scoring s'est arrete en conservant ses preuves locales.",
+        ) from error
+
+    expected_slot = (
+        project
+        / SCORING_ROOT
+        / scoring_target.isoformat()
+        / "observations"
+        / checkpoint.isoformat()
+    )
+    if scoring.slot_path.resolve() != expected_slot.resolve():
+        raise DailyResultsAutomationError(
+            DailyResultsStage.SCORING,
+            "Le moteur a retourne un dossier de scoring inattendu.",
+        )
+    if scoring.expected_filenames not in (
+        SCORING_SUCCESS_FILENAMES,
+        SCORING_FAILURE_FILENAMES,
+    ):
+        raise DailyResultsAutomationError(
+            DailyResultsStage.SCORING,
+            "Le moteur a retourne une liste de preuves inattendue.",
+        )
+    results_paths = tuple(
+        (
+            SCORING_ROOT
+            / scoring_target.isoformat()
+            / "observations"
+            / checkpoint.isoformat()
+            / name
+        ).as_posix()
+        for name in scoring.expected_filenames
+    )
+    label = _french_date_label(scoring_target)
+    commit = _commit_and_push_exact_paths(
+        project_directory=project,
+        expected_paths=results_paths,
+        expected_parent_commit=starting_commit,
+        commit_message=f"Enregistrer le scoring MLB du {label}",
+        stage=DailyResultsStage.RESULTS_PUBLICATION,
+        error_type=DailyResultsAutomationError,
+    )
+    return DailyResultsPublication(
+        target_date=scoring_target,
+        checkpoint_date=checkpoint,
+        observation_id=scoring.observation_id,
+        outcome=scoring.outcome,
+        results_commit=commit,
+        results_paths=results_paths,
+    )
+
+
 __all__ = [
     "DailyAction",
     "DailyActionState",
@@ -1048,11 +1269,15 @@ __all__ = [
     "DailyPredictionAutomationError",
     "DailyPredictionPublication",
     "DailyPredictionStage",
+    "DailyResultsAutomationError",
+    "DailyResultsPublication",
+    "DailyResultsStage",
     "GitWorkspaceState",
     "LocalGameDayState",
     "PredictionSlotState",
     "build_daily_operations_overview",
     "execute_daily_prediction_publication",
+    "execute_daily_results_publication",
     "inspect_daily_operations",
     "inspect_git_workspace",
     "inspect_prediction_slot",

@@ -137,12 +137,28 @@ def load_latest_moneyline_odds_display(
     *,
     database_path: Path = DATABASE_PATH,
     required_region: str | None = None,
+    completed_at_or_before_utc: datetime | None = None,
 ) -> MoneylineOddsDisplay:
     """Relit la dernière collecte réussie sans réseau ni écriture SQLite."""
     if not isinstance(target_date, date) or isinstance(target_date, datetime):
         raise TypeError("target_date doit être une date exacte.")
     if required_region not in {None, "eu", "fr"}:
         raise ValueError("La région de cotes demandée est invalide.")
+    if completed_at_or_before_utc is not None:
+        if not isinstance(completed_at_or_before_utc, datetime):
+            raise TypeError(
+                "completed_at_or_before_utc doit être un instant exact."
+            )
+        if (
+            completed_at_or_before_utc.tzinfo is None
+            or completed_at_or_before_utc.utcoffset() is None
+        ):
+            raise ValueError(
+                "La limite temporelle des cotes doit être horodatée."
+            )
+        completed_at_or_before_utc = completed_at_or_before_utc.astimezone(
+            timezone.utc
+        )
     if not database_path.is_file() or database_path.is_symlink():
         return MoneylineOddsDisplay(target_date, None, None, None, 0, ())
 
@@ -194,8 +210,22 @@ def load_latest_moneyline_odds_display(
         if required_region is not None:
             query += " AND region = ?"
             parameters.append(required_region)
-        query += " ORDER BY run_id DESC LIMIT 1"
-        run = connection.execute(query, parameters).fetchone()
+        query += " ORDER BY run_id DESC"
+        candidate_runs = connection.execute(query, parameters).fetchall()
+        run: tuple[object, ...] | None = None
+        completed_at: datetime | None = None
+        for candidate in candidate_runs:
+            candidate_completed_at = _utc_datetime(
+                candidate[2],
+                "La fin de la collecte de cotes",
+            )
+            if (
+                completed_at_or_before_utc is None
+                or candidate_completed_at <= completed_at_or_before_utc
+            ):
+                run = tuple(candidate)
+                completed_at = candidate_completed_at
+                break
         if run is None:
             return MoneylineOddsDisplay(
                 target_date, None, None, None, 0, base_games
@@ -207,10 +237,10 @@ def load_latest_moneyline_odds_display(
             raise LPFEdgeOddsDisplayError(
                 "La région de la collecte de cotes est invalide."
             )
-        completed_at = _utc_datetime(
-            run[2],
-            "La fin de la collecte de cotes",
-        )
+        if completed_at is None:
+            raise LPFEdgeOddsDisplayError(
+                "La fin de la collecte de cotes est absente."
+            )
         quote_rows = connection.execute(
             """
             SELECT

@@ -65,7 +65,7 @@ def quote(
     return MoneylineBookmakerDisplayQuote(
         key=key,
         title=title,
-        last_update_utc=datetime(2026, 9, 13, 13, 0, tzinfo=UTC),
+        last_update_utc=datetime(2026, 9, 13, 11, 59, tzinfo=UTC),
         home_decimal_odds=Decimal(home),
         away_decimal_odds=Decimal(away),
     )
@@ -75,6 +75,7 @@ def odds_display(
     *quotes: MoneylineBookmakerDisplayQuote,
     region: str | None = "fr",
     target: date = TARGET,
+    completed_at: datetime = datetime(2026, 9, 13, 12, 0, tzinfo=UTC),
 ) -> MoneylineOddsDisplay:
     home_best = max(
         (item.home_decimal_odds for item in quotes),
@@ -113,7 +114,7 @@ def odds_display(
         run_id=4 if region is not None else None,
         region=region,
         completed_at_utc=(
-            datetime(2026, 9, 13, 13, 1, tzinfo=UTC)
+            completed_at
             if region is not None
             else None
         ),
@@ -294,6 +295,38 @@ class LPFEdgeMarketComparisonTests(unittest.TestCase):
             build_french_market_comparison(
                 prediction_day(),
                 odds_display(target=date(2026, 9, 14)),
+                team_names=TEAM_NAMES,
+            )
+
+    def test_collection_completed_after_certification_is_rejected(self) -> None:
+        display = odds_display(
+            quote("pmu_fr", "PMU", home="1.80", away="2.10"),
+            completed_at=datetime(2026, 9, 13, 13, 1, tzinfo=UTC),
+        )
+
+        with self.assertRaisesRegex(
+            LPFEdgeMarketComparisonError,
+            "postérieure à la certification",
+        ):
+            build_french_market_comparison(
+                prediction_day(),
+                display,
+                team_names=TEAM_NAMES,
+            )
+
+    def test_collection_without_timezone_is_rejected(self) -> None:
+        display = odds_display(
+            quote("pmu_fr", "PMU", home="1.80", away="2.10"),
+            completed_at=datetime(2026, 9, 13, 12, 0),
+        )
+
+        with self.assertRaisesRegex(
+            LPFEdgeMarketComparisonError,
+            "collecte française n’est pas horodatée",
+        ):
+            build_french_market_comparison(
+                prediction_day(),
+                display,
                 team_names=TEAM_NAMES,
             )
 

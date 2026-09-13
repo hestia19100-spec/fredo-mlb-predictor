@@ -881,7 +881,9 @@ st.markdown(
 st.divider()
 st.subheader("Comparaison LPF Edge / marché français")
 st.caption(
-    "Pour chaque bookmaker, LPF Edge convertit les deux cotes en "
+    "Seule la dernière collecte française terminée avant la certification "
+    "est utilisée ; toute collecte ultérieure est ignorée. Pour chaque "
+    "bookmaker, LPF Edge convertit les deux cotes en "
     "probabilités puis retire proportionnellement sa marge. La colonne "
     "« Marché français corrigé » est la moyenne de ces probabilités. "
     "L’écart reste descriptif et n’est pas un conseil de pari."
@@ -890,6 +892,7 @@ try:
     french_odds_display = load_latest_moneyline_odds_display(
         selected_date,
         required_region="fr",
+        completed_at_or_before_utc=day.certified_at_utc,
     )
     market_comparison = build_french_market_comparison(
         day,
@@ -906,13 +909,14 @@ except (
 else:
     if market_comparison.odds_run_id is None:
         st.info(
-            "Aucune collecte française réussie n’est disponible pour cette "
-            "journée. Les prédictions certifiées restent consultables au-dessus."
+            "Aucune collecte française terminée avant la certification n’est "
+            "disponible pour cette journée. Les collectes plus tardives ne sont "
+            "volontairement pas utilisées."
         )
     else:
         comparison_columns = st.columns(3)
         comparison_columns[0].metric(
-            "Collecte française",
+            "Collecte française figée",
             f"N° {market_comparison.odds_run_id}",
         )
         comparison_columns[1].metric(

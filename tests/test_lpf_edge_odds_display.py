@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 import sqlite3
@@ -153,6 +153,48 @@ class LPFEdgeOddsDisplayTests(unittest.TestCase):
                 ),
             )
 
+    def _insert_later_french_run(self) -> None:
+        with sqlite3.connect(self.database) as connection:
+            connection.execute(
+                """
+                INSERT INTO odds_ingestion_runs (
+                    run_id,
+                    target_official_date,
+                    region,
+                    completed_at_utc,
+                    status
+                ) VALUES (4, '2026-09-13', 'fr', '2026-09-13T10:00:00Z',
+                          'success')
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO odds_events (
+                    odds_event_id, run_id, matched_game_id
+                ) VALUES (302, 4, 101)
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO moneyline_odds (
+                    odds_quote_id,
+                    odds_event_id,
+                    run_id,
+                    game_id,
+                    bookmaker_key,
+                    bookmaker_title,
+                    bookmaker_last_update_utc,
+                    observed_at_utc,
+                    away_decimal_odds,
+                    home_decimal_odds
+                ) VALUES (
+                    403, 302, 4, 101, 'book_c', 'Book C',
+                    '2026-09-13T09:59:00Z', '2026-09-13T10:00:00Z',
+                    '2.05', '1.85'
+                )
+                """
+            )
+
     def test_missing_database_returns_empty_without_creation(self) -> None:
         display = load_latest_moneyline_odds_display(
             self.target,
@@ -271,6 +313,75 @@ class LPFEdgeOddsDisplayTests(unittest.TestCase):
         self.assertEqual(display.run_id, 1)
         self.assertEqual(display.region, "eu")
         self.assertEqual(display.quote_count, 0)
+
+    def test_temporal_limit_ignores_success_completed_after_certification(
+        self,
+    ) -> None:
+        self._create_database()
+        self._insert_runs_and_quotes()
+        self._insert_later_french_run()
+
+        latest = load_latest_moneyline_odds_display(
+            self.target,
+            database_path=self.database,
+            required_region="fr",
+        )
+        frozen = load_latest_moneyline_odds_display(
+            self.target,
+            database_path=self.database,
+            required_region="fr",
+            completed_at_or_before_utc=datetime(
+                2026, 9, 13, 9, 30, tzinfo=timezone.utc
+            ),
+        )
+
+        self.assertEqual(latest.run_id, 4)
+        self.assertEqual(frozen.run_id, 3)
+        self.assertEqual(frozen.quote_count, 2)
+
+    def test_temporal_limit_includes_exact_certification_boundary(self) -> None:
+        self._create_database()
+        self._insert_runs_and_quotes()
+
+        display = load_latest_moneyline_odds_display(
+            self.target,
+            database_path=self.database,
+            required_region="fr",
+            completed_at_or_before_utc=datetime(
+                2026, 9, 13, 9, 0, tzinfo=timezone.utc
+            ),
+        )
+
+        self.assertEqual(display.run_id, 3)
+
+    def test_temporal_limit_returns_no_odds_when_every_success_is_later(
+        self,
+    ) -> None:
+        self._create_database()
+        self._insert_runs_and_quotes()
+
+        display = load_latest_moneyline_odds_display(
+            self.target,
+            database_path=self.database,
+            required_region="fr",
+            completed_at_or_before_utc=datetime(
+                2026, 9, 13, 8, 59, tzinfo=timezone.utc
+            ),
+        )
+
+        self.assertIsNone(display.run_id)
+        self.assertEqual(display.quote_count, 0)
+        self.assertEqual(display.game_count, 2)
+        self.assertEqual(display.quoted_game_count, 0)
+
+    def test_naive_temporal_limit_is_rejected_before_database_access(self) -> None:
+        with self.assertRaisesRegex(ValueError, "doit être horodatée"):
+            load_latest_moneyline_odds_display(
+                self.target,
+                database_path=self.database,
+                completed_at_or_before_utc=datetime(2026, 9, 13, 9, 0),
+            )
+        self.assertFalse(self.database.exists())
 
     def test_invalid_required_region_is_rejected_before_database_access(self) -> None:
         with self.assertRaisesRegex(ValueError, "région"):

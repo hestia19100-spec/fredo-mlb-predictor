@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Mapping
 
@@ -172,6 +172,26 @@ def build_french_market_comparison(
     elif odds_display.run_id is None or odds_display.completed_at_utc is None:
         raise LPFEdgeMarketComparisonError(
             "La collecte française est incomplète."
+        )
+    elif (
+        odds_display.completed_at_utc.tzinfo is None
+        or odds_display.completed_at_utc.utcoffset() is None
+    ):
+        raise LPFEdgeMarketComparisonError(
+            "La collecte française n’est pas horodatée."
+        )
+    elif (
+        prediction_day.certified_at_utc.tzinfo is None
+        or prediction_day.certified_at_utc.utcoffset() is None
+    ):
+        raise LPFEdgeMarketComparisonError(
+            "La certification des prédictions n’est pas horodatée."
+        )
+    elif odds_display.completed_at_utc > (
+        prediction_day.certified_at_utc.astimezone(timezone.utc)
+    ):
+        raise LPFEdgeMarketComparisonError(
+            "La collecte française est postérieure à la certification."
         )
     elif odds_display.quote_count != sum(
         len(game.bookmaker_quotes) for game in odds_display.games

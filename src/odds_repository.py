@@ -9,7 +9,7 @@ from hashlib import sha256
 from pathlib import Path
 
 from src.database import DATABASE_PATH, get_connection, initialize_database
-from src.odds_api import MoneylineEvent, OddsFetchResult
+from src.odds_api import ODDS_API_REGION, MoneylineEvent, OddsFetchResult
 
 
 class OddsRepositoryError(RuntimeError):
@@ -25,9 +25,9 @@ MATCH_STATUSES = frozenset(
     }
 )
 
-ODDS_STORAGE_SCHEMA_VERSION = 1
-ODDS_STORAGE_SCHEMA_NAME = "audited_moneyline_odds"
-ODDS_STORAGE_STATEMENTS = (
+ODDS_STORAGE_BASELINE_VERSION = 1
+ODDS_STORAGE_BASELINE_NAME = "audited_moneyline_odds"
+ODDS_STORAGE_BASELINE_STATEMENTS = (
     """
     CREATE TABLE odds_ingestion_runs (
         run_id INTEGER PRIMARY KEY,
@@ -146,12 +146,127 @@ ODDS_STORAGE_STATEMENTS = (
     ON moneyline_odds (game_id, observed_at_utc)
     """,
 )
-ODDS_STORAGE_SCHEMA_CHECKSUM = sha256(
+ODDS_STORAGE_BASELINE_CHECKSUM = sha256(
     "\n".join(
         (
-            str(ODDS_STORAGE_SCHEMA_VERSION),
-            ODDS_STORAGE_SCHEMA_NAME,
-            *ODDS_STORAGE_STATEMENTS,
+            str(ODDS_STORAGE_BASELINE_VERSION),
+            ODDS_STORAGE_BASELINE_NAME,
+            *ODDS_STORAGE_BASELINE_STATEMENTS,
+        )
+    ).encode("utf-8")
+).hexdigest()
+ODDS_STORAGE_FRENCH_REGION_VERSION = 2
+ODDS_STORAGE_FRENCH_REGION_NAME = "allow_french_bookmaker_region"
+ODDS_STORAGE_FRENCH_REGION_STATEMENTS = (
+    "ALTER TABLE odds_ingestion_runs RENAME TO odds_ingestion_runs_eu_v1",
+    """
+    CREATE TABLE odds_ingestion_runs (
+        run_id INTEGER PRIMARY KEY,
+        provider TEXT NOT NULL,
+        target_official_date TEXT NOT NULL,
+        sport_key TEXT NOT NULL,
+        region TEXT NOT NULL,
+        market TEXT NOT NULL,
+        odds_format TEXT NOT NULL,
+        started_at_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        completed_at_utc TEXT,
+        status TEXT NOT NULL DEFAULT 'started'
+            CHECK (status IN ('started', 'success', 'error')),
+        events_received INTEGER NOT NULL DEFAULT 0
+            CHECK (events_received >= 0),
+        events_matched INTEGER NOT NULL DEFAULT 0
+            CHECK (
+                events_matched >= 0
+                AND events_matched <= events_received
+            ),
+        bookmaker_quotes_saved INTEGER NOT NULL DEFAULT 0
+            CHECK (bookmaker_quotes_saved >= 0),
+        raw_response_path TEXT,
+        response_sha256 TEXT,
+        quota_remaining INTEGER CHECK (quota_remaining >= 0),
+        quota_used INTEGER CHECK (quota_used >= 0),
+        quota_last_cost INTEGER CHECK (quota_last_cost IN (0, 1)),
+        code_version TEXT,
+        error_message TEXT,
+
+        CHECK (provider = 'the_odds_api_v4'),
+        CHECK (sport_key = 'baseball_mlb'),
+        CHECK (region IN ('eu', 'fr')),
+        CHECK (market = 'h2h'),
+        CHECK (odds_format = 'decimal'),
+        CHECK (
+            response_sha256 IS NULL
+            OR length(response_sha256) = 64
+        ),
+        CHECK (
+            (status = 'started' AND completed_at_utc IS NULL)
+            OR
+            (
+                status IN ('success', 'error')
+                AND completed_at_utc IS NOT NULL
+            )
+        ),
+        CHECK (status <> 'error' OR error_message IS NOT NULL)
+    )
+    """,
+    """
+    INSERT INTO odds_ingestion_runs (
+        run_id,
+        provider,
+        target_official_date,
+        sport_key,
+        region,
+        market,
+        odds_format,
+        started_at_utc,
+        completed_at_utc,
+        status,
+        events_received,
+        events_matched,
+        bookmaker_quotes_saved,
+        raw_response_path,
+        response_sha256,
+        quota_remaining,
+        quota_used,
+        quota_last_cost,
+        code_version,
+        error_message
+    )
+    SELECT
+        run_id,
+        provider,
+        target_official_date,
+        sport_key,
+        region,
+        market,
+        odds_format,
+        started_at_utc,
+        completed_at_utc,
+        status,
+        events_received,
+        events_matched,
+        bookmaker_quotes_saved,
+        raw_response_path,
+        response_sha256,
+        quota_remaining,
+        quota_used,
+        quota_last_cost,
+        code_version,
+        error_message
+    FROM odds_ingestion_runs_eu_v1
+    """,
+    "DROP TABLE odds_ingestion_runs_eu_v1",
+    """
+    CREATE INDEX idx_odds_ingestion_runs_target
+    ON odds_ingestion_runs (target_official_date, run_id)
+    """,
+)
+ODDS_STORAGE_FRENCH_REGION_CHECKSUM = sha256(
+    "\n".join(
+        (
+            str(ODDS_STORAGE_FRENCH_REGION_VERSION),
+            ODDS_STORAGE_FRENCH_REGION_NAME,
+            *ODDS_STORAGE_FRENCH_REGION_STATEMENTS,
         )
     ).encode("utf-8")
 ).hexdigest()
@@ -210,18 +325,18 @@ def initialize_odds_storage(
             )
             """
         )
-        row = connection.execute(
+        baseline_row = connection.execute(
             """
             SELECT name, checksum
             FROM odds_schema_migrations
             WHERE version = ?
             """,
-            (ODDS_STORAGE_SCHEMA_VERSION,),
+            (ODDS_STORAGE_BASELINE_VERSION,),
         ).fetchone()
-        if row is None:
+        if baseline_row is None:
             connection.execute("SAVEPOINT odds_storage_schema_1")
             try:
-                for statement in ODDS_STORAGE_STATEMENTS:
+                for statement in ODDS_STORAGE_BASELINE_STATEMENTS:
                     connection.execute(statement)
                 connection.execute(
                     """
@@ -233,9 +348,9 @@ def initialize_odds_storage(
                     VALUES (?, ?, ?)
                     """,
                     (
-                        ODDS_STORAGE_SCHEMA_VERSION,
-                        ODDS_STORAGE_SCHEMA_NAME,
-                        ODDS_STORAGE_SCHEMA_CHECKSUM,
+                        ODDS_STORAGE_BASELINE_VERSION,
+                        ODDS_STORAGE_BASELINE_NAME,
+                        ODDS_STORAGE_BASELINE_CHECKSUM,
                     ),
                 )
             except Exception:
@@ -247,11 +362,73 @@ def initialize_odds_storage(
             else:
                 connection.execute("RELEASE SAVEPOINT odds_storage_schema_1")
         elif (
-            str(row["name"]) != ODDS_STORAGE_SCHEMA_NAME
-            or str(row["checksum"]) != ODDS_STORAGE_SCHEMA_CHECKSUM
+            str(baseline_row["name"]) != ODDS_STORAGE_BASELINE_NAME
+            or str(baseline_row["checksum"]) != ODDS_STORAGE_BASELINE_CHECKSUM
         ):
             raise OddsRepositoryError(
                 "La migration du stockage des cotes a été modifiée."
+            )
+
+        french_region_row = connection.execute(
+            """
+            SELECT name, checksum
+            FROM odds_schema_migrations
+            WHERE version = ?
+            """,
+            (ODDS_STORAGE_FRENCH_REGION_VERSION,),
+        ).fetchone()
+        if french_region_row is None:
+            connection.execute("PRAGMA foreign_keys = OFF")
+            connection.execute("PRAGMA legacy_alter_table = ON")
+            connection.execute("SAVEPOINT odds_storage_schema_2")
+            try:
+                for statement in ODDS_STORAGE_FRENCH_REGION_STATEMENTS:
+                    connection.execute(statement)
+                connection.execute(
+                    """
+                    INSERT INTO odds_schema_migrations (
+                        version,
+                        name,
+                        checksum
+                    )
+                    VALUES (?, ?, ?)
+                    """,
+                    (
+                        ODDS_STORAGE_FRENCH_REGION_VERSION,
+                        ODDS_STORAGE_FRENCH_REGION_NAME,
+                        ODDS_STORAGE_FRENCH_REGION_CHECKSUM,
+                    ),
+                )
+            except Exception:
+                connection.execute(
+                    "ROLLBACK TO SAVEPOINT odds_storage_schema_2"
+                )
+                connection.execute("RELEASE SAVEPOINT odds_storage_schema_2")
+                raise
+            else:
+                connection.execute("RELEASE SAVEPOINT odds_storage_schema_2")
+            finally:
+                connection.execute("PRAGMA legacy_alter_table = OFF")
+                connection.execute("PRAGMA foreign_keys = ON")
+        elif (
+            str(french_region_row["name"]) != ODDS_STORAGE_FRENCH_REGION_NAME
+            or str(french_region_row["checksum"])
+            != ODDS_STORAGE_FRENCH_REGION_CHECKSUM
+        ):
+            raise OddsRepositoryError(
+                "La migration française du stockage des cotes a été modifiée."
+            )
+
+        foreign_key_errors = []
+        for table_name in ("odds_events", "moneyline_odds"):
+            foreign_key_errors.extend(
+                connection.execute(
+                    f"PRAGMA foreign_key_check({table_name})"
+                ).fetchall()
+            )
+        if foreign_key_errors:
+            raise OddsRepositoryError(
+                "Les relations SQLite du stockage des cotes sont invalides."
             )
 
         actual_tables = {
@@ -300,11 +477,11 @@ def start_odds_ingestion_run(
                 code_version
             )
             VALUES (
-                'the_odds_api_v4', ?, 'baseball_mlb', 'eu',
+                'the_odds_api_v4', ?, 'baseball_mlb', ?,
                 'h2h', 'decimal', 'started', ?
             )
             """,
-            (target_date.isoformat(), normalized_version),
+            (target_date.isoformat(), ODDS_API_REGION, normalized_version),
         )
         run_id = cursor.lastrowid
     if run_id is None:

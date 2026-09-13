@@ -43,6 +43,7 @@ class LPFEdgeOddsDisplayTests(unittest.TestCase):
                 CREATE TABLE odds_ingestion_runs (
                     run_id INTEGER PRIMARY KEY,
                     target_official_date TEXT NOT NULL,
+                    region TEXT NOT NULL,
                     completed_at_utc TEXT,
                     status TEXT NOT NULL
                 );
@@ -97,14 +98,15 @@ class LPFEdgeOddsDisplayTests(unittest.TestCase):
                 INSERT INTO odds_ingestion_runs (
                     run_id,
                     target_official_date,
+                    region,
                     completed_at_utc,
                     status
-                ) VALUES (?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?)
                 """,
                 (
-                    (1, "2026-09-13", "2026-09-13T08:00:00Z", "success"),
-                    (2, "2026-09-13", "2026-09-13T08:30:00Z", "error"),
-                    (3, "2026-09-13", "2026-09-13T09:00:00Z", "success"),
+                    (1, "2026-09-13", "eu", "2026-09-13T08:00:00Z", "success"),
+                    (2, "2026-09-13", "eu", "2026-09-13T08:30:00Z", "error"),
+                    (3, "2026-09-13", "fr", "2026-09-13T09:00:00Z", "success"),
                 ),
             )
             connection.execute(
@@ -201,6 +203,7 @@ class LPFEdgeOddsDisplayTests(unittest.TestCase):
         )
 
         self.assertEqual(display.run_id, 3)
+        self.assertEqual(display.region, "fr")
         self.assertEqual(display.quote_count, 2)
         self.assertEqual(display.game_count, 2)
         self.assertEqual(display.quoted_game_count, 1)
@@ -232,7 +235,8 @@ class LPFEdgeOddsDisplayTests(unittest.TestCase):
             connection.execute(
                 """
                 INSERT INTO odds_ingestion_runs VALUES (
-                    4, '2026-09-13', '2026-09-13T09:30:00Z', 'error'
+                    4, '2026-09-13', 'fr',
+                    '2026-09-13T09:30:00Z', 'error'
                 )
                 """
             )

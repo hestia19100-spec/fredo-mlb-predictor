@@ -8,6 +8,7 @@ from tempfile import TemporaryDirectory
 import unittest
 from unittest import mock
 
+from src import odds_repository
 from src.database import get_connection, list_applied_migrations
 from src.game_repository import save_schedule
 from src.mlb_api import ScheduledGame
@@ -129,7 +130,7 @@ class OddsIngestionServiceTests(unittest.TestCase):
         return OddsFetchResult(
             provider="the_odds_api_v4",
             sport_key="baseball_mlb",
-            region="eu",
+            region="fr",
             market="h2h",
             odds_format="decimal",
             response_received_at_utc=datetime(
@@ -183,17 +184,25 @@ class OddsIngestionServiceTests(unittest.TestCase):
         self.assertEqual(journal["bookmaker_quotes_saved"], 2)
         self.assertEqual(journal["response_sha256"], result.response_sha256)
         self.assertEqual(journal["raw_response_path"], result.raw_response_path)
+        self.assertEqual(journal["region"], "fr")
         self.assertEqual(list_applied_migrations(self.database_path), [3, 4])
         with get_connection(self.database_path) as connection:
-            odds_migration = connection.execute(
-                """
-                SELECT version, name, length(checksum)
-                FROM odds_schema_migrations
-                """
-            ).fetchone()
+            odds_migrations = [
+                tuple(row)
+                for row in connection.execute(
+                    """
+                    SELECT version, name, length(checksum)
+                    FROM odds_schema_migrations
+                    ORDER BY version
+                    """
+                ).fetchall()
+            ]
         self.assertEqual(
-            tuple(odds_migration),
-            (1, "audited_moneyline_odds", 64),
+            odds_migrations,
+            [
+                (1, "audited_moneyline_odds", 64),
+                (2, "allow_french_bookmaker_region", 64),
+            ],
         )
 
         quotes = list_moneyline_odds_for_date(
@@ -358,6 +367,96 @@ class OddsIngestionServiceTests(unittest.TestCase):
 
         with self.assertRaisesRegex(OddsRepositoryError, "modifiée"):
             initialize_odds_storage(self.database_path)
+
+    def test_french_region_migration_preserves_existing_eu_collection(self) -> None:
+        """Le passage à la France conserve les anciennes preuves européennes."""
+        with get_connection(self.database_path) as connection:
+            connection.execute(
+                """
+                CREATE TABLE odds_schema_migrations (
+                    version INTEGER PRIMARY KEY CHECK (version > 0),
+                    name TEXT NOT NULL UNIQUE,
+                    checksum TEXT NOT NULL,
+                    applied_at_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            for statement in odds_repository.ODDS_STORAGE_BASELINE_STATEMENTS:
+                connection.execute(statement)
+            connection.execute(
+                """
+                INSERT INTO odds_schema_migrations (version, name, checksum)
+                VALUES (?, ?, ?)
+                """,
+                (
+                    odds_repository.ODDS_STORAGE_BASELINE_VERSION,
+                    odds_repository.ODDS_STORAGE_BASELINE_NAME,
+                    odds_repository.ODDS_STORAGE_BASELINE_CHECKSUM,
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO odds_ingestion_runs (
+                    run_id, provider, target_official_date, sport_key,
+                    region, market, odds_format, completed_at_utc, status,
+                    events_received, events_matched, bookmaker_quotes_saved
+                ) VALUES (
+                    1, 'the_odds_api_v4', '2026-09-13', 'baseball_mlb',
+                    'eu', 'h2h', 'decimal', '2026-09-13T10:00:00+00:00',
+                    'success', 1, 1, 1
+                )
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO odds_events (
+                    odds_event_id, run_id, provider_event_id,
+                    commence_time_utc, away_team_name, home_team_name,
+                    matched_game_id, match_status
+                ) VALUES (
+                    10, 1, 'old-event', '2026-09-13T17:10:00+00:00',
+                    'New York Mets', 'Chicago Cubs', 9001, 'MATCHED'
+                )
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO moneyline_odds (
+                    odds_quote_id, odds_event_id, run_id, game_id,
+                    bookmaker_key, bookmaker_title,
+                    bookmaker_last_update_utc, observed_at_utc,
+                    away_decimal_odds, home_decimal_odds
+                ) VALUES (
+                    20, 10, 1, 9001, 'legacy_eu', 'Ancien bookmaker UE',
+                    '2026-09-13T09:59:00+00:00',
+                    '2026-09-13T10:00:00+00:00', '2.10', '1.75'
+                )
+                """
+            )
+
+        initialize_odds_storage(self.database_path)
+
+        with get_connection(self.database_path) as connection:
+            old_run = connection.execute(
+                "SELECT region, status FROM odds_ingestion_runs WHERE run_id = 1"
+            ).fetchone()
+            old_quote = connection.execute(
+                "SELECT bookmaker_title FROM moneyline_odds WHERE run_id = 1"
+            ).fetchone()
+            migration_versions = [
+                row[0]
+                for row in connection.execute(
+                    "SELECT version FROM odds_schema_migrations ORDER BY version"
+                ).fetchall()
+            ]
+            foreign_key_errors = connection.execute(
+                "PRAGMA foreign_key_check"
+            ).fetchall()
+
+        self.assertEqual(tuple(old_run), ("eu", "success"))
+        self.assertEqual(old_quote[0], "Ancien bookmaker UE")
+        self.assertEqual(migration_versions, [1, 2])
+        self.assertEqual(foreign_key_errors, [])
 
 
 if __name__ == "__main__":

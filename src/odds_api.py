@@ -15,7 +15,7 @@ import requests
 
 ODDS_API_URL = "https://api.the-odds-api.com/v4/sports/baseball_mlb/odds"
 ODDS_API_KEY_ENVIRONMENT_VARIABLE = "THE_ODDS_API_KEY"
-ODDS_API_REGION = "eu"
+ODDS_API_REGION = "fr"
 ODDS_API_MARKET = "h2h"
 REQUEST_TIMEOUT_SECONDS = 30
 
@@ -258,7 +258,7 @@ def _parse_payload(raw_content: bytes) -> tuple[MoneylineEvent, ...]:
 
 
 def fetch_mlb_moneyline_odds() -> OddsFetchResult:
-    """Récupère une fois les cotes MLB européennes au format décimal."""
+    """Récupère une fois les cotes MLB françaises au format décimal."""
     api_key = _read_api_key()
     public_parameters = {
         "regions": ODDS_API_REGION,

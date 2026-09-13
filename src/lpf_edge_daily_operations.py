@@ -332,6 +332,7 @@ class DailyOddsCollectionOverview:
     action: DailyAction
     latest_run_id: int | None
     latest_status: str | None
+    latest_region: str | None
     latest_completed_at_utc: datetime | None
     events_received: int | None
     events_matched: int | None
@@ -1013,6 +1014,7 @@ def inspect_daily_odds_collection(
                     SELECT
                         run_id,
                         status,
+                        region,
                         completed_at_utc,
                         events_received,
                         events_matched,
@@ -1039,28 +1041,28 @@ def inspect_daily_odds_collection(
     if target_date != paris_today:
         action = _action(
             "odds",
-            "Récupérer les cotes Moneyline",
+            "Récupérer les cotes françaises Moneyline",
             DailyActionState.NOT_AVAILABLE,
             "Les cotes quotidiennes peuvent seulement être récupérées pour aujourd’hui.",
         )
     elif not configured:
         action = _action(
             "odds",
-            "Récupérer les cotes Moneyline",
+            "Récupérer les cotes françaises Moneyline",
             DailyActionState.BLOCKED,
             "Le secret THE_ODDS_API_KEY doit être configuré dans Codespaces.",
         )
     elif game_day.game_count == 0:
         action = _action(
             "odds",
-            "Récupérer les cotes Moneyline",
+            "Récupérer les cotes françaises Moneyline",
             DailyActionState.NEED_DATA,
             "Actualise d’abord les matchs MLB du jour.",
         )
     elif latest_status == "started":
         action = _action(
             "odds",
-            "Récupérer les cotes Moneyline",
+            "Récupérer les cotes françaises Moneyline",
             DailyActionState.BLOCKED,
             "Une collecte de cotes est déjà indiquée comme étant en cours.",
         )
@@ -1072,7 +1074,7 @@ def inspect_daily_odds_collection(
         )
         action = _action(
             "odds",
-            "Récupérer les cotes Moneyline (1 crédit)",
+            "Récupérer les cotes françaises Moneyline (1 crédit)",
             DailyActionState.READY,
             message,
         )
@@ -1084,20 +1086,21 @@ def inspect_daily_odds_collection(
         action=action,
         latest_run_id=None if latest is None else int(latest[0]),
         latest_status=latest_status,
+        latest_region=None if latest is None else str(latest[2]),
         latest_completed_at_utc=(
-            None if latest is None else _odds_completion_utc(latest[2])
+            None if latest is None else _odds_completion_utc(latest[3])
         ),
-        events_received=None if latest is None else int(latest[3]),
-        events_matched=None if latest is None else int(latest[4]),
-        bookmaker_quotes_saved=None if latest is None else int(latest[5]),
+        events_received=None if latest is None else int(latest[4]),
+        events_matched=None if latest is None else int(latest[5]),
+        bookmaker_quotes_saved=None if latest is None else int(latest[6]),
         quota_remaining=(
-            None if latest is None or latest[6] is None else int(latest[6])
-        ),
-        quota_used=(
             None if latest is None or latest[7] is None else int(latest[7])
         ),
-        quota_last_cost=(
+        quota_used=(
             None if latest is None or latest[8] is None else int(latest[8])
+        ),
+        quota_last_cost=(
+            None if latest is None or latest[9] is None else int(latest[9])
         ),
     )
 

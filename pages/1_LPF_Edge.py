@@ -161,6 +161,13 @@ def format_decimal_odds(value: Decimal | None) -> str:
     return format(value, "f")
 
 
+def odds_region_label(region: str | None) -> str:
+    return {"fr": "France", "eu": "Europe (ancienne collecte)"}.get(
+        region,
+        "Non renseignée",
+    )
+
+
 st.divider()
 st.subheader("Centre d’actions quotidien")
 try:
@@ -339,11 +346,13 @@ if daily is not None:
                 },
             )
 
-    st.markdown("#### Cotes Moneyline")
+    st.markdown("#### Cotes françaises — Moneyline")
     st.caption(
-        "Cette collecte est indépendante de Shadow v2. Chaque clic autorisé "
-        "effectue un seul appel à The Odds API et consomme normalement "
-        "1 crédit. La clé secrète n’est jamais affichée."
+        "Cette collecte interroge uniquement la région française de "
+        "The Odds API. Elle peut notamment fournir Betclic, NetBet, PMU, "
+        "Unibet France et Winamax France lorsqu’ils proposent des cotes MLB. "
+        "Chaque clic autorisé consomme normalement 1 crédit. La clé secrète "
+        "n’est jamais affichée et Shadow v2 reste inchangé."
     )
     try:
         odds = inspect_daily_odds_collection(
@@ -393,6 +402,7 @@ if daily is not None:
             )
             st.caption(
                 f"Dernier état : {odds.latest_status} · {latest_time} · "
+                f"zone : {odds_region_label(odds.latest_region)} · "
                 f"{odds.bookmaker_quotes_saved or 0} cote(s) enregistrée(s) · "
                 f"coût du dernier appel : {odds.quota_last_cost or 0} crédit."
             )
@@ -403,8 +413,8 @@ if daily is not None:
         )
         if odds_feedback is not None:
             st.success(
-                "Cotes Moneyline récupérées, archivées et rapprochées des "
-                "matchs MLB locaux."
+                "Cotes françaises Moneyline récupérées, archivées et "
+                "rapprochées des matchs MLB locaux."
             )
             st.caption(
                 f"Collecte auditée n° {odds_feedback['run_id']} · "
@@ -423,7 +433,7 @@ if daily is not None:
         )
         if odds_clicked:
             with st.spinner(
-                "Récupération et archivage des cotes Moneyline en cours..."
+                "Récupération et archivage des cotes françaises en cours..."
             ):
                 try:
                     odds_result = execute_daily_odds_collection(
@@ -550,7 +560,9 @@ if daily is not None:
                     },
                 )
                 st.caption(
-                    "Bookmakers observés : "
+                    "Périmètre : "
+                    + odds_region_label(odds_display.region)
+                    + ". Bookmakers observés : "
                     + (
                         ", ".join(odds_display.bookmaker_titles)
                         if odds_display.bookmaker_titles

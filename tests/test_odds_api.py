@@ -28,8 +28,8 @@ def sample_payload() -> list[dict[str, object]]:
             "away_team": "Pittsburgh Pirates",
             "bookmakers": [
                 {
-                    "key": "unibet_eu",
-                    "title": "Unibet",
+                    "key": "unibet_fr",
+                    "title": "Unibet (FR)",
                     "last_update": "2026-09-13T12:00:00Z",
                     "markets": [
                         {
@@ -102,13 +102,13 @@ class OddsAPITests(unittest.TestCase):
         self.request = request
         return result
 
-    def test_request_is_fixed_to_mlb_eu_moneyline_decimal(self) -> None:
+    def test_request_is_fixed_to_mlb_fr_moneyline_decimal(self) -> None:
         result = self._fetch()
         self.request.assert_called_once_with(
             odds_api.ODDS_API_URL,
             params={
                 "apiKey": API_KEY,
-                "regions": "eu",
+                "regions": "fr",
                 "markets": "h2h",
                 "oddsFormat": "decimal",
                 "dateFormat": "iso",
@@ -119,7 +119,7 @@ class OddsAPITests(unittest.TestCase):
         )
         self.assertEqual(result.provider, "the_odds_api_v4")
         self.assertEqual(result.sport_key, "baseball_mlb")
-        self.assertEqual(result.region, "eu")
+        self.assertEqual(result.region, "fr")
         self.assertEqual(result.market, "h2h")
         self.assertEqual(result.odds_format, "decimal")
 
@@ -134,7 +134,7 @@ class OddsAPITests(unittest.TestCase):
             event.commence_time_utc,
             datetime(2026, 9, 13, 18, 10, tzinfo=timezone.utc),
         )
-        self.assertEqual(bookmaker.key, "unibet_eu")
+        self.assertEqual(bookmaker.key, "unibet_fr")
         self.assertEqual(bookmaker.away_decimal_odds, Decimal("2.15"))
         self.assertEqual(bookmaker.home_decimal_odds, Decimal("1.74"))
         self.assertEqual(result.quota_remaining, 499)

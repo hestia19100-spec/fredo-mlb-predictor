@@ -42,6 +42,7 @@ class MoneylineOddsDisplay:
 
     target_date: date
     run_id: int | None
+    region: str | None
     completed_at_utc: datetime | None
     quote_count: int
     games: tuple[MoneylineOddsDisplayGame, ...]
@@ -127,7 +128,7 @@ def load_latest_moneyline_odds_display(
     if not isinstance(target_date, date) or isinstance(target_date, datetime):
         raise TypeError("target_date doit être une date exacte.")
     if not database_path.is_file() or database_path.is_symlink():
-        return MoneylineOddsDisplay(target_date, None, None, 0, ())
+        return MoneylineOddsDisplay(target_date, None, None, None, 0, ())
 
     uri = f"{database_path.resolve().as_uri()}?mode=ro"
     connection: sqlite3.Connection | None = None
@@ -164,11 +165,13 @@ def load_latest_moneyline_odds_display(
             "odds_events",
         }
         if not required_tables.issubset(available_tables):
-            return MoneylineOddsDisplay(target_date, None, None, 0, base_games)
+            return MoneylineOddsDisplay(
+                target_date, None, None, None, 0, base_games
+            )
 
         run = connection.execute(
             """
-            SELECT run_id, completed_at_utc
+            SELECT run_id, region, completed_at_utc
             FROM odds_ingestion_runs
             WHERE target_official_date = ? AND status = 'success'
             ORDER BY run_id DESC
@@ -177,11 +180,18 @@ def load_latest_moneyline_odds_display(
             (target_date.isoformat(),),
         ).fetchone()
         if run is None:
-            return MoneylineOddsDisplay(target_date, None, None, 0, base_games)
+            return MoneylineOddsDisplay(
+                target_date, None, None, None, 0, base_games
+            )
 
         run_id = int(run[0])
+        region = str(run[1] or "").strip()
+        if region not in {"eu", "fr"}:
+            raise LPFEdgeOddsDisplayError(
+                "La région de la collecte de cotes est invalide."
+            )
         completed_at = _utc_datetime(
-            run[1],
+            run[2],
             "La fin de la collecte de cotes",
         )
         quote_rows = connection.execute(
@@ -295,6 +305,7 @@ def load_latest_moneyline_odds_display(
     return MoneylineOddsDisplay(
         target_date=target_date,
         run_id=run_id,
+        region=region,
         completed_at_utc=completed_at,
         quote_count=len(quote_rows),
         games=tuple(games),

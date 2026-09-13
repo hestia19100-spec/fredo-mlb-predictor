@@ -149,6 +149,7 @@ class LPFEdgeDailyOddsCollectionTests(unittest.TestCase):
 
         self.assertTrue(overview.api_configured)
         self.assertEqual(overview.latest_run_id, run_id)
+        self.assertEqual(overview.latest_region, "fr")
         self.assertEqual(overview.events_received, 15)
         self.assertEqual(overview.events_matched, 14)
         self.assertEqual(overview.bookmaker_quotes_saved, 42)

@@ -39,6 +39,12 @@ from src.lpf_edge_market_snapshot import (
     MarketSnapshotPublication,
     create_market_snapshot_publication,
 )
+from src.lpf_edge_market_settlement import (
+    LPFEdgeMarketSettlementError,
+    MARKET_SETTLEMENT_ROOT,
+    MarketSettlementPublication,
+    create_market_settlement_publication,
+)
 from src.lpf_edge_odds_display import (
     LPFEdgeOddsDisplayError,
     load_latest_moneyline_odds_display,
@@ -181,6 +187,7 @@ class DailyResultsStage(str, Enum):
 
     PREFLIGHT = "PREFLIGHT"
     SCORING = "SCORING"
+    MARKET_SETTLEMENT = "MARKET_SETTLEMENT"
     RESULTS_PUBLICATION = "RESULTS_PUBLICATION"
 
 
@@ -433,6 +440,8 @@ class DailyResultsPublication:
     outcome: str
     results_commit: str
     results_paths: tuple[str, ...]
+    market_settlement_paths: tuple[str, ...] = ()
+    market_settlement_sha256: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -2347,6 +2356,69 @@ def _execute_scoring_engine(
     )
 
 
+def _create_market_settlement_if_ready(
+    target_date: date,
+    *,
+    observation_id: str,
+    publication_parent_commit: str,
+    project_directory: Path,
+) -> MarketSettlementPublication | None:
+    """Crée le verdict seulement si journal et résultats finaux sont présents."""
+    snapshot_slot = (
+        project_directory / MARKET_SNAPSHOT_ROOT / target_date.isoformat()
+    )
+    if not snapshot_slot.exists():
+        return None
+    if snapshot_slot.is_symlink() or not snapshot_slot.is_dir():
+        raise DailyResultsAutomationError(
+            DailyResultsStage.MARKET_SETTLEMENT,
+            "Le journal prospectif LPF/marché est invalide.",
+        )
+    settlement_slot = (
+        project_directory / MARKET_SETTLEMENT_ROOT / target_date.isoformat()
+    )
+    if settlement_slot.exists() or settlement_slot.is_symlink():
+        raise DailyResultsAutomationError(
+            DailyResultsStage.MARKET_SETTLEMENT,
+            "Le verdict prospectif LPF/marché existe déjà.",
+        )
+    try:
+        prediction_day = load_certified_prediction_day(
+            target_date,
+            project_directory=project_directory,
+        )
+        score = load_latest_score_summary(
+            target_date,
+            certified_predictions=prediction_day.predictions,
+            project_directory=project_directory,
+        )
+        if score is None:
+            raise LPFEdgeMarketSettlementError(
+                "Le rapport de résultats vérifié est absent."
+            )
+        if score.pending_count != 0:
+            return None
+        return create_market_settlement_publication(
+            target_date,
+            score,
+            observation_id=observation_id,
+            publication_parent_commit=publication_parent_commit,
+            project_directory=project_directory,
+        )
+    except DailyResultsAutomationError:
+        raise
+    except (
+        LPFEdgeDashboardError,
+        LPFEdgeMarketSettlementError,
+        OSError,
+        ValueError,
+    ) as error:
+        raise DailyResultsAutomationError(
+            DailyResultsStage.MARKET_SETTLEMENT,
+            "Le verdict prospectif LPF/marché n'a pas pu être scellé.",
+        ) from error
+
+
 def execute_daily_results_publication(
     target_date: date | None = None,
     *,
@@ -2437,10 +2509,31 @@ def execute_daily_results_publication(
         ).as_posix()
         for name in scoring.expected_filenames
     )
+    market_settlement = (
+        _create_market_settlement_if_ready(
+            scoring_target,
+            observation_id=scoring.observation_id,
+            publication_parent_commit=starting_commit,
+            project_directory=project,
+        )
+        if scoring.outcome == "COMPLETED"
+        else None
+    )
+    market_settlement_paths = (
+        ()
+        if market_settlement is None
+        else tuple(
+            path.relative_to(project).as_posix()
+            for path in market_settlement.paths
+        )
+    )
+    expected_publication_paths = tuple(
+        sorted(results_paths + market_settlement_paths)
+    )
     label = _french_date_label(scoring_target)
     commit = _commit_and_push_exact_paths(
         project_directory=project,
-        expected_paths=results_paths,
+        expected_paths=expected_publication_paths,
         expected_parent_commit=starting_commit,
         commit_message=f"Enregistrer le scoring MLB du {label}",
         stage=DailyResultsStage.RESULTS_PUBLICATION,
@@ -2453,6 +2546,12 @@ def execute_daily_results_publication(
         outcome=scoring.outcome,
         results_commit=commit,
         results_paths=results_paths,
+        market_settlement_paths=market_settlement_paths,
+        market_settlement_sha256=(
+            None
+            if market_settlement is None
+            else market_settlement.settlement_sha256
+        ),
     )
 
 
@@ -2482,7 +2581,9 @@ __all__ = [
     "GitWorkspaceState",
     "LocalGameDayState",
     "MARKET_SNAPSHOT_ROOT",
+    "MARKET_SETTLEMENT_ROOT",
     "MarketSnapshotPublication",
+    "MarketSettlementPublication",
     "PredictionSlotState",
     "VerifiedLocalBackup",
     "build_daily_operations_overview",

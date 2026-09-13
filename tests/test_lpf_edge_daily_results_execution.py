@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timezone
+from decimal import Decimal
 import inspect
 from pathlib import Path
 import tempfile
@@ -115,6 +116,97 @@ class LPFEdgeDailyResultsExecutionTests(unittest.TestCase):
         self.assertEqual(arguments["stage"], operations.DailyResultsStage.RESULTS_PUBLICATION)
         self.assertIs(arguments["error_type"], operations.DailyResultsAutomationError)
         self.assertEqual(set(arguments["expected_paths"]), set(result.results_paths))
+
+    def test_final_results_and_market_verdict_are_published_atomically(self) -> None:
+        settlement_slot = (
+            self.project
+            / operations.MARKET_SETTLEMENT_ROOT
+            / TARGET.isoformat()
+        )
+        settlement = operations.MarketSettlementPublication(
+            target_date=TARGET,
+            slot_path=settlement_slot,
+            settlement_path=settlement_slot / "market_evaluation.json",
+            completed_path=settlement_slot / "COMPLETED",
+            settlement_sha256="c" * 64,
+            snapshot_sha256="d" * 64,
+            evaluated_count=1,
+            correct_count=1,
+            missing_market_count=0,
+            void_count=0,
+            theoretical_net_units=Decimal("0.8"),
+            theoretical_roi_percent=Decimal("80"),
+        )
+        with (
+            mock.patch.object(operations, "_utc_now", return_value=NOW),
+            mock.patch.object(
+                operations,
+                "inspect_daily_operations",
+                return_value=self._overview(),
+            ),
+            mock.patch.object(
+                operations,
+                "_execute_scoring_engine",
+                return_value=self._scoring(),
+            ),
+            mock.patch.object(
+                operations,
+                "_create_market_settlement_if_ready",
+                return_value=settlement,
+            ) as seal,
+            mock.patch.object(
+                operations,
+                "_commit_and_push_exact_paths",
+                return_value=RESULTS_COMMIT,
+            ) as publish,
+        ):
+            publication = self._run()
+
+        seal.assert_called_once_with(
+            TARGET,
+            observation_id=OBSERVATION_ID,
+            publication_parent_commit="e" * 40,
+            project_directory=self.project.resolve(),
+        )
+        self.assertEqual(publication.market_settlement_sha256, "c" * 64)
+        self.assertEqual(len(publication.market_settlement_paths), 2)
+        expected = set(publication.results_paths) | set(
+            publication.market_settlement_paths
+        )
+        self.assertEqual(set(publish.call_args.kwargs["expected_paths"]), expected)
+
+    def test_pending_or_absent_journal_keeps_original_results_publication(self) -> None:
+        with (
+            mock.patch.object(operations, "_utc_now", return_value=NOW),
+            mock.patch.object(
+                operations,
+                "inspect_daily_operations",
+                return_value=self._overview(),
+            ),
+            mock.patch.object(
+                operations,
+                "_execute_scoring_engine",
+                return_value=self._scoring(),
+            ),
+            mock.patch.object(
+                operations,
+                "_create_market_settlement_if_ready",
+                return_value=None,
+            ),
+            mock.patch.object(
+                operations,
+                "_commit_and_push_exact_paths",
+                return_value=RESULTS_COMMIT,
+            ) as publish,
+        ):
+            publication = self._run()
+
+        self.assertEqual(publication.market_settlement_paths, ())
+        self.assertIsNone(publication.market_settlement_sha256)
+        self.assertEqual(
+            set(publish.call_args.kwargs["expected_paths"]),
+            set(publication.results_paths),
+        )
 
     def test_controlled_mlb_failure_is_published_as_two_exact_proofs(self) -> None:
         failed = self._scoring(

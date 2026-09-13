@@ -50,6 +50,10 @@ from src.lpf_edge_market_evaluation import (
     LPFEdgeMarketEvaluationError,
     build_market_evaluation_history,
 )
+from src.lpf_edge_market_settlement import (
+    LPFEdgeMarketSettlementError,
+    load_market_settlement,
+)
 st.set_page_config(
     page_title="LPF Edge · MLB",
     page_icon="⚾",
@@ -731,6 +735,11 @@ if daily is not None:
                 f"{results_feedback['target_date']} récupérés, vérifiés "
                 "et publiés sur GitHub."
             )
+            if results_feedback.get("market_settlement_sha256") is not None:
+                st.success(
+                    "Le verdict prospectif LPF/marché a été scellé et publié "
+                    "dans le même commit que les résultats."
+                )
         else:
             st.warning(
                 "La réponse MLB a échoué de façon contrôlée. "
@@ -766,6 +775,9 @@ if daily is not None:
                     "observation_id": publication.observation_id,
                     "outcome": publication.outcome,
                     "results_commit": publication.results_commit,
+                    "market_settlement_sha256": (
+                        publication.market_settlement_sha256
+                    ),
                 }
                 st.rerun()
 
@@ -1126,6 +1138,67 @@ else:
         + "</tbody></table></div>",
         unsafe_allow_html=True,
     )
+
+st.divider()
+st.subheader("Verdict prospectif LPF/marché")
+st.caption(
+    "Ce verdict utilise exclusivement le journal de cotes scellé avant les "
+    "matchs et les résultats officiels publiés ensuite. Le journal prospectif "
+    "d’origine n’est jamais modifié."
+)
+try:
+    sealed_market_settlement = load_market_settlement(selected_date)
+except (LPFEdgeMarketSettlementError, OSError, ValueError) as error:
+    st.error(f"Le verdict prospectif est impossible à vérifier : {error}")
+else:
+    if sealed_market_settlement is None:
+        st.info(
+            "Le verdict immuable de cette journée sera créé automatiquement "
+            "par la routine du matin lorsque tous les matchs seront tranchés "
+            "ou annulés."
+        )
+    else:
+        settlement_columns = st.columns(4)
+        settlement_columns[0].metric(
+            "Pronostics évalués",
+            sealed_market_settlement.evaluated_count,
+        )
+        settlement_columns[1].metric(
+            "Réussite scellée",
+            format_evaluation_percent(
+                sealed_market_settlement.accuracy_percent
+            ),
+        )
+        settlement_columns[2].metric(
+            "Résultat théorique scellé",
+            format_theoretical_units(
+                sealed_market_settlement.theoretical_net_units
+            ),
+        )
+        settlement_columns[3].metric(
+            "Rendement théorique scellé",
+            format_evaluation_percent(
+                sealed_market_settlement.theoretical_roi_percent
+            ),
+        )
+        st.success(
+            "Verdict vérifié : les cotes antérieures et les résultats "
+            "officiels sont liés par des empreintes SHA-256."
+        )
+        st.caption(
+            "Contrôle du "
+            f"{sealed_market_settlement.checkpoint_date.strftime('%d/%m/%Y')} · "
+            f"Réussites : {sealed_market_settlement.correct_count} · "
+            f"Sans cote antérieure : "
+            f"{sealed_market_settlement.missing_market_count} · "
+            f"Annulés : {sealed_market_settlement.void_count} · "
+            f"SHA-256 : `{sealed_market_settlement.settlement_sha256}`"
+        )
+        st.warning(
+            "Le résultat et le rendement sont des simulations théoriques à "
+            "mise fixe. Ils ne constituent ni un gain réel ni une "
+            "recommandation de pari."
+        )
 
 st.divider()
 st.subheader("Évaluation historique des écarts LPF–marché")

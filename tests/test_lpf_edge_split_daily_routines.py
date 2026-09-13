@@ -42,6 +42,14 @@ class LPFEdgeSplitDailyRoutinesTests(unittest.TestCase):
             results_paths=("result",),
             certification_paths=("certification",),
         )
+        self.odds = operations.DailyAfternoonOddsOutcome(
+            status=operations.DailyAfternoonOddsStatus.REUSED,
+            run_id=7,
+            events_matched=15,
+            bookmaker_quotes_saved=120,
+            quota_remaining=None,
+            message="Collecte réutilisée.",
+        )
 
     def _action(
         self,
@@ -103,20 +111,27 @@ class LPFEdgeSplitDailyRoutinesTests(unittest.TestCase):
             ) as refresh,
             mock.patch.object(
                 operations,
+                "_prepare_afternoon_odds",
+                return_value=self.odds,
+            ) as prepare_odds,
+            mock.patch.object(
+                operations,
                 "execute_daily_prediction_publication",
                 return_value=self.prediction,
             ) as predict,
         ):
             parent.attach_mock(refresh, "refresh")
+            parent.attach_mock(prepare_odds, "odds")
             parent.attach_mock(predict, "predict")
             result = self._run()
 
         self.assertEqual(result.target_date, TODAY)
         self.assertIs(result.data_refresh, self.refresh)
+        self.assertIs(result.odds, self.odds)
         self.assertIs(result.prediction, self.prediction)
         self.assertEqual(
             [call[0] for call in parent.method_calls],
-            ["refresh", "predict"],
+            ["refresh", "odds", "predict"],
         )
         self.assertEqual(inspect_state.call_count, 2)
         refresh.assert_called_once_with(
@@ -128,6 +143,12 @@ class LPFEdgeSplitDailyRoutinesTests(unittest.TestCase):
         predict.assert_called_once_with(
             TODAY,
             project_directory=self.project.resolve(),
+            database_path=self.database,
+            data_directory=self.data_directory,
+        )
+        prepare_odds.assert_called_once_with(
+            TODAY,
+            now_utc=NOW + timedelta(seconds=1),
             database_path=self.database,
             data_directory=self.data_directory,
         )
@@ -146,6 +167,10 @@ class LPFEdgeSplitDailyRoutinesTests(unittest.TestCase):
             mock.patch.object(operations, "refresh_daily_mlb_data") as refresh,
             mock.patch.object(
                 operations,
+                "_prepare_afternoon_odds",
+            ) as prepare_odds,
+            mock.patch.object(
+                operations,
                 "execute_daily_prediction_publication",
             ) as predict,
         ):
@@ -154,6 +179,7 @@ class LPFEdgeSplitDailyRoutinesTests(unittest.TestCase):
         self.assertEqual(raised.exception.stage, operations.DailyAfternoonStage.PREFLIGHT)
         self.assertIsNone(raised.exception.data_refresh)
         refresh.assert_not_called()
+        prepare_odds.assert_not_called()
         predict.assert_not_called()
 
     def test_refresh_failure_stops_before_prediction(self) -> None:
@@ -205,6 +231,10 @@ class LPFEdgeSplitDailyRoutinesTests(unittest.TestCase):
             ),
             mock.patch.object(
                 operations,
+                "_prepare_afternoon_odds",
+            ) as prepare_odds,
+            mock.patch.object(
+                operations,
                 "execute_daily_prediction_publication",
             ) as predict,
         ):
@@ -215,6 +245,7 @@ class LPFEdgeSplitDailyRoutinesTests(unittest.TestCase):
             operations.DailyAfternoonStage.PREDICTION_PREFLIGHT,
         )
         self.assertIs(raised.exception.data_refresh, self.refresh)
+        prepare_odds.assert_not_called()
         predict.assert_not_called()
 
     def test_prediction_failure_reports_that_data_was_refreshed(self) -> None:

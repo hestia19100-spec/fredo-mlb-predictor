@@ -32,6 +32,7 @@ from src.lpf_edge_dashboard import (
     load_certified_prediction_day,
     load_latest_score_summary,
 )
+from src.lpf_edge_odds_display import load_latest_moneyline_odds_display
 from src.mlb_api import MLBAPIError
 from src.odds_api import OddsAPIError, odds_api_key_is_configured
 from src.odds_ingestion_service import (
@@ -138,6 +139,15 @@ class DailyAfternoonStage(str, Enum):
     PREDICTION = "PREDICTION"
 
 
+class DailyAfternoonOddsStatus(str, Enum):
+    """Issue explicite de la préparation des cotes de l’après-midi."""
+
+    REUSED = "REUSED"
+    COLLECTED = "COLLECTED"
+    FAILED = "FAILED"
+    UNAVAILABLE = "UNAVAILABLE"
+
+
 class DailyAfternoonAutomationError(DailyOperationsError):
     """Echec ferme de la routine de l'apres-midi."""
 
@@ -147,9 +157,11 @@ class DailyAfternoonAutomationError(DailyOperationsError):
         message: str,
         *,
         data_refresh: ScheduleIngestionResult | None = None,
+        odds: DailyAfternoonOddsOutcome | None = None,
     ) -> None:
         self.stage = stage
         self.data_refresh = data_refresh
+        self.odds = odds
         super().__init__(message)
 
 
@@ -377,11 +389,24 @@ class DailyPredictionPublication:
 
 
 @dataclass(frozen=True, slots=True)
+class DailyAfternoonOddsOutcome:
+    """Résumé sans secret de la cote disponible avant la prédiction."""
+
+    status: DailyAfternoonOddsStatus
+    run_id: int | None
+    events_matched: int | None
+    bookmaker_quotes_saved: int | None
+    quota_remaining: int | None
+    message: str
+
+
+@dataclass(frozen=True, slots=True)
 class DailyAfternoonPublication:
     """Recu de l'actualisation MLB suivie de la prediction certifiee."""
 
     target_date: date
     data_refresh: ScheduleIngestionResult
+    odds: DailyAfternoonOddsOutcome
     prediction: DailyPredictionPublication
 
 
@@ -647,8 +672,8 @@ def _afternoon_routine_action(
     now_utc: datetime,
     prediction_action: DailyAction,
 ) -> DailyAction:
-    """Autorise l'actualisation puis la prediction a partir de midi a Paris."""
-    label = "Routine de l’après-midi : actualiser et prédire"
+    """Autorise l'actualisation, les cotes puis la prédiction après midi."""
+    label = "Routine de l’après-midi : actualiser, récupérer les cotes et prédire"
     terminal_states = {
         DailyActionState.DONE,
         DailyActionState.ACTION_REQUIRED,
@@ -685,7 +710,8 @@ def _afternoon_routine_action(
         "afternoon_prediction",
         label,
         DailyActionState.READY,
-        "MLB sera d’abord actualisé, puis le délai et les lanceurs seront revérifiés avant la prédiction.",
+        "MLB sera actualisé, le délai et les lanceurs seront revérifiés, puis "
+        "les cotes françaises seront préparées avant la prédiction.",
     )
 
 
@@ -1311,6 +1337,81 @@ def execute_daily_odds_collection(
     return result
 
 
+def _prepare_afternoon_odds(
+    target_date: date,
+    *,
+    now_utc: datetime,
+    database_path: Path,
+    data_directory: Path,
+) -> DailyAfternoonOddsOutcome:
+    """Réutilise les cotes françaises ou tente au plus une collecte."""
+    existing = load_latest_moneyline_odds_display(
+        target_date,
+        database_path=database_path,
+        required_region="fr",
+    )
+    if existing.run_id is not None:
+        return DailyAfternoonOddsOutcome(
+            status=DailyAfternoonOddsStatus.REUSED,
+            run_id=existing.run_id,
+            events_matched=existing.quoted_game_count,
+            bookmaker_quotes_saved=existing.quote_count,
+            quota_remaining=None,
+            message=(
+                "La collecte française déjà réussie aujourd’hui est réutilisée "
+                "sans consommer de crédit API."
+            ),
+        )
+
+    overview = inspect_daily_odds_collection(
+        target_date,
+        now_utc=now_utc,
+        database_path=database_path,
+    )
+    if overview.action.state is not DailyActionState.READY:
+        return DailyAfternoonOddsOutcome(
+            status=DailyAfternoonOddsStatus.UNAVAILABLE,
+            run_id=overview.latest_run_id,
+            events_matched=overview.events_matched,
+            bookmaker_quotes_saved=overview.bookmaker_quotes_saved,
+            quota_remaining=overview.quota_remaining,
+            message=overview.action.message,
+        )
+
+    try:
+        result = execute_daily_odds_collection(
+            target_date,
+            now_utc=now_utc,
+            database_path=database_path,
+            data_directory=data_directory,
+        )
+    except DailyOddsCollectionError as error:
+        return DailyAfternoonOddsOutcome(
+            status=DailyAfternoonOddsStatus.FAILED,
+            run_id=None,
+            events_matched=None,
+            bookmaker_quotes_saved=None,
+            quota_remaining=None,
+            message=(
+                "La collecte des cotes a échoué de façon contrôlée à l’étape "
+                f"{error.stage.value} : {error} La prédiction quotidienne "
+                "continue."
+            ),
+        )
+
+    return DailyAfternoonOddsOutcome(
+        status=DailyAfternoonOddsStatus.COLLECTED,
+        run_id=result.run_id,
+        events_matched=result.events_matched,
+        bookmaker_quotes_saved=result.bookmaker_quotes_saved,
+        quota_remaining=result.quota_remaining,
+        message=(
+            "Les cotes françaises ont été récupérées et archivées avant la "
+            "prédiction."
+        ),
+    )
+
+
 def execute_verified_local_backup(
     *,
     project_directory: Path = PROJECT_ROOT,
@@ -1915,7 +2016,7 @@ def execute_afternoon_prediction_routine(
     database_path: Path = DATABASE_PATH,
     data_directory: Path = DATA_DIR,
 ) -> DailyAfternoonPublication:
-    """Actualise MLB puis lance la prediction seulement apres un second controle."""
+    """Actualise MLB et les cotes puis prédit après un second contrôle."""
     instant = _utc_now()
     if not isinstance(instant, datetime) or instant.tzinfo is None:
         raise DailyAfternoonAutomationError(
@@ -1986,6 +2087,13 @@ def execute_afternoon_prediction_routine(
             data_refresh=refresh,
         )
 
+    odds = _prepare_afternoon_odds(
+        selected,
+        now_utc=refreshed_instant,
+        database_path=database_path,
+        data_directory=data_directory,
+    )
+
     try:
         prediction = execute_daily_prediction_publication(
             selected,
@@ -1998,16 +2106,19 @@ def execute_afternoon_prediction_routine(
             DailyAfternoonStage.PREDICTION,
             "Les données MLB sont actualisées, mais la prédiction n'a pas pu être terminée.",
             data_refresh=refresh,
+            odds=odds,
         ) from error
     if prediction.target_date != selected:
         raise DailyAfternoonAutomationError(
             DailyAfternoonStage.PREDICTION,
             "La prédiction produite concerne une date inattendue.",
             data_refresh=refresh,
+            odds=odds,
         )
     return DailyAfternoonPublication(
         target_date=selected,
         data_refresh=refresh,
+        odds=odds,
         prediction=prediction,
     )
 
@@ -2187,6 +2298,8 @@ def execute_daily_results_publication(
 __all__ = [
     "AFTERNOON_ROUTINE_START_PARIS",
     "DailyAfternoonAutomationError",
+    "DailyAfternoonOddsOutcome",
+    "DailyAfternoonOddsStatus",
     "DailyAfternoonPublication",
     "DailyAfternoonStage",
     "DailyBackupAutomationError",

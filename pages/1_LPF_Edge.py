@@ -10,6 +10,7 @@ import streamlit as st
 
 from src.lpf_edge_daily_operations import (
     DailyAfternoonAutomationError,
+    DailyAfternoonOddsStatus,
     DailyBackupAutomationError,
     DailyActionState,
     DailyOperationsError,
@@ -231,8 +232,9 @@ if daily is not None:
         st.markdown("### Après-midi — Prédictions")
         st.caption(
             "À partir de 12:00, MLB est d’abord actualisé. Les lanceurs, "
-            "l’horaire du premier match et le délai minimal sont ensuite "
-            "revérifiés avant toute prédiction."
+            "l’horaire du premier match et le délai minimal sont revérifiés, "
+            "puis les cotes françaises sont réutilisées ou récupérées avant "
+            "toute prédiction."
         )
         render_action_status(daily.afternoon_action)
         afternoon_clicked = st.button(
@@ -632,11 +634,39 @@ if daily is not None:
     if prediction_feedback is not None:
         st.success(
             "Routine de l’après-midi terminée : données MLB actualisées, "
-            "prédictions créées, publiées et certifiées."
+            "cotes contrôlées, prédictions créées, publiées et certifiées."
         )
+        odds_status = prediction_feedback.get(
+            "odds_status",
+            DailyAfternoonOddsStatus.UNAVAILABLE.value,
+        )
+        odds_label = {
+            DailyAfternoonOddsStatus.REUSED.value: "collecte existante réutilisée",
+            DailyAfternoonOddsStatus.COLLECTED.value: "nouvelle collecte réussie",
+            DailyAfternoonOddsStatus.FAILED.value: "collecte échouée sans bloquer la prédiction",
+            DailyAfternoonOddsStatus.UNAVAILABLE.value: "cotes indisponibles sans bloquer la prédiction",
+        }[odds_status]
+        odds_details = prediction_feedback.get(
+            "odds_message",
+            "Aucun état de cotes n’a été conservé par l’ancienne session.",
+        )
+        if odds_status in {
+            DailyAfternoonOddsStatus.FAILED.value,
+            DailyAfternoonOddsStatus.UNAVAILABLE.value,
+        }:
+            st.warning(f"Cotes françaises : {odds_label}. {odds_details}")
+        else:
+            st.info(f"Cotes françaises : {odds_label}. {odds_details}")
+        odds_run = prediction_feedback.get("odds_run_id")
+        odds_quotes = prediction_feedback.get("odds_quotes")
+        odds_quota = prediction_feedback.get("odds_quota_remaining")
         st.caption(
             f"Collecte auditée n° {prediction_feedback['run_id']} : "
             f"{prediction_feedback['games_received']} match(s) reçu(s)  \n"
+            f"Collecte de cotes : "
+            f"{f'n° {odds_run}' if odds_run is not None else 'aucune'} ; "
+            f"{odds_quotes if odds_quotes is not None else '—'} cote(s) ; "
+            f"{odds_quota if odds_quota is not None else '—'} crédit(s) restant(s)  \n"
             f"Lot : `{prediction_feedback['batch_id']}`  \n"
             f"Commit des prédictions : "
             f"`{prediction_feedback['results_commit']}`  \n"
@@ -646,7 +676,7 @@ if daily is not None:
 
     if afternoon_clicked:
         with st.spinner(
-            "Actualisation MLB, contrôles, prédictions et certification en cours..."
+            "Actualisation MLB, contrôle des cotes, prédictions et certification en cours..."
         ):
             try:
                 publication = execute_afternoon_prediction_routine(
@@ -661,6 +691,8 @@ if daily is not None:
                         "Les données MLB ont bien été actualisées avant cet arrêt : "
                         f"collecte auditée n° {error.data_refresh.run_id}."
                     )
+                if error.odds is not None:
+                    st.info(f"État des cotes avant l’arrêt : {error.odds.message}")
             except OSError as error:
                 st.error(
                     "Routine arrêtée avant sa fin : "
@@ -670,6 +702,11 @@ if daily is not None:
                 st.session_state["lpf_edge_prediction_success"] = {
                     "run_id": publication.data_refresh.run_id,
                     "games_received": publication.data_refresh.games_received,
+                    "odds_status": publication.odds.status.value,
+                    "odds_message": publication.odds.message,
+                    "odds_run_id": publication.odds.run_id,
+                    "odds_quotes": publication.odds.bookmaker_quotes_saved,
+                    "odds_quota_remaining": publication.odds.quota_remaining,
                     "batch_id": publication.prediction.batch_id,
                     "results_commit": publication.prediction.results_commit,
                     "certification_commit": (

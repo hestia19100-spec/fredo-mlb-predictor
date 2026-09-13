@@ -18,6 +18,7 @@ from src.lpf_edge_daily_operations import (
     execute_verified_local_backup,
     inspect_daily_operations,
     list_local_backup_names,
+    load_prediction_preparation,
     load_verified_local_backup,
 )
 from src.lpf_edge_dashboard import (
@@ -135,6 +136,17 @@ def render_action_status(action) -> None:
     st.caption(action.message)
 
 
+def format_remaining_minutes(value: float | None) -> str:
+    if value is None:
+        return "—"
+    rounded = round(abs(value))
+    hours, minutes = divmod(rounded, 60)
+    duration = f"{hours} h {minutes:02d}" if hours else f"{minutes} min"
+    if value < 0:
+        return f"Dépassée de {duration}"
+    return duration
+
+
 st.divider()
 st.subheader("Centre d’actions quotidien")
 try:
@@ -189,6 +201,129 @@ if daily is not None:
             ),
             key="afternoon_prediction_routine",
         )
+
+    st.markdown("### Préparation avant les prédictions")
+    st.caption(
+        "Lecture locale de la dernière collecte enregistrée. Ce tableau "
+        "ne contacte pas MLB et ne lance pas le modèle."
+    )
+    try:
+        preparation = load_prediction_preparation(
+            daily.target_date,
+            now_utc=daily.inspected_at_utc,
+        )
+    except (DailyOperationsError, OSError, ValueError) as error:
+        st.error(f"La préparation locale ne peut pas être affichée : {error}")
+    else:
+        preparation_columns = st.columns(4)
+        preparation_columns[0].metric("Matchs", preparation.game_count)
+        preparation_columns[1].metric(
+            "Lanceurs annoncés",
+            f"{preparation.announced_pitcher_count} / "
+            f"{preparation.expected_pitcher_count}",
+        )
+        preparation_columns[2].metric(
+            "Premier match (Paris)",
+            (
+                format_paris_time(preparation.first_start_utc)
+                if preparation.first_start_utc is not None
+                else "—"
+            ),
+        )
+        preparation_columns[3].metric(
+            "Limite Shadow v2 (Paris)",
+            (
+                format_paris_time(preparation.prediction_deadline_utc)
+                if preparation.prediction_deadline_utc is not None
+                else "—"
+            ),
+        )
+
+        if preparation.game_count == 0:
+            st.info(
+                "Aucun match n’est encore enregistré pour aujourd’hui. "
+                "La routine de l’après-midi commencera par actualiser MLB."
+            )
+        else:
+            deadline_message = (
+                "Temps restant avant la limite de lancement de Shadow v2 : "
+                f"{format_remaining_minutes(preparation.remaining_minutes)}."
+            )
+            if (
+                preparation.remaining_minutes is not None
+                and preparation.remaining_minutes < 0
+            ):
+                st.error(deadline_message)
+            elif (
+                preparation.remaining_minutes is not None
+                and preparation.remaining_minutes <= 60
+            ):
+                st.warning(deadline_message)
+            else:
+                st.caption(deadline_message)
+
+            missing_ratio = (
+                preparation.missing_pitcher_count
+                / preparation.expected_pitcher_count
+            )
+            pitcher_message = (
+                f"{preparation.missing_pitcher_count} lanceur(s) probable(s) "
+                "manquant(s) sur "
+                f"{preparation.expected_pitcher_count}. La routine de "
+                "l’après-midi actualisera MLB avant de lancer le modèle."
+            )
+            if preparation.missing_pitcher_count == 0:
+                st.success("Tous les lanceurs probables sont annoncés.")
+            elif missing_ratio > 0.25:
+                st.warning(pitcher_message)
+            else:
+                st.info(pitcher_message)
+
+            preparation_rows: list[dict[str, str]] = []
+            for game in preparation.games:
+                missing_for_game = 2 - game.announced_pitcher_count
+                if missing_for_game == 0:
+                    readiness = "Complet"
+                elif missing_for_game == 1:
+                    readiness = "1 lanceur manquant"
+                else:
+                    readiness = "2 lanceurs manquants"
+                preparation_rows.append(
+                    {
+                        "Heure de Paris": format_paris_time(
+                            game.scheduled_start_utc
+                        ),
+                        "Match": (
+                            f"{game.away_team_name} @ {game.home_team_name}"
+                        ),
+                        "Lanceur extérieur": (
+                            game.away_probable_pitcher_name or "Non annoncé"
+                        ),
+                        "Lanceur domicile": (
+                            game.home_probable_pitcher_name or "Non annoncé"
+                        ),
+                        "État": readiness,
+                    }
+                )
+            st.dataframe(
+                preparation_rows,
+                width="stretch",
+                height="content",
+                hide_index=True,
+                column_config={
+                    "Heure de Paris": st.column_config.TextColumn(
+                        width="small"
+                    ),
+                    "Match": st.column_config.TextColumn(width="large"),
+                    "Lanceur extérieur": st.column_config.TextColumn(
+                        width="medium"
+                    ),
+                    "Lanceur domicile": st.column_config.TextColumn(
+                        width="medium"
+                    ),
+                    "État": st.column_config.TextColumn(width="medium"),
+                },
+            )
 
     st.markdown("### Sauvegarde indépendante")
     backup_status_column, backup_button_column = st.columns((2, 1))

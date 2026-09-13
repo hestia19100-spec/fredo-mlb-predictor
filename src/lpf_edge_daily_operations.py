@@ -210,6 +210,80 @@ class LocalGameDayState:
 
 
 @dataclass(frozen=True, slots=True)
+class PredictionPreparationGame:
+    """Match local présenté avant le lancement des prédictions."""
+
+    game_id: int
+    scheduled_start_utc: datetime
+    away_team_name: str
+    home_team_name: str
+    away_probable_pitcher_name: str | None
+    home_probable_pitcher_name: str | None
+
+    @property
+    def announced_pitcher_count(self) -> int:
+        return sum(
+            pitcher is not None
+            for pitcher in (
+                self.away_probable_pitcher_name,
+                self.home_probable_pitcher_name,
+            )
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class PredictionPreparation:
+    """État local des informations disponibles avant une prédiction."""
+
+    target_date: date
+    inspected_at_utc: datetime
+    games: tuple[PredictionPreparationGame, ...]
+
+    @property
+    def game_count(self) -> int:
+        return len(self.games)
+
+    @property
+    def expected_pitcher_count(self) -> int:
+        return self.game_count * 2
+
+    @property
+    def announced_pitcher_count(self) -> int:
+        return sum(game.announced_pitcher_count for game in self.games)
+
+    @property
+    def missing_pitcher_count(self) -> int:
+        return self.expected_pitcher_count - self.announced_pitcher_count
+
+    @property
+    def complete_game_count(self) -> int:
+        return sum(game.announced_pitcher_count == 2 for game in self.games)
+
+    @property
+    def first_start_utc(self) -> datetime | None:
+        return min(
+            (game.scheduled_start_utc for game in self.games),
+            default=None,
+        )
+
+    @property
+    def prediction_deadline_utc(self) -> datetime | None:
+        if self.first_start_utc is None:
+            return None
+        return self.first_start_utc - timedelta(
+            minutes=MINIMUM_PREDICTION_LEAD_MINUTES
+        )
+
+    @property
+    def remaining_minutes(self) -> float | None:
+        if self.prediction_deadline_utc is None:
+            return None
+        return (
+            self.prediction_deadline_utc - self.inspected_at_utc
+        ).total_seconds() / 60
+
+
+@dataclass(frozen=True, slots=True)
 class DailyAction:
     """Une action future et son autorisation locale courante."""
 
@@ -760,6 +834,82 @@ def load_local_game_day_state(
         final_game_count=final_count,
         first_start_utc=min(starts) if starts else None,
     )
+
+
+def load_prediction_preparation(
+    target_date: date,
+    *,
+    now_utc: datetime | None = None,
+    database_path: Path = DATABASE_PATH,
+) -> PredictionPreparation:
+    """Relit en lecture seule les matchs et lanceurs déjà enregistrés."""
+    if not isinstance(target_date, date) or isinstance(target_date, datetime):
+        raise TypeError("target_date doit être une date exacte.")
+    instant = now_utc or datetime.now(timezone.utc)
+    if not isinstance(instant, datetime) or instant.tzinfo is None:
+        raise DailyOperationsError(
+            "L’horloge du tableau de préparation doit être en UTC."
+        )
+    instant = instant.astimezone(timezone.utc)
+    if not database_path.is_file() or database_path.is_symlink():
+        return PredictionPreparation(target_date, instant, ())
+
+    uri = f"{database_path.resolve().as_uri()}?mode=ro"
+    connection: sqlite3.Connection | None = None
+    try:
+        connection = sqlite3.connect(uri, uri=True)
+        rows = connection.execute(
+            """
+            SELECT
+                games.game_id,
+                games.game_datetime_utc,
+                away_team.name,
+                home_team.name,
+                away_pitcher.full_name,
+                home_pitcher.full_name
+            FROM games
+            LEFT JOIN teams AS away_team
+                ON away_team.team_id = games.away_team_id
+            LEFT JOIN teams AS home_team
+                ON home_team.team_id = games.home_team_id
+            LEFT JOIN pitchers AS away_pitcher
+                ON away_pitcher.pitcher_id = games.away_probable_pitcher_id
+            LEFT JOIN pitchers AS home_pitcher
+                ON home_pitcher.pitcher_id = games.home_probable_pitcher_id
+            WHERE games.official_date = ?
+            ORDER BY games.game_datetime_utc, games.game_id
+            """,
+            (target_date.isoformat(),),
+        ).fetchall()
+    except sqlite3.Error as error:
+        raise DailyOperationsError(
+            "Les informations locales de préparation ne peuvent pas être relues."
+        ) from error
+    finally:
+        if connection is not None:
+            connection.close()
+
+    games: list[PredictionPreparationGame] = []
+    for row in rows:
+        away_team_name = str(row[2] or "").strip()
+        home_team_name = str(row[3] or "").strip()
+        if not away_team_name or not home_team_name:
+            raise DailyOperationsError(
+                "Une équipe locale est absente du tableau de préparation."
+            )
+        away_pitcher = str(row[4] or "").strip() or None
+        home_pitcher = str(row[5] or "").strip() or None
+        games.append(
+            PredictionPreparationGame(
+                game_id=int(row[0]),
+                scheduled_start_utc=_parse_game_start(row[1]),
+                away_team_name=away_team_name,
+                home_team_name=home_team_name,
+                away_probable_pitcher_name=away_pitcher,
+                home_probable_pitcher_name=home_pitcher,
+            )
+        )
+    return PredictionPreparation(target_date, instant, tuple(games))
 
 
 def inspect_prediction_slot(

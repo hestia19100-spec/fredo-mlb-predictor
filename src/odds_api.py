@@ -148,13 +148,29 @@ def _parse_bookmaker(
         "bookmaker.last_update",
     )
     markets = value.get("markets")
-    if not isinstance(markets, list) or len(markets) != 1:
+    if not isinstance(markets, list):
         raise OddsAPIError(
-            f"Le bookmaker {key} ne contient pas un marché Moneyline unique."
+            f"La liste des marchés du bookmaker {key} est invalide."
         )
-    market = markets[0]
-    if not isinstance(market, dict) or market.get("key") != ODDS_API_MARKET:
-        raise OddsAPIError(f"Le marché du bookmaker {key} n’est pas Moneyline.")
+    markets_by_key: dict[str, dict[str, object]] = {}
+    for market in markets:
+        if not isinstance(market, dict):
+            raise OddsAPIError(f"Un marché du bookmaker {key} est invalide.")
+        market_key = _required_text(market.get("key"), "market.key")
+        if market_key not in {ODDS_API_MARKET, "h2h_lay"}:
+            raise OddsAPIError(
+                f"Le bookmaker {key} contient le marché inattendu {market_key}."
+            )
+        if market_key in markets_by_key:
+            raise OddsAPIError(
+                f"Le bookmaker {key} répète le marché {market_key}."
+            )
+        markets_by_key[market_key] = market
+    if ODDS_API_MARKET not in markets_by_key:
+        raise OddsAPIError(
+            f"Le bookmaker {key} ne contient pas le marché Moneyline h2h."
+        )
+    market = markets_by_key[ODDS_API_MARKET]
     outcomes = market.get("outcomes")
     if not isinstance(outcomes, list) or len(outcomes) != 2:
         raise OddsAPIError(

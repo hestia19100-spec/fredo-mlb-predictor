@@ -211,6 +211,72 @@ class OddsAPITests(unittest.TestCase):
         with self.assertRaisesRegex(odds_api.OddsAPIError, "bookmaker est répété"):
             self._fetch(payload)
 
+    def test_exchange_lay_market_is_explicitly_ignored(self) -> None:
+        payload = sample_payload()
+        payload[0]["bookmakers"][0]["markets"].append(
+            {
+                "key": "h2h_lay",
+                "outcomes": [
+                    {"name": "Pittsburgh Pirates", "price": 2.16},
+                    {"name": "Chicago Cubs", "price": 1.75},
+                ],
+            }
+        )
+
+        result = self._fetch(payload)
+
+        bookmaker = result.events[0].bookmakers[0]
+        self.assertEqual(bookmaker.away_decimal_odds, Decimal("2.15"))
+        self.assertEqual(bookmaker.home_decimal_odds, Decimal("1.74"))
+
+    def test_duplicate_moneyline_market_is_rejected(self) -> None:
+        payload = sample_payload()
+        payload[0]["bookmakers"][0]["markets"].append(
+            deepcopy(payload[0]["bookmakers"][0]["markets"][0])
+        )
+        with self.assertRaisesRegex(
+            odds_api.OddsAPIError,
+            "répète le marché h2h",
+        ):
+            self._fetch(payload)
+
+    def test_duplicate_lay_market_is_rejected(self) -> None:
+        payload = sample_payload()
+        lay_market = {
+            "key": "h2h_lay",
+            "outcomes": [],
+        }
+        payload[0]["bookmakers"][0]["markets"].extend(
+            [lay_market, deepcopy(lay_market)]
+        )
+        with self.assertRaisesRegex(
+            odds_api.OddsAPIError,
+            "répète le marché h2h_lay",
+        ):
+            self._fetch(payload)
+
+    def test_unexpected_market_is_rejected(self) -> None:
+        payload = sample_payload()
+        payload[0]["bookmakers"][0]["markets"].append(
+            {"key": "spreads", "outcomes": []}
+        )
+        with self.assertRaisesRegex(
+            odds_api.OddsAPIError,
+            "marché inattendu spreads",
+        ):
+            self._fetch(payload)
+
+    def test_lay_market_without_moneyline_is_rejected(self) -> None:
+        payload = sample_payload()
+        payload[0]["bookmakers"][0]["markets"] = [
+            {"key": "h2h_lay", "outcomes": []}
+        ]
+        with self.assertRaisesRegex(
+            odds_api.OddsAPIError,
+            "ne contient pas le marché Moneyline h2h",
+        ):
+            self._fetch(payload)
+
     def test_non_decimal_or_even_price_is_rejected(self) -> None:
         for price in (1.0, "2.15", True):
             with self.subTest(price=price):

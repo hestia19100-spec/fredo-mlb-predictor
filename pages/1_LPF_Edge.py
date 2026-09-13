@@ -40,6 +40,10 @@ from src.lpf_edge_odds_display import (
     LPFEdgeOddsDisplayError,
     load_latest_moneyline_odds_display,
 )
+from src.lpf_edge_market_comparison import (
+    LPFEdgeMarketComparisonError,
+    build_french_market_comparison,
+)
 st.set_page_config(
     page_title="LPF Edge · MLB",
     page_icon="⚾",
@@ -166,6 +170,12 @@ def odds_region_label(region: str | None) -> str:
         region,
         "Non renseignée",
     )
+
+
+def format_percentage_point_gap(value: Decimal | None) -> str:
+    if value is None:
+        return "—"
+    return f"{value:+.1f} pt"
 
 
 st.divider()
@@ -867,6 +877,118 @@ st.markdown(
     'probabilité dépasse 50 %. Ce n’est ni une cote, ni un conseil de pari.</p>',
     unsafe_allow_html=True,
 )
+
+st.divider()
+st.subheader("Comparaison LPF Edge / marché français")
+st.caption(
+    "Pour chaque bookmaker, LPF Edge convertit les deux cotes en "
+    "probabilités puis retire proportionnellement sa marge. La colonne "
+    "« Marché français corrigé » est la moyenne de ces probabilités. "
+    "L’écart reste descriptif et n’est pas un conseil de pari."
+)
+try:
+    french_odds_display = load_latest_moneyline_odds_display(
+        selected_date,
+        required_region="fr",
+    )
+    market_comparison = build_french_market_comparison(
+        day,
+        french_odds_display,
+        team_names=team_names,
+    )
+except (
+    LPFEdgeMarketComparisonError,
+    LPFEdgeOddsDisplayError,
+    OSError,
+    ValueError,
+) as error:
+    st.error(f"La comparaison avec le marché français est impossible : {error}")
+else:
+    if market_comparison.odds_run_id is None:
+        st.info(
+            "Aucune collecte française réussie n’est disponible pour cette "
+            "journée. Les prédictions certifiées restent consultables au-dessus."
+        )
+    else:
+        comparison_columns = st.columns(3)
+        comparison_columns[0].metric(
+            "Collecte française",
+            f"N° {market_comparison.odds_run_id}",
+        )
+        comparison_columns[1].metric(
+            "Matchs comparables",
+            f"{market_comparison.comparable_count} / "
+            f"{len(market_comparison.rows)}",
+        )
+        comparison_columns[2].metric(
+            "Collecte terminée",
+            (
+                format_paris_datetime(
+                    market_comparison.odds_completed_at_utc
+                )
+                if market_comparison.odds_completed_at_utc is not None
+                else "—"
+            ),
+        )
+
+        comparison_rows: list[dict[str, str | int]] = []
+        for row in market_comparison.rows:
+            comparison_rows.append(
+                {
+                    "Heure de Paris": format_paris_time(
+                        row.scheduled_start_utc
+                    ),
+                    "Match": (
+                        f"{row.home_team_name} vs {row.away_team_name}"
+                    ),
+                    "Équipe LPF": row.predicted_team_name,
+                    "Probabilité LPF": probability_percent(
+                        row.model_probability
+                    ),
+                    "Marché français corrigé": probability_percent(
+                        row.french_market_probability
+                    )
+                    if row.french_market_probability is not None
+                    else "—",
+                    "Écart LPF – marché": format_percentage_point_gap(
+                        row.gap_percentage_points
+                    ),
+                    "Meilleure cote française": format_decimal_odds(
+                        row.best_decimal_odds
+                    ),
+                    "Chez": ", ".join(row.best_bookmakers) or "—",
+                    "Bookmakers": row.bookmaker_count,
+                }
+            )
+
+        st.dataframe(
+            comparison_rows,
+            width="stretch",
+            height="content",
+            hide_index=True,
+            column_config={
+                "Heure de Paris": st.column_config.TextColumn(width="small"),
+                "Match": st.column_config.TextColumn(width="large"),
+                "Équipe LPF": st.column_config.TextColumn(width="large"),
+                "Probabilité LPF": st.column_config.TextColumn(width="medium"),
+                "Marché français corrigé": st.column_config.TextColumn(
+                    width="medium"
+                ),
+                "Écart LPF – marché": st.column_config.TextColumn(
+                    width="medium"
+                ),
+                "Meilleure cote française": st.column_config.TextColumn(
+                    width="medium"
+                ),
+                "Chez": st.column_config.TextColumn(width="medium"),
+                "Bookmakers": st.column_config.NumberColumn(width="small"),
+            },
+        )
+        st.caption(
+            "Un écart positif signifie uniquement que LPF Edge attribue une "
+            "probabilité plus élevée que la moyenne corrigée des bookmakers. "
+            "Il ne garantit ni victoire ni rentabilité."
+        )
 
 st.divider()
 st.subheader("Résultats vérifiés")

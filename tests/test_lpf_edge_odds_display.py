@@ -218,6 +218,15 @@ class LPFEdgeOddsDisplayTests(unittest.TestCase):
         self.assertEqual(first.home_best_bookmakers, ("Book A", "Book B"))
         self.assertEqual(first.away_best_decimal_odds, Decimal("2.20"))
         self.assertEqual(first.away_best_bookmakers, ("Book B",))
+        self.assertEqual(len(first.bookmaker_quotes), 2)
+        self.assertEqual(
+            first.bookmaker_quotes[0].home_decimal_odds,
+            Decimal("1.74"),
+        )
+        self.assertEqual(
+            first.bookmaker_quotes[1].away_decimal_odds,
+            Decimal("2.20"),
+        )
         self.assertEqual(
             first.latest_bookmaker_update_utc.isoformat(),
             "2026-09-13T08:59:00+00:00",
@@ -248,6 +257,29 @@ class LPFEdgeOddsDisplayTests(unittest.TestCase):
 
         self.assertEqual(display.run_id, 3)
         self.assertEqual(display.quote_count, 2)
+
+    def test_required_region_selects_latest_success_in_that_region(self) -> None:
+        self._create_database()
+        self._insert_runs_and_quotes()
+
+        display = load_latest_moneyline_odds_display(
+            self.target,
+            database_path=self.database,
+            required_region="eu",
+        )
+
+        self.assertEqual(display.run_id, 1)
+        self.assertEqual(display.region, "eu")
+        self.assertEqual(display.quote_count, 0)
+
+    def test_invalid_required_region_is_rejected_before_database_access(self) -> None:
+        with self.assertRaisesRegex(ValueError, "région"):
+            load_latest_moneyline_odds_display(
+                self.target,
+                database_path=self.database,
+                required_region="us",
+            )
+        self.assertFalse(self.database.exists())
 
     def test_invalid_saved_decimal_fails_closed(self) -> None:
         self._create_database()

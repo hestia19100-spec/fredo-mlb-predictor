@@ -16,6 +16,17 @@ class LPFEdgeOddsDisplayError(RuntimeError):
 
 
 @dataclass(frozen=True, slots=True)
+class MoneylineBookmakerDisplayQuote:
+    """Paire de cotes cohérente provenant d’un même bookmaker."""
+
+    key: str
+    title: str
+    last_update_utc: datetime
+    home_decimal_odds: Decimal
+    away_decimal_odds: Decimal
+
+
+@dataclass(frozen=True, slots=True)
 class MoneylineOddsDisplayGame:
     """Meilleures cotes descriptives d’un match, domicile en premier."""
 
@@ -30,6 +41,7 @@ class MoneylineOddsDisplayGame:
     away_best_bookmakers: tuple[str, ...]
     bookmaker_titles: tuple[str, ...]
     latest_bookmaker_update_utc: datetime | None
+    bookmaker_quotes: tuple[MoneylineBookmakerDisplayQuote, ...]
 
     @property
     def has_odds(self) -> bool:
@@ -116,6 +128,7 @@ def _empty_game(row: tuple[object, ...]) -> MoneylineOddsDisplayGame:
         away_best_bookmakers=(),
         bookmaker_titles=(),
         latest_bookmaker_update_utc=None,
+        bookmaker_quotes=(),
     )
 
 
@@ -123,10 +136,13 @@ def load_latest_moneyline_odds_display(
     target_date: date,
     *,
     database_path: Path = DATABASE_PATH,
+    required_region: str | None = None,
 ) -> MoneylineOddsDisplay:
     """Relit la dernière collecte réussie sans réseau ni écriture SQLite."""
     if not isinstance(target_date, date) or isinstance(target_date, datetime):
         raise TypeError("target_date doit être une date exacte.")
+    if required_region not in {None, "eu", "fr"}:
+        raise ValueError("La région de cotes demandée est invalide.")
     if not database_path.is_file() or database_path.is_symlink():
         return MoneylineOddsDisplay(target_date, None, None, None, 0, ())
 
@@ -169,16 +185,17 @@ def load_latest_moneyline_odds_display(
                 target_date, None, None, None, 0, base_games
             )
 
-        run = connection.execute(
-            """
+        query = """
             SELECT run_id, region, completed_at_utc
             FROM odds_ingestion_runs
             WHERE target_official_date = ? AND status = 'success'
-            ORDER BY run_id DESC
-            LIMIT 1
-            """,
-            (target_date.isoformat(),),
-        ).fetchone()
+        """
+        parameters: list[object] = [target_date.isoformat()]
+        if required_region is not None:
+            query += " AND region = ?"
+            parameters.append(required_region)
+        query += " ORDER BY run_id DESC LIMIT 1"
+        run = connection.execute(query, parameters).fetchone()
         if run is None:
             return MoneylineOddsDisplay(
                 target_date, None, None, None, 0, base_games
@@ -241,6 +258,7 @@ def load_latest_moneyline_odds_display(
         home_prices: list[tuple[Decimal, str]] = []
         away_prices: list[tuple[Decimal, str]] = []
         updates: list[datetime] = []
+        bookmaker_quotes: list[MoneylineBookmakerDisplayQuote] = []
         for row in rows:
             bookmaker_key = str(row[1] or "").strip()
             bookmaker_title = str(row[2] or "").strip()
@@ -254,14 +272,26 @@ def load_latest_moneyline_odds_display(
                 )
             bookmaker_keys.add(bookmaker_key)
             bookmaker_titles.append(bookmaker_title)
-            updates.append(
-                _utc_datetime(row[3], "L’actualisation du bookmaker")
+            last_update = _utc_datetime(
+                row[3], "L’actualisation du bookmaker"
             )
+            away_odds = _decimal_odds(row[4], "La cote extérieure")
+            home_odds = _decimal_odds(row[5], "La cote domicile")
+            updates.append(last_update)
             away_prices.append(
-                (_decimal_odds(row[4], "La cote extérieure"), bookmaker_title)
+                (away_odds, bookmaker_title)
             )
             home_prices.append(
-                (_decimal_odds(row[5], "La cote domicile"), bookmaker_title)
+                (home_odds, bookmaker_title)
+            )
+            bookmaker_quotes.append(
+                MoneylineBookmakerDisplayQuote(
+                    key=bookmaker_key,
+                    title=bookmaker_title,
+                    last_update_utc=last_update,
+                    home_decimal_odds=home_odds,
+                    away_decimal_odds=away_odds,
+                )
             )
 
         best_home = max(price for price, _ in home_prices)
@@ -299,6 +329,7 @@ def load_latest_moneyline_odds_display(
                     sorted(set(bookmaker_titles), key=str.casefold)
                 ),
                 latest_bookmaker_update_utc=max(updates),
+                bookmaker_quotes=tuple(bookmaker_quotes),
             )
         )
 
@@ -314,6 +345,7 @@ def load_latest_moneyline_odds_display(
 
 __all__ = [
     "LPFEdgeOddsDisplayError",
+    "MoneylineBookmakerDisplayQuote",
     "MoneylineOddsDisplay",
     "MoneylineOddsDisplayGame",
     "load_latest_moneyline_odds_display",

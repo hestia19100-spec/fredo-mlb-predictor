@@ -47,6 +47,21 @@ class AppInterfaceTests(unittest.TestCase):
         self.assertIn("st.dataframe", self.source)
         self.assertIn('height="content"', self.source)
 
+    def test_home_team_is_displayed_before_away_team(self) -> None:
+        self.assertIn(
+            'f"{game.home_team_name} vs {game.away_team_name}"',
+            self.source,
+        )
+        self.assertNotIn(
+            'f"{game.away_team_name} @ {game.home_team_name}"',
+            self.source,
+        )
+        self.assertIn(
+            'return f"{game.home_score} - {game.away_score}"',
+            self.source,
+        )
+        self.assertIn('"Score (dom. - ext.)"', self.source)
+
 
 if __name__ == "__main__":
     unittest.main()

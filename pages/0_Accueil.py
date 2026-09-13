@@ -47,7 +47,7 @@ def format_score(game: StoredGame) -> str:
     if game.away_score is None or game.home_score is None:
         return "—"
 
-    return f"{game.away_score} - {game.home_score}"
+    return f"{game.home_score} - {game.away_score}"
 
 
 def pitcher_name_or_missing(pitcher_name: str | None) -> str:
@@ -70,16 +70,16 @@ def build_table_rows(games: list[StoredGame]) -> list[dict[str, str]]:
         {
             "Heure de Paris": format_game_time(game.game_datetime_utc),
             "Match": (
-                f"{game.away_team_name} @ {game.home_team_name}"
-            ),
-            "Lanceur extérieur": pitcher_name_or_missing(
-                game.away_probable_pitcher_name
+                f"{game.home_team_name} vs {game.away_team_name}"
             ),
             "Lanceur domicile": pitcher_name_or_missing(
                 game.home_probable_pitcher_name
             ),
+            "Lanceur extérieur": pitcher_name_or_missing(
+                game.away_probable_pitcher_name
+            ),
             "Statut": game.status_detail,
-            "Score": format_score(game),
+            "Score (dom. - ext.)": format_score(game),
             "Stade": game.venue_name or "—",
         }
         for game in games

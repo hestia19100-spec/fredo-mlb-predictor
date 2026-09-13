@@ -440,7 +440,15 @@ class LPFEdgeDashboardTests(unittest.TestCase):
         self.assertIn("inspect_daily_odds_collection", source)
         self.assertIn("execute_daily_odds_collection", source)
         self.assertIn("DailyOddsCollectionError", source)
+        self.assertIn("load_latest_moneyline_odds_display", source)
+        self.assertIn("LPFEdgeOddsDisplayError", source)
         self.assertIn("Cotes Moneyline", source)
+        self.assertIn("Dernières cotes enregistrées", source)
+        self.assertIn("Meilleure cote domicile", source)
+        self.assertIn("Meilleure cote extérieur", source)
+        self.assertIn("Bookmaker domicile", source)
+        self.assertIn("Bookmaker extérieur", source)
+        self.assertIn("Bookmakers observés", source)
         self.assertIn("THE_ODDS_API_KEY", source)
         self.assertIn("Crédits API restants", source)
         self.assertIn('key="daily_moneyline_odds_collection"', source)
@@ -454,7 +462,14 @@ class LPFEdgeDashboardTests(unittest.TestCase):
         self.assertIn("lpf-result-correct", source)
         self.assertIn("lpf-result-incorrect", source)
         self.assertIn("Prédictions réussies", source)
-        self.assertIn("Score final (ext. – dom.)", source)
+        self.assertIn("Score final (dom. – ext.)", source)
+        self.assertNotIn("Score final (ext. – dom.)", source)
+        self.assertIn(
+            'f"{game.home_team_name} vs {game.away_team_name}"',
+            source,
+        )
+        self.assertIn('f"{home_name} vs {away_name}"', source)
+        self.assertNotIn('f"{away_name} @ {home_name}"', source)
         self.assertIn('height="content"', source)
 
 

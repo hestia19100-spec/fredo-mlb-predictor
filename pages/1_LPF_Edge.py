@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 import html
 
 import streamlit as st
@@ -34,6 +35,10 @@ from src.lpf_edge_dashboard import (
     load_team_names,
     probability_percent,
     team_label,
+)
+from src.lpf_edge_odds_display import (
+    LPFEdgeOddsDisplayError,
+    load_latest_moneyline_odds_display,
 )
 st.set_page_config(
     page_title="LPF Edge · MLB",
@@ -148,6 +153,12 @@ def format_remaining_minutes(value: float | None) -> str:
     if value < 0:
         return f"Dépassée de {duration}"
     return duration
+
+
+def format_decimal_odds(value: Decimal | None) -> str:
+    if value is None:
+        return "—"
+    return format(value, "f")
 
 
 st.divider()
@@ -297,13 +308,13 @@ if daily is not None:
                             game.scheduled_start_utc
                         ),
                         "Match": (
-                            f"{game.away_team_name} @ {game.home_team_name}"
-                        ),
-                        "Lanceur extérieur": (
-                            game.away_probable_pitcher_name or "Non annoncé"
+                            f"{game.home_team_name} vs {game.away_team_name}"
                         ),
                         "Lanceur domicile": (
                             game.home_probable_pitcher_name or "Non annoncé"
+                        ),
+                        "Lanceur extérieur": (
+                            game.away_probable_pitcher_name or "Non annoncé"
                         ),
                         "État": readiness,
                     }
@@ -318,10 +329,10 @@ if daily is not None:
                         width="small"
                     ),
                     "Match": st.column_config.TextColumn(width="large"),
-                    "Lanceur extérieur": st.column_config.TextColumn(
+                    "Lanceur domicile": st.column_config.TextColumn(
                         width="medium"
                     ),
-                    "Lanceur domicile": st.column_config.TextColumn(
+                    "Lanceur extérieur": st.column_config.TextColumn(
                         width="medium"
                     ),
                     "État": st.column_config.TextColumn(width="medium"),
@@ -431,6 +442,123 @@ if daily is not None:
                         "remaining": odds_result.quota_remaining,
                     }
                     st.rerun()
+
+        try:
+            odds_display = load_latest_moneyline_odds_display(
+                daily.target_date
+            )
+        except (LPFEdgeOddsDisplayError, OSError, ValueError) as error:
+            st.error(f"Les cotes enregistrées ne peuvent pas être affichées : {error}")
+        else:
+            st.markdown("##### Dernières cotes enregistrées")
+            if odds_display.run_id is None:
+                st.info(
+                    "Aucune collecte réussie n’est encore disponible pour "
+                    "cette journée."
+                )
+            else:
+                display_columns = st.columns(4)
+                display_columns[0].metric(
+                    "Collecte utilisée",
+                    f"N° {odds_display.run_id}",
+                )
+                display_columns[1].metric(
+                    "Matchs avec cotes",
+                    f"{odds_display.quoted_game_count} / "
+                    f"{odds_display.game_count}",
+                )
+                display_columns[2].metric(
+                    "Cotes disponibles",
+                    odds_display.quote_count,
+                )
+                display_columns[3].metric(
+                    "Collecte terminée",
+                    (
+                        format_paris_time(odds_display.completed_at_utc)
+                        if odds_display.completed_at_utc is not None
+                        else "—"
+                    ),
+                )
+
+                if odds_display.missing_game_count:
+                    st.warning(
+                        f"{odds_display.missing_game_count} match(s) ne "
+                        "dispose(nt) d’aucune cote rapprochée."
+                    )
+
+                display_rows: list[dict[str, str | int]] = []
+                for game in odds_display.games:
+                    display_rows.append(
+                        {
+                            "Heure de Paris": format_paris_time(
+                                game.scheduled_start_utc
+                            ),
+                            "Match": (
+                                f"{game.home_team_name} vs "
+                                f"{game.away_team_name}"
+                            ),
+                            "Meilleure cote domicile": format_decimal_odds(
+                                game.home_best_decimal_odds
+                            ),
+                            "Bookmaker domicile": (
+                                ", ".join(game.home_best_bookmakers) or "—"
+                            ),
+                            "Meilleure cote extérieur": format_decimal_odds(
+                                game.away_best_decimal_odds
+                            ),
+                            "Bookmaker extérieur": (
+                                ", ".join(game.away_best_bookmakers) or "—"
+                            ),
+                            "Bookmakers": game.bookmaker_count,
+                            "Actualisation": (
+                                format_paris_time(
+                                    game.latest_bookmaker_update_utc
+                                )
+                                if game.latest_bookmaker_update_utc is not None
+                                else "—"
+                            ),
+                        }
+                    )
+                st.dataframe(
+                    display_rows,
+                    width="stretch",
+                    height="content",
+                    hide_index=True,
+                    column_config={
+                        "Heure de Paris": st.column_config.TextColumn(
+                            width="small"
+                        ),
+                        "Match": st.column_config.TextColumn(width="large"),
+                        "Meilleure cote domicile": (
+                            st.column_config.TextColumn(width="medium")
+                        ),
+                        "Bookmaker domicile": st.column_config.TextColumn(
+                            width="medium"
+                        ),
+                        "Meilleure cote extérieur": (
+                            st.column_config.TextColumn(width="medium")
+                        ),
+                        "Bookmaker extérieur": st.column_config.TextColumn(
+                            width="medium"
+                        ),
+                        "Bookmakers": st.column_config.NumberColumn(
+                            width="small"
+                        ),
+                        "Actualisation": st.column_config.TextColumn(
+                            width="small"
+                        ),
+                    },
+                )
+                st.caption(
+                    "Bookmakers observés : "
+                    + (
+                        ", ".join(odds_display.bookmaker_titles)
+                        if odds_display.bookmaker_titles
+                        else "aucun"
+                    )
+                    + ". Les meilleures cotes sont descriptives et ne "
+                    "constituent pas une recommandation de pari."
+                )
 
     st.markdown("### Sauvegarde indépendante")
     backup_status_column, backup_button_column = st.columns((2, 1))
@@ -702,7 +830,7 @@ for prediction in day.predictions:
     table_rows.append(
         {
             "Heure de Paris": format_paris_time(prediction.scheduled_start_utc),
-            "Match": f"{away_name} @ {home_name}",
+            "Match": f"{home_name} vs {away_name}",
             "Équipe donnée devant": predicted_name,
             "Probabilité": probability_percent(prediction.predicted_probability),
             "Domicile": probability_percent(prediction.p_home_win),
@@ -763,14 +891,14 @@ else:
         if result.away_score is None or result.home_score is None:
             score_text = "—"
         else:
-            score_text = f"{result.away_score} – {result.home_score}"
+            score_text = f"{result.home_score} – {result.away_score}"
         status_icon = {
             "correct": "✓",
             "incorrect": "✕",
             "neutral": "•",
         }[result.display_tone]
         time_text = html.escape(format_paris_time(prediction.scheduled_start_utc))
-        match_text = html.escape(f"{away_name} @ {home_name}")
+        match_text = html.escape(f"{home_name} vs {away_name}")
         predicted_text = html.escape(predicted_name)
         probability_text = html.escape(
             probability_percent(result.predicted_probability)
@@ -796,7 +924,7 @@ else:
         "<th>Match</th>"
         "<th>Équipe pronostiquée</th>"
         "<th>Probabilité</th>"
-        "<th>Score final (ext. – dom.)</th>"
+        "<th>Score final (dom. – ext.)</th>"
         "<th>Résultat</th>"
         "</tr></thead><tbody>"
         + "".join(result_rows)
@@ -812,6 +940,7 @@ with st.expander("Voir les preuves de cette journée"):
     st.write(f"Certification GitHub : {format_paris_datetime(day.certified_at_utc)}")
 
 st.warning(
-    "LPF Edge estime des probabilités de victoire. Sans cotes préenregistrées, "
-    "il ne mesure pas la rentabilité et ne produit aucune recommandation de pari."
+    "LPF Edge affiche des probabilités de victoire et des cotes observées. "
+    "Shadow v2 n’utilise pas ces cotes, ne mesure pas la rentabilité et ne "
+    "produit aucune recommandation de pari."
 )

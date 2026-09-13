@@ -44,6 +44,11 @@ from src.lpf_edge_market_comparison import (
     LPFEdgeMarketComparisonError,
     build_french_market_comparison,
 )
+from src.lpf_edge_market_evaluation import (
+    LIMITED_SAMPLE_THRESHOLD,
+    LPFEdgeMarketEvaluationError,
+    build_market_evaluation_history,
+)
 st.set_page_config(
     page_title="LPF Edge · MLB",
     page_icon="⚾",
@@ -176,6 +181,16 @@ def format_percentage_point_gap(value: Decimal | None) -> str:
     if value is None:
         return "—"
     return f"{value:+.1f} pt"
+
+
+def format_evaluation_percent(value: Decimal | None) -> str:
+    if value is None:
+        return "—"
+    return f"{value:.1f} %"
+
+
+def format_theoretical_units(value: Decimal) -> str:
+    return f"{value:+.2f} unité(s)"
 
 
 st.divider()
@@ -1069,6 +1084,128 @@ else:
         + "</tbody></table></div>",
         unsafe_allow_html=True,
     )
+
+st.divider()
+st.subheader("Évaluation historique des écarts LPF–marché")
+st.caption(
+    "Ce bilan associe uniquement les résultats vérifiés aux cotes françaises "
+    "figées avant chaque certification. Il simule une mise identique d’une "
+    "unité sur chaque pronostic comparable ; aucune mise réelle n’est effectuée."
+)
+try:
+    evaluation_days = []
+    for evaluation_date in available_dates:
+        evaluation_prediction_day = load_certified_prediction_day(
+            evaluation_date
+        )
+        evaluation_score = load_latest_score_summary(
+            evaluation_date,
+            certified_predictions=evaluation_prediction_day.predictions,
+        )
+        if evaluation_score is None:
+            continue
+        evaluation_team_ids = {
+            team_id
+            for prediction in evaluation_prediction_day.predictions
+            for team_id in (prediction.away_team_id, prediction.home_team_id)
+        }
+        evaluation_team_names = load_team_names(evaluation_team_ids)
+        evaluation_odds = load_latest_moneyline_odds_display(
+            evaluation_date,
+            required_region="fr",
+            completed_at_or_before_utc=(
+                evaluation_prediction_day.certified_at_utc
+            ),
+        )
+        evaluation_comparison = build_french_market_comparison(
+            evaluation_prediction_day,
+            evaluation_odds,
+            team_names=evaluation_team_names,
+        )
+        evaluation_days.append((evaluation_comparison, evaluation_score))
+    market_history = build_market_evaluation_history(evaluation_days)
+except (
+    LPFEdgeDashboardError,
+    LPFEdgeMarketComparisonError,
+    LPFEdgeMarketEvaluationError,
+    LPFEdgeOddsDisplayError,
+    OSError,
+    ValueError,
+) as error:
+    st.error(f"L’évaluation historique est impossible : {error}")
+else:
+    if market_history.evaluated_count == 0:
+        st.info(
+            "Aucun résultat ne possède encore à la fois un verdict vérifié et "
+            "une collecte française antérieure à sa certification. L’historique "
+            "se remplira automatiquement au fil des prochaines journées."
+        )
+    else:
+        evaluation_columns = st.columns(4)
+        evaluation_columns[0].metric(
+            "Observations évaluées",
+            market_history.evaluated_count,
+        )
+        evaluation_columns[1].metric(
+            "Réussite observée",
+            format_evaluation_percent(market_history.accuracy_percent),
+        )
+        evaluation_columns[2].metric(
+            "Résultat théorique",
+            format_theoretical_units(market_history.theoretical_net_units),
+        )
+        evaluation_columns[3].metric(
+            "Rendement théorique",
+            format_evaluation_percent(
+                market_history.theoretical_roi_percent
+            ),
+        )
+        if market_history.sample_is_limited:
+            st.warning(
+                f"Seulement {market_history.evaluated_count} observation(s) : "
+                f"avant {LIMITED_SAMPLE_THRESHOLD}, l’échantillon est trop "
+                "limité pour tirer une conclusion fiable."
+            )
+
+        gap_band_rows = [
+            {
+                "Écart LPF–marché": band.label,
+                "Observations": band.evaluated_count,
+                "Réussites": band.correct_count,
+                "Taux de réussite": format_evaluation_percent(
+                    band.accuracy_percent
+                ),
+                "Résultat théorique": (
+                    format_theoretical_units(band.theoretical_net_units)
+                    if band.evaluated_count > 0
+                    else "—"
+                ),
+                "Rendement théorique": format_evaluation_percent(
+                    band.theoretical_roi_percent
+                ),
+            }
+            for band in market_history.gap_bands
+        ]
+        st.dataframe(
+            gap_band_rows,
+            width="stretch",
+            height="content",
+            hide_index=True,
+        )
+        st.caption(
+            "Période évaluée : "
+            f"{market_history.first_date.strftime('%d/%m/%Y')} au "
+            f"{market_history.last_date.strftime('%d/%m/%Y')}. "
+            f"Journées avec résultats : {market_history.completed_day_count}. "
+            f"Sans cote antérieure : {market_history.missing_odds_count}. "
+            f"Non tranchées ou annulées : {market_history.unsettled_count}."
+        )
+        st.warning(
+            "Le résultat est une simulation rétrospective à la meilleure cote "
+            "archivée. Il suppose une disponibilité et une mise acceptée, sans "
+            "frais ni limitation ; il ne constitue ni un gain réel ni une "
+            "recommandation de pari."
+        )
 
 with st.expander("Voir les preuves de cette journée"):
     st.write(f"Lot : `{day.batch_id}`")

@@ -12,11 +12,14 @@ from src.lpf_edge_daily_operations import (
     DailyBackupAutomationError,
     DailyActionState,
     DailyOperationsError,
+    DailyOddsCollectionError,
     DailyResultsAutomationError,
     execute_afternoon_prediction_routine,
+    execute_daily_odds_collection,
     execute_daily_results_publication,
     execute_verified_local_backup,
     inspect_daily_operations,
+    inspect_daily_odds_collection,
     list_local_backup_names,
     load_prediction_preparation,
     load_verified_local_backup,
@@ -324,6 +327,110 @@ if daily is not None:
                     "État": st.column_config.TextColumn(width="medium"),
                 },
             )
+
+    st.markdown("#### Cotes Moneyline")
+    st.caption(
+        "Cette collecte est indépendante de Shadow v2. Chaque clic autorisé "
+        "effectue un seul appel à The Odds API et consomme normalement "
+        "1 crédit. La clé secrète n’est jamais affichée."
+    )
+    try:
+        odds = inspect_daily_odds_collection(
+            daily.target_date,
+            now_utc=daily.inspected_at_utc,
+        )
+    except (DailyOperationsError, OSError, ValueError) as error:
+        st.error(f"L’état local des cotes ne peut pas être affiché : {error}")
+    else:
+        odds_columns = st.columns(4)
+        odds_columns[0].metric(
+            "Clé API",
+            "Configurée" if odds.api_configured else "À configurer",
+        )
+        odds_columns[1].metric(
+            "Dernière collecte",
+            (
+                f"N° {odds.latest_run_id}"
+                if odds.latest_run_id is not None
+                else "Aucune"
+            ),
+        )
+        odds_columns[2].metric(
+            "Matchs rapprochés",
+            (
+                f"{odds.events_matched} / {odds.events_received}"
+                if odds.events_received is not None
+                and odds.events_matched is not None
+                else "—"
+            ),
+        )
+        odds_columns[3].metric(
+            "Crédits API restants",
+            odds.quota_remaining if odds.quota_remaining is not None else "—",
+        )
+        render_action_status(odds.action)
+        if not odds.api_configured:
+            st.info(
+                "Ajoute THE_ODDS_API_KEY aux secrets de ton Codespace, puis "
+                "redémarre l’application. Ne colle jamais cette clé dans Git."
+            )
+        if odds.latest_run_id is not None:
+            latest_time = (
+                format_paris_datetime(odds.latest_completed_at_utc)
+                if odds.latest_completed_at_utc is not None
+                else "en cours"
+            )
+            st.caption(
+                f"Dernier état : {odds.latest_status} · {latest_time} · "
+                f"{odds.bookmaker_quotes_saved or 0} cote(s) enregistrée(s) · "
+                f"coût du dernier appel : {odds.quota_last_cost or 0} crédit."
+            )
+
+        odds_feedback = st.session_state.pop(
+            "lpf_edge_odds_success",
+            None,
+        )
+        if odds_feedback is not None:
+            st.success(
+                "Cotes Moneyline récupérées, archivées et rapprochées des "
+                "matchs MLB locaux."
+            )
+            st.caption(
+                f"Collecte auditée n° {odds_feedback['run_id']} · "
+                f"{odds_feedback['matched']} match(s) rapproché(s) · "
+                f"{odds_feedback['quotes']} cote(s) enregistrée(s) · "
+                f"{odds_feedback['remaining']} crédit(s) restant(s)."
+            )
+
+        odds_clicked = st.button(
+            odds.action.label,
+            type="primary",
+            disabled=not odds.action.can_execute,
+            use_container_width=True,
+            help=None if odds.action.can_execute else odds.action.message,
+            key="daily_moneyline_odds_collection",
+        )
+        if odds_clicked:
+            with st.spinner(
+                "Récupération et archivage des cotes Moneyline en cours..."
+            ):
+                try:
+                    odds_result = execute_daily_odds_collection(
+                        daily.target_date
+                    )
+                except DailyOddsCollectionError as error:
+                    st.error(
+                        f"Collecte arrêtée à l’étape {error.stage.value} : "
+                        f"{error}"
+                    )
+                else:
+                    st.session_state["lpf_edge_odds_success"] = {
+                        "run_id": odds_result.run_id,
+                        "matched": odds_result.events_matched,
+                        "quotes": odds_result.bookmaker_quotes_saved,
+                        "remaining": odds_result.quota_remaining,
+                    }
+                    st.rerun()
 
     st.markdown("### Sauvegarde indépendante")
     backup_status_column, backup_button_column = st.columns((2, 1))

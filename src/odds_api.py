@@ -93,6 +93,15 @@ def _read_api_key() -> str:
     return value
 
 
+def odds_api_key_is_configured() -> bool:
+    """Indique seulement si la clé locale est valide, sans jamais la renvoyer."""
+    try:
+        _read_api_key()
+    except OddsAPIConfigurationError:
+        return False
+    return True
+
+
 def _required_text(value: object, field_name: str) -> str:
     if not isinstance(value, str) or not value or value != value.strip():
         raise OddsAPIError(f"Le champ {field_name} est absent ou invalide.")
@@ -317,4 +326,5 @@ __all__ = [
     "OddsAPIRetryableError",
     "OddsFetchResult",
     "fetch_mlb_moneyline_odds",
+    "odds_api_key_is_configured",
 ]

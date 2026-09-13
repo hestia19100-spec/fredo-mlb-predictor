@@ -33,6 +33,14 @@ from src.lpf_edge_dashboard import (
     load_latest_score_summary,
 )
 from src.mlb_api import MLBAPIError
+from src.odds_api import OddsAPIError, odds_api_key_is_configured
+from src.odds_ingestion_service import (
+    OddsIngestionError,
+    OddsIngestionResult,
+    run_odds_ingestion,
+)
+from src.odds_repository import OddsRepositoryError
+from src.raw_archive import RawArchiveError
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -177,6 +185,22 @@ class DailyBackupAutomationError(DailyOperationsError):
         super().__init__(message)
 
 
+class DailyOddsCollectionStage(str, Enum):
+    """Étape atteinte par la collecte quotidienne des cotes."""
+
+    PREFLIGHT = "PREFLIGHT"
+    COLLECTION = "COLLECTION"
+    VERIFICATION = "VERIFICATION"
+
+
+class DailyOddsCollectionError(DailyOperationsError):
+    """Échec contrôlé de la collecte des cotes depuis LPF Edge."""
+
+    def __init__(self, stage: DailyOddsCollectionStage, message: str) -> None:
+        self.stage = stage
+        super().__init__(message)
+
+
 @dataclass(frozen=True, slots=True)
 class GitWorkspaceState:
     """Etat Git local lu sans acces reseau et sans ecriture."""
@@ -296,6 +320,25 @@ class DailyAction:
     def __post_init__(self) -> None:
         if self.can_execute != (self.state is DailyActionState.READY):
             raise ValueError("Seul un etat READY peut autoriser une action.")
+
+
+@dataclass(frozen=True, slots=True)
+class DailyOddsCollectionOverview:
+    """État local et secret-safe de la collecte de cotes du jour."""
+
+    target_date: date
+    inspected_at_utc: datetime
+    api_configured: bool
+    action: DailyAction
+    latest_run_id: int | None
+    latest_status: str | None
+    latest_completed_at_utc: datetime | None
+    events_received: int | None
+    events_matched: int | None
+    bookmaker_quotes_saved: int | None
+    quota_remaining: int | None
+    quota_used: int | None
+    quota_last_cost: int | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -912,6 +955,153 @@ def load_prediction_preparation(
     return PredictionPreparation(target_date, instant, tuple(games))
 
 
+def _odds_completion_utc(value: object) -> datetime | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        raise DailyOperationsError(
+            "L’horodatage de la dernière collecte de cotes est invalide."
+        )
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise DailyOperationsError(
+            "L’horodatage de la dernière collecte de cotes est invalide."
+        ) from error
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def inspect_daily_odds_collection(
+    target_date: date,
+    *,
+    now_utc: datetime | None = None,
+    database_path: Path = DATABASE_PATH,
+) -> DailyOddsCollectionOverview:
+    """Relit localement l’état des cotes sans créer de table ni appeler l’API."""
+    if not isinstance(target_date, date) or isinstance(target_date, datetime):
+        raise TypeError("target_date doit être une date exacte.")
+    instant = now_utc or datetime.now(timezone.utc)
+    if not isinstance(instant, datetime) or instant.tzinfo is None:
+        raise DailyOperationsError(
+            "L’horloge de la collecte de cotes doit être en UTC."
+        )
+    instant = instant.astimezone(timezone.utc)
+    paris_today = instant.astimezone(PARIS_TIMEZONE).date()
+    configured = odds_api_key_is_configured()
+    game_day = load_local_game_day_state(
+        target_date,
+        database_path=database_path,
+    )
+    latest: tuple[object, ...] | None = None
+    if database_path.is_file() and not database_path.is_symlink():
+        uri = f"{database_path.resolve().as_uri()}?mode=ro"
+        connection: sqlite3.Connection | None = None
+        try:
+            connection = sqlite3.connect(uri, uri=True)
+            table_exists = connection.execute(
+                """
+                SELECT 1
+                FROM sqlite_master
+                WHERE type = 'table' AND name = 'odds_ingestion_runs'
+                """
+            ).fetchone()
+            if table_exists is not None:
+                latest = connection.execute(
+                    """
+                    SELECT
+                        run_id,
+                        status,
+                        completed_at_utc,
+                        events_received,
+                        events_matched,
+                        bookmaker_quotes_saved,
+                        quota_remaining,
+                        quota_used,
+                        quota_last_cost
+                    FROM odds_ingestion_runs
+                    WHERE target_official_date = ?
+                    ORDER BY run_id DESC
+                    LIMIT 1
+                    """,
+                    (target_date.isoformat(),),
+                ).fetchone()
+        except sqlite3.Error as error:
+            raise DailyOperationsError(
+                "Le journal local des cotes ne peut pas être relu."
+            ) from error
+        finally:
+            if connection is not None:
+                connection.close()
+
+    latest_status = None if latest is None else str(latest[1])
+    if target_date != paris_today:
+        action = _action(
+            "odds",
+            "Récupérer les cotes Moneyline",
+            DailyActionState.NOT_AVAILABLE,
+            "Les cotes quotidiennes peuvent seulement être récupérées pour aujourd’hui.",
+        )
+    elif not configured:
+        action = _action(
+            "odds",
+            "Récupérer les cotes Moneyline",
+            DailyActionState.BLOCKED,
+            "Le secret THE_ODDS_API_KEY doit être configuré dans Codespaces.",
+        )
+    elif game_day.game_count == 0:
+        action = _action(
+            "odds",
+            "Récupérer les cotes Moneyline",
+            DailyActionState.NEED_DATA,
+            "Actualise d’abord les matchs MLB du jour.",
+        )
+    elif latest_status == "started":
+        action = _action(
+            "odds",
+            "Récupérer les cotes Moneyline",
+            DailyActionState.BLOCKED,
+            "Une collecte de cotes est déjà indiquée comme étant en cours.",
+        )
+    else:
+        message = (
+            "Une nouvelle actualisation consommera normalement 1 crédit API."
+            if latest_status == "success"
+            else "La collecte effectuera exactement un appel à The Odds API."
+        )
+        action = _action(
+            "odds",
+            "Récupérer les cotes Moneyline (1 crédit)",
+            DailyActionState.READY,
+            message,
+        )
+
+    return DailyOddsCollectionOverview(
+        target_date=target_date,
+        inspected_at_utc=instant,
+        api_configured=configured,
+        action=action,
+        latest_run_id=None if latest is None else int(latest[0]),
+        latest_status=latest_status,
+        latest_completed_at_utc=(
+            None if latest is None else _odds_completion_utc(latest[2])
+        ),
+        events_received=None if latest is None else int(latest[3]),
+        events_matched=None if latest is None else int(latest[4]),
+        bookmaker_quotes_saved=None if latest is None else int(latest[5]),
+        quota_remaining=(
+            None if latest is None or latest[6] is None else int(latest[6])
+        ),
+        quota_used=(
+            None if latest is None or latest[7] is None else int(latest[7])
+        ),
+        quota_last_cost=(
+            None if latest is None or latest[8] is None else int(latest[8])
+        ),
+    )
+
+
 def inspect_prediction_slot(
     target_date: date,
     *,
@@ -1055,6 +1245,67 @@ def refresh_daily_mlb_data(
         database_path=database_path,
         data_directory=data_directory,
     )
+
+
+def execute_daily_odds_collection(
+    target_date: date | None = None,
+    *,
+    now_utc: datetime | None = None,
+    database_path: Path = DATABASE_PATH,
+    data_directory: Path = DATA_DIR,
+) -> OddsIngestionResult:
+    """Exécute exactement une collecte de cotes autorisée depuis LPF Edge."""
+    instant = now_utc or datetime.now(timezone.utc)
+    if not isinstance(instant, datetime) or instant.tzinfo is None:
+        raise DailyOddsCollectionError(
+            DailyOddsCollectionStage.PREFLIGHT,
+            "L’horloge de la collecte de cotes doit être un instant UTC valide.",
+        )
+    instant = instant.astimezone(timezone.utc)
+    paris_today = instant.astimezone(PARIS_TIMEZONE).date()
+    selected = target_date or paris_today
+    if not isinstance(selected, date) or isinstance(selected, datetime):
+        raise TypeError("target_date doit être une date exacte.")
+    overview = inspect_daily_odds_collection(
+        selected,
+        now_utc=instant,
+        database_path=database_path,
+    )
+    if overview.action.state is not DailyActionState.READY:
+        raise DailyOddsCollectionError(
+            DailyOddsCollectionStage.PREFLIGHT,
+            overview.action.message,
+        )
+    try:
+        result = run_odds_ingestion(
+            target_date=selected,
+            database_path=database_path,
+            data_directory=data_directory,
+        )
+    except (
+        OddsAPIError,
+        OddsIngestionError,
+        OddsRepositoryError,
+        RawArchiveError,
+        OSError,
+        sqlite3.Error,
+        ValueError,
+    ) as error:
+        raise DailyOddsCollectionError(
+            DailyOddsCollectionStage.COLLECTION,
+            str(error),
+        ) from error
+    if type(result) is not OddsIngestionResult:
+        raise DailyOddsCollectionError(
+            DailyOddsCollectionStage.VERIFICATION,
+            "Le service de cotes a retourné un reçu inattendu.",
+        )
+    if result.target_date != selected:
+        raise DailyOddsCollectionError(
+            DailyOddsCollectionStage.VERIFICATION,
+            "Le reçu de cotes ne correspond pas à la journée demandée.",
+        )
+    return result
 
 
 def execute_verified_local_backup(
@@ -1942,6 +2193,9 @@ __all__ = [
     "DailyActionState",
     "DailyOperationsError",
     "DailyOperationsOverview",
+    "DailyOddsCollectionError",
+    "DailyOddsCollectionOverview",
+    "DailyOddsCollectionStage",
     "DailyPredictionAutomationError",
     "DailyPredictionPublication",
     "DailyPredictionStage",
@@ -1954,13 +2208,16 @@ __all__ = [
     "VerifiedLocalBackup",
     "build_daily_operations_overview",
     "execute_afternoon_prediction_routine",
+    "execute_daily_odds_collection",
     "execute_daily_prediction_publication",
     "execute_daily_results_publication",
     "execute_verified_local_backup",
     "inspect_daily_operations",
+    "inspect_daily_odds_collection",
     "inspect_git_workspace",
     "inspect_prediction_slot",
     "list_local_backup_names",
+    "load_prediction_preparation",
     "load_verified_local_backup",
     "load_local_game_day_state",
     "refresh_daily_mlb_data",

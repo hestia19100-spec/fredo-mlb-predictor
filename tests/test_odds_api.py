@@ -161,6 +161,20 @@ class OddsAPITests(unittest.TestCase):
                 odds_api.fetch_mlb_moneyline_odds()
         request.assert_not_called()
 
+    def test_configuration_status_never_returns_the_secret(self) -> None:
+        """Le contrôle de configuration expose uniquement un booléen."""
+        with mock.patch.dict(
+            os.environ,
+            {odds_api.ODDS_API_KEY_ENVIRONMENT_VARIABLE: "x" * 24},
+            clear=True,
+        ):
+            configured = odds_api.odds_api_key_is_configured()
+        self.assertIs(configured, True)
+
+        with mock.patch.dict(os.environ, {}, clear=True):
+            missing = odds_api.odds_api_key_is_configured()
+        self.assertIs(missing, False)
+
     def test_secret_never_appears_in_result(self) -> None:
         result = self._fetch()
         self.assertNotIn(API_KEY, repr(result))

@@ -23,6 +23,7 @@ from src.lpf_edge_market_settlement import (
     create_market_settlement_publication,
     load_market_settlement,
 )
+from src.lpf_edge_daily_selection import create_daily_selection_publication
 
 
 TARGET = date(2026, 9, 13)
@@ -119,9 +120,9 @@ class LPFEdgeMarketSettlementTests(unittest.TestCase):
         return {
             "away_team_id": 10 + game_id,
             "away_team_name": f"Extérieur {game_id}",
-            "best_bookmakers": ["PMU"] if odds is not None else [],
+            "best_bookmakers": ["PMU", "ParionsSport"] if odds is not None else [],
             "best_decimal_odds": odds,
-            "bookmaker_count": 1 if odds is not None else 0,
+            "bookmaker_count": 2 if odds is not None else 0,
             "bookmaker_quotes": [],
             "french_market_probability": "0.56" if odds is not None else None,
             "game_id": game_id,
@@ -244,6 +245,35 @@ class LPFEdgeMarketSettlementTests(unittest.TestCase):
         self.assertEqual(loaded.accuracy_percent, Decimal("50.0"))
         self.assertEqual(loaded.theoretical_net_units, Decimal("-0.20"))
         self.assertEqual(loaded.theoretical_roi_percent, Decimal("-10.00"))
+
+    def test_daily_picks_receive_their_own_next_day_score(self) -> None:
+        selection = create_daily_selection_publication(
+            TARGET,
+            probable_pitchers_by_game={
+                game_id: (f"Extérieur {game_id}", f"Domicile {game_id}")
+                for game_id in (100, 101, 102, 103)
+            },
+            project_directory=self.project,
+        )
+        self.assertEqual(selection.selection_count, 2)
+
+        publication = self._create()
+        self.assertEqual(publication.daily_selection_sha256, selection.selection_sha256)
+        self.assertEqual(publication.selected_count, 2)
+        self.assertEqual(publication.selected_evaluated_count, 1)
+        self.assertEqual(publication.selected_correct_count, 1)
+        self.assertEqual(publication.selected_void_count, 1)
+        self.assertEqual(publication.selected_theoretical_net_units, Decimal("0.80"))
+        self.assertEqual(publication.selected_theoretical_roi_percent, Decimal("80.0"))
+
+        loaded = load_market_settlement(TARGET, project_directory=self.project)
+        self.assertIsNotNone(loaded)
+        assert loaded is not None
+        self.assertEqual(loaded.selected_count, 2)
+        self.assertEqual(loaded.selected_evaluated_count, 1)
+        self.assertEqual(loaded.selected_correct_count, 1)
+        self.assertEqual(loaded.selected_void_count, 1)
+        self.assertEqual(loaded.selected_theoretical_net_units, Decimal("0.80"))
 
     def test_absent_verdict_returns_none(self) -> None:
         self.assertIsNone(load_market_settlement(TARGET, project_directory=self.project))

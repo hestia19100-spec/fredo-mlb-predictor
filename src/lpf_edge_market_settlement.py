@@ -24,6 +24,10 @@ from src.lpf_edge_market_snapshot import (
     SNAPSHOT_FILENAME,
     SNAPSHOT_SCHEMA,
 )
+from src.lpf_edge_daily_selection import (
+    LPFEdgeDailySelectionError,
+    load_daily_selection,
+)
 
 
 MARKET_SETTLEMENT_ROOT = Path(
@@ -65,6 +69,13 @@ class MarketSettlementPublication:
     void_count: int
     theoretical_net_units: Decimal
     theoretical_roi_percent: Decimal | None
+    daily_selection_sha256: str | None = None
+    selected_count: int = 0
+    selected_evaluated_count: int = 0
+    selected_correct_count: int = 0
+    selected_void_count: int = 0
+    selected_theoretical_net_units: Decimal = Decimal("0")
+    selected_theoretical_roi_percent: Decimal | None = None
 
     @property
     def paths(self) -> tuple[Path, Path]:
@@ -87,6 +98,13 @@ class SealedMarketSettlement:
     accuracy_percent: Decimal | None
     theoretical_net_units: Decimal
     theoretical_roi_percent: Decimal | None
+    daily_selection_sha256: str | None
+    selected_count: int
+    selected_evaluated_count: int
+    selected_correct_count: int
+    selected_void_count: int
+    selected_theoretical_net_units: Decimal
+    selected_theoretical_roi_percent: Decimal | None
 
 
 def _canonical_bytes(value: object) -> bytes:
@@ -365,6 +383,27 @@ def create_market_settlement_publication(
         ) from error
 
     snapshot, snapshot_sha256 = _load_snapshot(target_date, project)
+    try:
+        daily_selection = load_daily_selection(
+            target_date,
+            project_directory=project,
+        )
+    except LPFEdgeDailySelectionError as error:
+        raise LPFEdgeMarketSettlementError(
+            "La sélection prospective liée au verdict est invalide."
+        ) from error
+    selected_game_ids = (
+        set()
+        if daily_selection is None
+        else {pick.game_id for pick in daily_selection.picks}
+    )
+    if (
+        daily_selection is not None
+        and daily_selection.market_snapshot_sha256 != snapshot_sha256
+    ):
+        raise LPFEdgeMarketSettlementError(
+            "La sélection et le journal prospectif divergent."
+        )
     evidence_hashes, evidence_slot = _scoring_evidence(
         target_date,
         score.checkpoint_date,
@@ -402,6 +441,10 @@ def create_market_settlement_publication(
     missing_market_count = 0
     void_count = 0
     theoretical_net = Decimal("0")
+    selected_evaluated_count = 0
+    selected_correct_count = 0
+    selected_void_count = 0
+    selected_theoretical_net = Decimal("0")
     for game_id in sorted(by_game):
         journal = by_game[game_id]
         result = results_by_game[game_id]
@@ -436,10 +479,16 @@ def create_market_settlement_publication(
             status = "VOID"
             net_units = None
             void_count += 1
+            if game_id in selected_game_ids:
+                selected_void_count += 1
         elif gap is None or odds is None or market_probability is None:
             status = "MISSING_MARKET"
             net_units = None
             missing_market_count += 1
+            if game_id in selected_game_ids:
+                raise LPFEdgeMarketSettlementError(
+                    "Une sélection prospective a perdu ses cotes figées."
+                )
         else:
             if odds <= ONE:
                 raise LPFEdgeMarketSettlementError(
@@ -450,6 +499,10 @@ def create_market_settlement_publication(
             evaluated_count += 1
             correct_count += result.classification_correct
             theoretical_net += net_units
+            if game_id in selected_game_ids:
+                selected_evaluated_count += 1
+                selected_correct_count += result.classification_correct
+                selected_theoretical_net += net_units
 
         rows.append(
             {
@@ -493,7 +546,13 @@ def create_market_settlement_publication(
                     if net_units is None
                     else _decimal_text(net_units, "Le résultat théorique")
                 ),
+                "was_daily_selection": game_id in selected_game_ids,
             }
+        )
+
+    if not selected_game_ids.issubset(by_game):
+        raise LPFEdgeMarketSettlementError(
+            "La sélection prospective contient un match étranger au journal."
         )
 
     accuracy = (
@@ -506,6 +565,13 @@ def create_market_settlement_publication(
         if evaluated_count == 0
         else theoretical_net / Decimal(evaluated_count) * HUNDRED
     )
+    selected_roi = (
+        None
+        if selected_evaluated_count == 0
+        else selected_theoretical_net
+        / Decimal(selected_evaluated_count)
+        * HUNDRED
+    )
     payload = {
         "accuracy_percent": (
             None
@@ -514,6 +580,11 @@ def create_market_settlement_publication(
         ),
         "checkpoint_utc_date": score.checkpoint_date.isoformat(),
         "correct_count": correct_count,
+        "daily_selection_sha256": (
+            None
+            if daily_selection is None
+            else daily_selection.selection_sha256
+        ),
         "evaluated_count": evaluated_count,
         "missing_market_count": missing_market_count,
         "observation_id": observation,
@@ -529,6 +600,22 @@ def create_market_settlement_publication(
         ).as_posix(),
         "scoring_evidence_sha256": evidence_hashes,
         "source_market_snapshot_sha256": snapshot_sha256,
+        "selected_correct_count": selected_correct_count,
+        "selected_count": len(selected_game_ids),
+        "selected_evaluated_count": selected_evaluated_count,
+        "selected_theoretical_net_units": _decimal_text(
+            selected_theoretical_net,
+            "Le résultat théorique des sélections",
+        ),
+        "selected_theoretical_roi_percent": (
+            None
+            if selected_roi is None
+            else _decimal_text(
+                selected_roi,
+                "Le rendement théorique des sélections",
+            )
+        ),
+        "selected_void_count": selected_void_count,
         "target_official_date": target_date.isoformat(),
         "theoretical_net_units": _decimal_text(
             theoretical_net,
@@ -543,6 +630,11 @@ def create_market_settlement_publication(
     settlement_sha256 = _sha256(settlement_bytes)
     completed = {
         "correct_count": correct_count,
+        "daily_selection_sha256": (
+            None
+            if daily_selection is None
+            else daily_selection.selection_sha256
+        ),
         "evaluated_count": evaluated_count,
         "missing_market_count": missing_market_count,
         "observation_id": observation,
@@ -550,6 +642,7 @@ def create_market_settlement_publication(
         "settlement_filename": SETTLEMENT_FILENAME,
         "settlement_sha256": settlement_sha256,
         "source_market_snapshot_sha256": snapshot_sha256,
+        "selected_count": len(selected_game_ids),
         "status": "COMPLETED",
         "target_official_date": target_date.isoformat(),
         "void_count": void_count,
@@ -585,6 +678,17 @@ def create_market_settlement_publication(
         void_count=void_count,
         theoretical_net_units=theoretical_net,
         theoretical_roi_percent=roi,
+        daily_selection_sha256=(
+            None
+            if daily_selection is None
+            else daily_selection.selection_sha256
+        ),
+        selected_count=len(selected_game_ids),
+        selected_evaluated_count=selected_evaluated_count,
+        selected_correct_count=selected_correct_count,
+        selected_void_count=selected_void_count,
+        selected_theoretical_net_units=selected_theoretical_net,
+        selected_theoretical_roi_percent=selected_roi,
     )
 
 
@@ -654,6 +758,22 @@ def load_market_settlement(
         settlement.get("void_count"),
         "Le nombre de matchs annulés",
     )
+    selected_count = _nonnegative_int(
+        settlement.get("selected_count"),
+        "Le nombre de sélections du jour",
+    )
+    selected_evaluated = _nonnegative_int(
+        settlement.get("selected_evaluated_count"),
+        "Le nombre de sélections évaluées",
+    )
+    selected_correct = _nonnegative_int(
+        settlement.get("selected_correct_count"),
+        "Le nombre de sélections réussies",
+    )
+    selected_void = _nonnegative_int(
+        settlement.get("selected_void_count"),
+        "Le nombre de sélections annulées",
+    )
     if correct > evaluated:
         raise LPFEdgeMarketSettlementError(
             "Le nombre de réussites du verdict est incohérent."
@@ -665,6 +785,8 @@ def load_market_settlement(
             "evaluated_count",
             "missing_market_count",
             "observation_id",
+            "daily_selection_sha256",
+            "selected_count",
             "void_count",
         )
     ):
@@ -686,6 +808,34 @@ def load_market_settlement(
         raise LPFEdgeMarketSettlementError(
             "Le journal prospectif lié au verdict a changé."
         )
+    daily_selection_sha256 = settlement.get("daily_selection_sha256")
+    try:
+        linked_selection = load_daily_selection(
+            target_date,
+            project_directory=project,
+        )
+    except LPFEdgeDailySelectionError as error:
+        raise LPFEdgeMarketSettlementError(
+            "La sélection prospective liée au verdict est invalide."
+        ) from error
+    if daily_selection_sha256 is None:
+        if linked_selection is not None or selected_count != 0:
+            raise LPFEdgeMarketSettlementError(
+                "Une sélection prospective publiée n'est pas liée au verdict."
+            )
+    else:
+        daily_selection_sha256 = _sha256_text(
+            daily_selection_sha256,
+            "L'empreinte de la sélection prospective",
+        )
+        if (
+            linked_selection is None
+            or linked_selection.selection_sha256 != daily_selection_sha256
+            or linked_selection.selection_count != selected_count
+        ):
+            raise LPFEdgeMarketSettlementError(
+                "La sélection prospective liée au verdict a changé."
+            )
     scoring_hashes, scoring_slot = _scoring_evidence(
         target_date,
         checkpoint,
@@ -746,6 +896,59 @@ def load_market_settlement(
         ),
         Decimal("0"),
     )
+    selected_rows = [row for row in rows if row.get("was_daily_selection") is True]
+    if (
+        any(type(row.get("was_daily_selection")) is not bool for row in rows)
+        or len(selected_rows) != selected_count
+        or sum(
+            row["evaluation_status"] == "EVALUATED" for row in selected_rows
+        )
+        != selected_evaluated
+        or sum(row["evaluation_status"] == "VOID" for row in selected_rows)
+        != selected_void
+        or selected_count != selected_evaluated + selected_void
+        or selected_correct > selected_evaluated
+        or sum(
+            row.get("classification_correct") is True
+            for row in selected_rows
+            if row["evaluation_status"] == "EVALUATED"
+        )
+        != selected_correct
+    ):
+        raise LPFEdgeMarketSettlementError(
+            "Le bilan des sélections du jour est incohérent."
+        )
+    selected_net = _decimal(
+        settlement.get("selected_theoretical_net_units"),
+        "Le résultat théorique des sélections",
+    )
+    recomputed_selected_net = sum(
+        (
+            _decimal(
+                row.get("theoretical_net_units"),
+                "Un résultat théorique sélectionné",
+            )
+            for row in selected_rows
+            if row["evaluation_status"] == "EVALUATED"
+        ),
+        Decimal("0"),
+    )
+    selected_roi = _optional_decimal(
+        settlement.get("selected_theoretical_roi_percent"),
+        "Le rendement théorique des sélections",
+    )
+    expected_selected_roi = (
+        None
+        if selected_evaluated == 0
+        else selected_net / Decimal(selected_evaluated) * HUNDRED
+    )
+    if (
+        selected_net != recomputed_selected_net
+        or selected_roi != expected_selected_roi
+    ):
+        raise LPFEdgeMarketSettlementError(
+            "Les totaux des sélections ne correspondent pas au détail."
+        )
     net = _decimal(
         settlement.get("theoretical_net_units"),
         "Le résultat théorique du verdict",
@@ -793,6 +996,13 @@ def load_market_settlement(
         accuracy_percent=accuracy,
         theoretical_net_units=net,
         theoretical_roi_percent=roi,
+        daily_selection_sha256=daily_selection_sha256,
+        selected_count=selected_count,
+        selected_evaluated_count=selected_evaluated,
+        selected_correct_count=selected_correct,
+        selected_void_count=selected_void,
+        selected_theoretical_net_units=selected_net,
+        selected_theoretical_roi_percent=selected_roi,
     )
 
 

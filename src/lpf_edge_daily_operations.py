@@ -45,6 +45,12 @@ from src.lpf_edge_market_settlement import (
     MarketSettlementPublication,
     create_market_settlement_publication,
 )
+from src.lpf_edge_daily_selection import (
+    DAILY_SELECTION_ROOT,
+    DailySelectionPublication,
+    LPFEdgeDailySelectionError,
+    create_daily_selection_publication,
+)
 from src.lpf_edge_odds_display import (
     LPFEdgeOddsDisplayError,
     load_latest_moneyline_odds_display,
@@ -136,6 +142,7 @@ class DailyPredictionStage(str, Enum):
     RESULTS_PUBLICATION = "RESULTS_PUBLICATION"
     CERTIFICATION = "CERTIFICATION"
     MARKET_SNAPSHOT = "MARKET_SNAPSHOT"
+    DAILY_SELECTION = "DAILY_SELECTION"
     CERTIFICATION_PUBLICATION = "CERTIFICATION_PUBLICATION"
 
 
@@ -406,6 +413,9 @@ class DailyPredictionPublication:
     certification_paths: tuple[str, ...]
     market_snapshot_paths: tuple[str, ...] = ()
     market_snapshot_sha256: str | None = None
+    daily_selection_paths: tuple[str, ...] = ()
+    daily_selection_sha256: str | None = None
+    daily_selection_count: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -1987,6 +1997,72 @@ def _create_certified_market_snapshot(
     return publication
 
 
+def _create_certified_daily_selection(
+    target_date: date,
+    market_snapshot: MarketSnapshotPublication,
+    *,
+    project_directory: Path,
+    database_path: Path,
+) -> DailySelectionPublication:
+    """Fige au plus deux choix explicables sans relancer le modèle."""
+    expected_database = project_directory / "data" / "fredo_mlb.db"
+    try:
+        if database_path.resolve(strict=True) != expected_database.resolve(strict=True):
+            raise DailyPredictionAutomationError(
+                DailyPredictionStage.DAILY_SELECTION,
+                "La base de préparation ne correspond pas au projet publié.",
+            )
+        preparation = load_prediction_preparation(
+            target_date,
+            database_path=database_path,
+        )
+        probable_pitchers = {
+            game.game_id: (
+                game.away_probable_pitcher_name,
+                game.home_probable_pitcher_name,
+            )
+            for game in preparation.games
+        }
+        publication = create_daily_selection_publication(
+            target_date,
+            probable_pitchers_by_game=probable_pitchers,
+            project_directory=project_directory,
+        )
+    except DailyPredictionAutomationError:
+        raise
+    except (
+        DailyOperationsError,
+        LPFEdgeDailySelectionError,
+        OSError,
+        ValueError,
+    ) as error:
+        raise DailyPredictionAutomationError(
+            DailyPredictionStage.DAILY_SELECTION,
+            "La sélection prospective du jour n'a pas pu être scellée.",
+        ) from error
+    if type(publication) is not DailySelectionPublication:
+        raise DailyPredictionAutomationError(
+            DailyPredictionStage.DAILY_SELECTION,
+            "Le sélecteur a retourné un reçu inattendu.",
+        )
+    expected_slot = (
+        project_directory / DAILY_SELECTION_ROOT / target_date.isoformat()
+    )
+    if (
+        publication.target_date != target_date
+        or publication.slot_path.resolve() != expected_slot.resolve()
+        or publication.market_snapshot_sha256
+        != market_snapshot.snapshot_sha256
+        or publication.selection_count < 0
+        or publication.selection_count > 2
+    ):
+        raise DailyPredictionAutomationError(
+            DailyPredictionStage.DAILY_SELECTION,
+            "Le reçu de la sélection prospective est incohérent.",
+        )
+    return publication
+
+
 def _french_date_label(value: date) -> str:
     months = (
         "janvier", "fevrier", "mars", "avril", "mai", "juin",
@@ -2154,8 +2230,45 @@ def execute_daily_prediction_publication(
             DailyPredictionStage.MARKET_SNAPSHOT,
             "Les chemins du journal prospectif sont inattendus.",
         )
+    daily_selection = _create_certified_daily_selection(
+        selected,
+        market_snapshot,
+        project_directory=project,
+        database_path=database_path,
+    )
+    daily_selection_paths = tuple(
+        sorted(
+            path.relative_to(project).as_posix()
+            for path in daily_selection.paths
+        )
+    )
+    expected_daily_selection_paths = tuple(
+        sorted(
+            (
+                (
+                    DAILY_SELECTION_ROOT
+                    / selected.isoformat()
+                    / "COMPLETED"
+                ).as_posix(),
+                (
+                    DAILY_SELECTION_ROOT
+                    / selected.isoformat()
+                    / "daily_selection.json"
+                ).as_posix(),
+            )
+        )
+    )
+    if daily_selection_paths != expected_daily_selection_paths:
+        raise DailyPredictionAutomationError(
+            DailyPredictionStage.DAILY_SELECTION,
+            "Les chemins de la sélection prospective sont inattendus.",
+        )
     certification_publication_paths = tuple(
-        sorted(certification_paths + market_snapshot_paths)
+        sorted(
+            certification_paths
+            + market_snapshot_paths
+            + daily_selection_paths
+        )
     )
     certification_commit = _commit_and_push_exact_paths(
         project_directory=project,
@@ -2176,6 +2289,9 @@ def execute_daily_prediction_publication(
         certification_paths=certification_paths,
         market_snapshot_paths=market_snapshot_paths,
         market_snapshot_sha256=market_snapshot.snapshot_sha256,
+        daily_selection_paths=daily_selection_paths,
+        daily_selection_sha256=daily_selection.selection_sha256,
+        daily_selection_count=daily_selection.selection_count,
     )
 
 
@@ -2578,10 +2694,12 @@ __all__ = [
     "DailyResultsAutomationError",
     "DailyResultsPublication",
     "DailyResultsStage",
+    "DailySelectionPublication",
     "GitWorkspaceState",
     "LocalGameDayState",
     "MARKET_SNAPSHOT_ROOT",
     "MARKET_SETTLEMENT_ROOT",
+    "DAILY_SELECTION_ROOT",
     "MarketSnapshotPublication",
     "MarketSettlementPublication",
     "PredictionSlotState",

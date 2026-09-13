@@ -47,6 +47,11 @@ class LPFEdgeDailyPredictionExecutionTests(unittest.TestCase):
             / operations.MARKET_SNAPSHOT_ROOT
             / TARGET.isoformat()
         )
+        self.selection_slot = (
+            self.project
+            / operations.DAILY_SELECTION_ROOT
+            / TARGET.isoformat()
+        )
 
     def _action(
         self,
@@ -105,6 +110,18 @@ class LPFEdgeDailyPredictionExecutionTests(unittest.TestCase):
             comparable_count=15,
         )
 
+    def _daily_selection(self) -> operations.DailySelectionPublication:
+        return operations.DailySelectionPublication(
+            target_date=TARGET,
+            slot_path=self.selection_slot,
+            selection_path=self.selection_slot / "daily_selection.json",
+            completed_path=self.selection_slot / "COMPLETED",
+            selection_sha256="3" * 64,
+            market_snapshot_sha256="2" * 64,
+            selection_count=2,
+            eligible_count=4,
+        )
+
     def test_success_publishes_certification_and_snapshot_together(self) -> None:
         with (
             mock.patch.object(operations, "_utc_now", return_value=NOW),
@@ -133,6 +150,11 @@ class LPFEdgeDailyPredictionExecutionTests(unittest.TestCase):
                 "_create_certified_market_snapshot",
                 return_value=self._market_snapshot(),
             ) as snapshot,
+            mock.patch.object(
+                operations,
+                "_create_certified_daily_selection",
+                return_value=self._daily_selection(),
+            ) as selection,
         ):
             result = self._run()
 
@@ -144,6 +166,9 @@ class LPFEdgeDailyPredictionExecutionTests(unittest.TestCase):
         self.assertEqual(len(result.certification_paths), 2)
         self.assertEqual(len(result.market_snapshot_paths), 2)
         self.assertEqual(result.market_snapshot_sha256, "2" * 64)
+        self.assertEqual(len(result.daily_selection_paths), 2)
+        self.assertEqual(result.daily_selection_sha256, "3" * 64)
+        self.assertEqual(result.daily_selection_count, 2)
         preflight.assert_called_once_with(
             TARGET,
             now_utc=NOW,
@@ -166,6 +191,12 @@ class LPFEdgeDailyPredictionExecutionTests(unittest.TestCase):
             project_directory=self.project.resolve(),
             database_path=self.database,
         )
+        selection.assert_called_once_with(
+            TARGET,
+            self._market_snapshot(),
+            project_directory=self.project.resolve(),
+            database_path=self.database,
+        )
         self.assertEqual(publish.call_count, 2)
         first = publish.call_args_list[0].kwargs
         second = publish.call_args_list[1].kwargs
@@ -176,7 +207,11 @@ class LPFEdgeDailyPredictionExecutionTests(unittest.TestCase):
         self.assertEqual(set(first["expected_paths"]), set(result.results_paths))
         self.assertEqual(
             set(second["expected_paths"]),
-            set(result.certification_paths + result.market_snapshot_paths),
+            set(
+                result.certification_paths
+                + result.market_snapshot_paths
+                + result.daily_selection_paths
+            ),
         )
 
     def test_preflight_block_stops_before_prediction_and_git(self) -> None:
@@ -347,6 +382,52 @@ class LPFEdgeDailyPredictionExecutionTests(unittest.TestCase):
             mock.patch.object(
                 operations,
                 "_create_certified_market_snapshot",
+                side_effect=failure,
+            ),
+        ):
+            with self.assertRaises(
+                operations.DailyPredictionAutomationError
+            ) as raised:
+                self._run()
+
+        self.assertIs(raised.exception, failure)
+        self.assertEqual(publish.call_count, 1)
+
+    def test_daily_selection_failure_stops_before_certification_commit(self) -> None:
+        failure = operations.DailyPredictionAutomationError(
+            operations.DailyPredictionStage.DAILY_SELECTION,
+            "Sélection impossible.",
+        )
+        with (
+            mock.patch.object(operations, "_utc_now", return_value=NOW),
+            mock.patch.object(
+                operations,
+                "inspect_daily_operations",
+                return_value=self._overview(),
+            ),
+            mock.patch.object(
+                operations,
+                "_execute_prediction_engine",
+                return_value=self._prediction(),
+            ),
+            mock.patch.object(
+                operations,
+                "_commit_and_push_exact_paths",
+                return_value=RESULTS_COMMIT,
+            ) as publish,
+            mock.patch.object(
+                operations,
+                "_certify_prediction",
+                return_value=self._certification(),
+            ),
+            mock.patch.object(
+                operations,
+                "_create_certified_market_snapshot",
+                return_value=self._market_snapshot(),
+            ),
+            mock.patch.object(
+                operations,
+                "_create_certified_daily_selection",
                 side_effect=failure,
             ),
         ):

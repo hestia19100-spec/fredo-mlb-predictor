@@ -54,6 +54,10 @@ from src.lpf_edge_market_settlement import (
     LPFEdgeMarketSettlementError,
     load_market_settlement,
 )
+from src.lpf_edge_daily_selection import (
+    LPFEdgeDailySelectionError,
+    load_daily_selection,
+)
 st.set_page_config(
     page_title="LPF Edge · MLB",
     page_icon="⚾",
@@ -196,6 +200,10 @@ def format_evaluation_percent(value: Decimal | None) -> str:
 
 def format_theoretical_units(value: Decimal) -> str:
     return f"{value:+.2f} unité(s)"
+
+
+def format_selection_paris_time(value: str) -> str:
+    return format_paris_time(datetime.fromisoformat(value.replace("Z", "+00:00")))
 
 
 st.divider()
@@ -674,6 +682,9 @@ if daily is not None:
             f"Lot : `{prediction_feedback['batch_id']}`  \n"
             "Journal LPF/marché : "
             f"`{prediction_feedback.get('market_snapshot_sha256') or '—'}`  \n"
+            "Sélection prospective : "
+            f"{prediction_feedback.get('daily_selection_count', 0)} match(s) ; "
+            f"`{prediction_feedback.get('daily_selection_sha256') or '—'}`  \n"
             f"Commit des prédictions : "
             f"`{prediction_feedback['results_commit']}`  \n"
             f"Commit de certification : "
@@ -716,6 +727,12 @@ if daily is not None:
                     "batch_id": publication.prediction.batch_id,
                     "market_snapshot_sha256": (
                         publication.prediction.market_snapshot_sha256
+                    ),
+                    "daily_selection_count": (
+                        publication.prediction.daily_selection_count
+                    ),
+                    "daily_selection_sha256": (
+                        publication.prediction.daily_selection_sha256
                     ),
                     "results_commit": publication.prediction.results_commit,
                     "certification_commit": (
@@ -1064,6 +1081,119 @@ else:
         )
 
 st.divider()
+st.subheader("Matchs retenus pour les pronostics")
+st.caption(
+    "Cette sélection a été décidée et scellée au moment de la certification, "
+    "avec les lanceurs annoncés et les cotes françaises alors disponibles. "
+    "Elle retient au maximum un choix principal et un choix secondaire, mais "
+    "peut aussi conclure qu’aucun match n’est assez intéressant."
+)
+try:
+    sealed_daily_selection = load_daily_selection(selected_date)
+except (LPFEdgeDailySelectionError, OSError, ValueError) as error:
+    st.error(f"La sélection prospective est impossible à vérifier : {error}")
+else:
+    if sealed_daily_selection is None:
+        st.info(
+            "Aucune sélection prospective n’a été publiée pour cette journée. "
+            "Pour les anciennes journées, cela signifie simplement que cette "
+            "fonction n’existait pas encore lors de la certification."
+        )
+    elif not sealed_daily_selection.picks:
+        st.info(
+            "Aucun prono retenu aujourd’hui : aucun match ne respecte toutes "
+            "les conditions prudentes de la politique prospective."
+        )
+        rejection_labels = {
+            "LANCEURS_INCOMPLETS": "lanceurs annoncés incomplets",
+            "COTES_ABSENTES": "cotes françaises absentes",
+            "BOOKMAKERS_INSUFFISANTS": "moins de deux bookmakers",
+            "PROBABILITE_LPF_TROP_FAIBLE": "probabilité LPF inférieure à 52 %",
+            "ECART_LPF_MARCHE_INSUFFISANT": "écart LPF–marché inférieur à 2 points",
+            "VALEUR_THEORIQUE_INSUFFISANTE": "valeur théorique inférieure à 3 %",
+            "COTE_HORS_PLAGE": "cote hors de la plage 1,35–3,00",
+            "LIMITE_DE_DEUX_SELECTIONS": "hors du duo le mieux classé",
+        }
+        if sealed_daily_selection.rejection_reasons:
+            st.markdown("Motifs constatés :")
+            for reason, count in sealed_daily_selection.rejection_reasons:
+                st.markdown(
+                    f"- {count} match(s) : "
+                    f"{rejection_labels.get(reason, reason.lower())}."
+                )
+        st.caption(
+            f"Matchs admissibles avant la limite de deux : "
+            f"{sealed_daily_selection.eligible_count} · "
+            f"SHA-256 : `{sealed_daily_selection.selection_sha256}`"
+        )
+    else:
+        selection_rows: list[dict[str, str | int]] = []
+        for pick in sealed_daily_selection.picks:
+            selection_rows.append(
+                {
+                    "Choix": (
+                        "Principal" if pick.role == "PRINCIPAL" else "Secondaire"
+                    ),
+                    "Heure de Paris": format_selection_paris_time(
+                        pick.scheduled_start_utc
+                    ),
+                    "Match": f"{pick.home_team_name} vs {pick.away_team_name}",
+                    "Équipe retenue": pick.predicted_team_name,
+                    "Probabilité LPF": probability_percent(
+                        pick.model_probability
+                    ),
+                    "Marché français": probability_percent(
+                        pick.french_market_probability
+                    ),
+                    "Écart": format_percentage_point_gap(
+                        pick.gap_percentage_points
+                    ),
+                    "Meilleure cote": format_decimal_odds(
+                        pick.best_decimal_odds
+                    ),
+                    "Chez": ", ".join(pick.best_bookmakers),
+                    "Valeur théorique": format_evaluation_percent(
+                        pick.expected_value_percent
+                    ),
+                    "Lanceur domicile": pick.home_probable_pitcher_name,
+                    "Lanceur extérieur": pick.away_probable_pitcher_name,
+                }
+            )
+        st.dataframe(
+            selection_rows,
+            width="stretch",
+            height="content",
+            hide_index=True,
+            column_config={
+                "Choix": st.column_config.TextColumn(width="small"),
+                "Heure de Paris": st.column_config.TextColumn(width="small"),
+                "Match": st.column_config.TextColumn(width="large"),
+                "Équipe retenue": st.column_config.TextColumn(width="large"),
+                "Chez": st.column_config.TextColumn(width="medium"),
+                "Lanceur domicile": st.column_config.TextColumn(width="medium"),
+                "Lanceur extérieur": st.column_config.TextColumn(width="medium"),
+            },
+        )
+        st.success(
+            f"{sealed_daily_selection.selection_count} match(s) retenu(s) "
+            "avant les rencontres et vérifié(s) par empreinte."
+        )
+        st.caption(
+            f"Matchs admissibles avant la limite de deux : "
+            f"{sealed_daily_selection.eligible_count} · "
+            f"SHA-256 : `{sealed_daily_selection.selection_sha256}`"
+        )
+    st.warning(
+        "Mode observation : cette sélection ne déclenche aucune mise réelle, "
+        "ne garantit aucun gain et doit être évaluée sur plusieurs journées."
+    )
+    st.caption(
+        "Conditions actuelles : deux lanceurs annoncés, au moins deux "
+        "bookmakers, probabilité LPF ≥ 52 %, écart LPF–marché ≥ 2 points, "
+        "valeur théorique ≥ 3 % et cote comprise entre 1,35 et 3,00."
+    )
+
+st.divider()
 st.subheader("Résultats vérifiés")
 if score is None:
     st.info(
@@ -1199,6 +1329,33 @@ else:
             "mise fixe. Ils ne constituent ni un gain réel ni une "
             "recommandation de pari."
         )
+        if sealed_market_settlement.selected_count > 0:
+            st.markdown("#### Verdict des matchs retenus")
+            selected_columns = st.columns(4)
+            selected_columns[0].metric(
+                "Sélections évaluées",
+                sealed_market_settlement.selected_evaluated_count,
+            )
+            selected_columns[1].metric(
+                "Sélections réussies",
+                sealed_market_settlement.selected_correct_count,
+            )
+            selected_columns[2].metric(
+                "Résultat théorique des sélections",
+                format_theoretical_units(
+                    sealed_market_settlement.selected_theoretical_net_units
+                ),
+            )
+            selected_columns[3].metric(
+                "Rendement théorique des sélections",
+                format_evaluation_percent(
+                    sealed_market_settlement.selected_theoretical_roi_percent
+                ),
+            )
+            st.caption(
+                f"Sélections scellées : {sealed_market_settlement.selected_count} · "
+                f"Annulées : {sealed_market_settlement.selected_void_count}."
+            )
 
 st.divider()
 st.subheader("Évaluation historique des écarts LPF–marché")

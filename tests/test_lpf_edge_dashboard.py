@@ -440,6 +440,8 @@ class LPFEdgeDashboardTests(unittest.TestCase):
         self.assertIn("publication.odds.bookmaker_quotes_saved", source)
         self.assertIn("collecte existante réutilisée", source)
         self.assertIn("collecte échouée sans bloquer la prédiction", source)
+        self.assertIn("publication.prediction.market_snapshot_sha256", source)
+        self.assertIn("Journal LPF/marché", source)
         self.assertIn("Préparation avant les prédictions", source)
         self.assertIn("load_prediction_preparation", source)
         self.assertIn("inspect_daily_odds_collection", source)

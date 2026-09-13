@@ -668,6 +668,8 @@ if daily is not None:
             f"{odds_quotes if odds_quotes is not None else '—'} cote(s) ; "
             f"{odds_quota if odds_quota is not None else '—'} crédit(s) restant(s)  \n"
             f"Lot : `{prediction_feedback['batch_id']}`  \n"
+            "Journal LPF/marché : "
+            f"`{prediction_feedback.get('market_snapshot_sha256') or '—'}`  \n"
             f"Commit des prédictions : "
             f"`{prediction_feedback['results_commit']}`  \n"
             f"Commit de certification : "
@@ -708,6 +710,9 @@ if daily is not None:
                     "odds_quotes": publication.odds.bookmaker_quotes_saved,
                     "odds_quota_remaining": publication.odds.quota_remaining,
                     "batch_id": publication.prediction.batch_id,
+                    "market_snapshot_sha256": (
+                        publication.prediction.market_snapshot_sha256
+                    ),
                     "results_commit": publication.prediction.results_commit,
                     "certification_commit": (
                         publication.prediction.certification_commit

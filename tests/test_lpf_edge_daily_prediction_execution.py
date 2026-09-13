@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timezone
+import hashlib
 import inspect
 from pathlib import Path
 import tempfile
@@ -40,6 +41,11 @@ class LPFEdgeDailyPredictionExecutionTests(unittest.TestCase):
             self.project
             / operations.CERTIFICATION_ROOT
             / f"{TARGET.isoformat()}.remote.json.gz"
+        )
+        self.market_slot = (
+            self.project
+            / operations.MARKET_SNAPSHOT_ROOT
+            / TARGET.isoformat()
         )
 
     def _action(
@@ -87,7 +93,19 @@ class LPFEdgeDailyPredictionExecutionTests(unittest.TestCase):
             data_directory=self.data_directory,
         )
 
-    def test_success_executes_exact_five_stage_chain(self) -> None:
+    def _market_snapshot(self) -> operations.MarketSnapshotPublication:
+        return operations.MarketSnapshotPublication(
+            target_date=TARGET,
+            slot_path=self.market_slot,
+            snapshot_path=self.market_slot / "market_snapshot.json",
+            completed_path=self.market_slot / "COMPLETED",
+            snapshot_sha256="2" * 64,
+            odds_run_id=4,
+            row_count=15,
+            comparable_count=15,
+        )
+
+    def test_success_publishes_certification_and_snapshot_together(self) -> None:
         with (
             mock.patch.object(operations, "_utc_now", return_value=NOW),
             mock.patch.object(
@@ -110,6 +128,11 @@ class LPFEdgeDailyPredictionExecutionTests(unittest.TestCase):
                 "_certify_prediction",
                 return_value=self._certification(),
             ) as certify,
+            mock.patch.object(
+                operations,
+                "_create_certified_market_snapshot",
+                return_value=self._market_snapshot(),
+            ) as snapshot,
         ):
             result = self._run()
 
@@ -119,6 +142,8 @@ class LPFEdgeDailyPredictionExecutionTests(unittest.TestCase):
         self.assertEqual(result.certification_commit, CERTIFICATION_COMMIT)
         self.assertEqual(len(result.results_paths), 8)
         self.assertEqual(len(result.certification_paths), 2)
+        self.assertEqual(len(result.market_snapshot_paths), 2)
+        self.assertEqual(result.market_snapshot_sha256, "2" * 64)
         preflight.assert_called_once_with(
             TARGET,
             now_utc=NOW,
@@ -136,6 +161,11 @@ class LPFEdgeDailyPredictionExecutionTests(unittest.TestCase):
             RESULTS_COMMIT,
             project_directory=self.project.resolve(),
         )
+        snapshot.assert_called_once_with(
+            TARGET,
+            project_directory=self.project.resolve(),
+            database_path=self.database,
+        )
         self.assertEqual(publish.call_count, 2)
         first = publish.call_args_list[0].kwargs
         second = publish.call_args_list[1].kwargs
@@ -144,7 +174,10 @@ class LPFEdgeDailyPredictionExecutionTests(unittest.TestCase):
         self.assertEqual(first["expected_parent_commit"], "e" * 40)
         self.assertEqual(second["expected_parent_commit"], RESULTS_COMMIT)
         self.assertEqual(set(first["expected_paths"]), set(result.results_paths))
-        self.assertEqual(set(second["expected_paths"]), set(result.certification_paths))
+        self.assertEqual(
+            set(second["expected_paths"]),
+            set(result.certification_paths + result.market_snapshot_paths),
+        )
 
     def test_preflight_block_stops_before_prediction_and_git(self) -> None:
         blocked = self._action(
@@ -283,6 +316,115 @@ class LPFEdgeDailyPredictionExecutionTests(unittest.TestCase):
             ):
                 self._run()
         self.assertEqual(publish.call_count, 1)
+
+    def test_market_snapshot_failure_stops_before_certification_commit(self) -> None:
+        failure = operations.DailyPredictionAutomationError(
+            operations.DailyPredictionStage.MARKET_SNAPSHOT,
+            "Journal impossible.",
+        )
+        with (
+            mock.patch.object(operations, "_utc_now", return_value=NOW),
+            mock.patch.object(
+                operations,
+                "inspect_daily_operations",
+                return_value=self._overview(),
+            ),
+            mock.patch.object(
+                operations,
+                "_execute_prediction_engine",
+                return_value=self._prediction(),
+            ),
+            mock.patch.object(
+                operations,
+                "_commit_and_push_exact_paths",
+                return_value=RESULTS_COMMIT,
+            ) as publish,
+            mock.patch.object(
+                operations,
+                "_certify_prediction",
+                return_value=self._certification(),
+            ),
+            mock.patch.object(
+                operations,
+                "_create_certified_market_snapshot",
+                side_effect=failure,
+            ),
+        ):
+            with self.assertRaises(
+                operations.DailyPredictionAutomationError
+            ) as raised:
+                self._run()
+
+        self.assertIs(raised.exception, failure)
+        self.assertEqual(publish.call_count, 1)
+
+    def test_market_snapshot_uses_only_odds_before_certification(self) -> None:
+        self.database.parent.mkdir(parents=True)
+        self.database.write_bytes(b"database")
+        self.certification.parent.mkdir(parents=True)
+        self.certification.write_bytes(b"certification\n")
+        self.evidence.write_bytes(b"evidence")
+        certified_at = datetime(2026, 9, 13, 12, 1, tzinfo=timezone.utc)
+        prediction_day = mock.Mock(
+            target_date=TARGET,
+            certified_at_utc=certified_at,
+            predictions=(
+                mock.Mock(home_team_id=20, away_team_id=10),
+            ),
+        )
+        display = mock.Mock()
+        publication = self._market_snapshot()
+        with (
+            mock.patch.object(
+                operations,
+                "load_certified_prediction_day",
+                return_value=prediction_day,
+            ),
+            mock.patch.object(
+                operations,
+                "load_latest_moneyline_odds_display",
+                return_value=display,
+            ) as load_odds,
+            mock.patch.object(
+                operations,
+                "load_team_names",
+                return_value={10: "Extérieur", 20: "Domicile"},
+            ) as load_names,
+            mock.patch.object(
+                operations,
+                "create_market_snapshot_publication",
+                return_value=publication,
+            ) as create_snapshot,
+        ):
+            result = operations._create_certified_market_snapshot(
+                TARGET,
+                project_directory=self.project.resolve(),
+                database_path=self.database,
+            )
+
+        self.assertIs(result, publication)
+        load_odds.assert_called_once_with(
+            TARGET,
+            database_path=self.database,
+            required_region="fr",
+            completed_at_or_before_utc=certified_at,
+        )
+        load_names.assert_called_once_with(
+            {10, 20},
+            project_directory=self.project.resolve(),
+        )
+        create_snapshot.assert_called_once_with(
+            prediction_day,
+            display,
+            team_names={10: "Extérieur", 20: "Domicile"},
+            certification_sha256=hashlib.sha256(
+                b"certification\n"
+            ).hexdigest(),
+            certification_evidence_sha256=hashlib.sha256(
+                b"evidence"
+            ).hexdigest(),
+            project_directory=self.project.resolve(),
+        )
 
     def test_git_publication_uses_exact_paths_commit_and_push(self) -> None:
         expected = ("proofs/a", "proofs/b")

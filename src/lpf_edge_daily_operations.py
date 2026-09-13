@@ -31,8 +31,18 @@ from src.lpf_edge_dashboard import (
     list_certified_prediction_dates,
     load_certified_prediction_day,
     load_latest_score_summary,
+    load_team_names,
 )
-from src.lpf_edge_odds_display import load_latest_moneyline_odds_display
+from src.lpf_edge_market_snapshot import (
+    LPFEdgeMarketSnapshotError,
+    MARKET_SNAPSHOT_ROOT,
+    MarketSnapshotPublication,
+    create_market_snapshot_publication,
+)
+from src.lpf_edge_odds_display import (
+    LPFEdgeOddsDisplayError,
+    load_latest_moneyline_odds_display,
+)
 from src.mlb_api import MLBAPIError
 from src.odds_api import OddsAPIError, odds_api_key_is_configured
 from src.odds_ingestion_service import (
@@ -119,6 +129,7 @@ class DailyPredictionStage(str, Enum):
     PREDICTION = "PREDICTION"
     RESULTS_PUBLICATION = "RESULTS_PUBLICATION"
     CERTIFICATION = "CERTIFICATION"
+    MARKET_SNAPSHOT = "MARKET_SNAPSHOT"
     CERTIFICATION_PUBLICATION = "CERTIFICATION_PUBLICATION"
 
 
@@ -386,6 +397,8 @@ class DailyPredictionPublication:
     certification_commit: str
     results_paths: tuple[str, ...]
     certification_paths: tuple[str, ...]
+    market_snapshot_paths: tuple[str, ...] = ()
+    market_snapshot_sha256: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1856,6 +1869,115 @@ def _certify_prediction(
     )
 
 
+def _create_certified_market_snapshot(
+    target_date: date,
+    *,
+    project_directory: Path,
+    database_path: Path,
+) -> MarketSnapshotPublication:
+    """Scelle les cotes antérieures à la certification locale produite."""
+    expected_database = project_directory / "data" / "fredo_mlb.db"
+    try:
+        if database_path.resolve(strict=True) != expected_database.resolve(strict=True):
+            raise DailyPredictionAutomationError(
+                DailyPredictionStage.MARKET_SNAPSHOT,
+                "La base des cotes ne correspond pas au projet publié.",
+            )
+        prediction_day = load_certified_prediction_day(
+            target_date,
+            project_directory=project_directory,
+        )
+        odds_display = load_latest_moneyline_odds_display(
+            target_date,
+            database_path=database_path,
+            required_region="fr",
+            completed_at_or_before_utc=prediction_day.certified_at_utc,
+        )
+        team_ids = {
+            team_id
+            for prediction in prediction_day.predictions
+            for team_id in (prediction.home_team_id, prediction.away_team_id)
+        }
+        team_names = load_team_names(
+            team_ids,
+            project_directory=project_directory,
+        )
+        certification_path = (
+            project_directory
+            / CERTIFICATION_ROOT
+            / f"{target_date.isoformat()}.json"
+        )
+        certification_evidence_path = (
+            project_directory
+            / CERTIFICATION_ROOT
+            / f"{target_date.isoformat()}.remote.json.gz"
+        )
+        if any(
+            path.is_symlink() or not path.is_file()
+            for path in (certification_path, certification_evidence_path)
+        ):
+            raise LPFEdgeMarketSnapshotError(
+                "Une preuve de certification du journal est absente."
+            )
+        certification_sha256 = hashlib.sha256(
+            certification_path.read_bytes()
+        ).hexdigest()
+        certification_evidence_sha256 = hashlib.sha256(
+            certification_evidence_path.read_bytes()
+        ).hexdigest()
+        publication = create_market_snapshot_publication(
+            prediction_day,
+            odds_display,
+            team_names=team_names,
+            certification_sha256=certification_sha256,
+            certification_evidence_sha256=certification_evidence_sha256,
+            project_directory=project_directory,
+        )
+    except DailyPredictionAutomationError:
+        raise
+    except (
+        LPFEdgeDashboardError,
+        LPFEdgeMarketSnapshotError,
+        LPFEdgeOddsDisplayError,
+        OSError,
+    ) as error:
+        raise DailyPredictionAutomationError(
+            DailyPredictionStage.MARKET_SNAPSHOT,
+            "Le journal prospectif LPF/marché n’a pas pu être scellé.",
+        ) from error
+    if type(publication) is not MarketSnapshotPublication:
+        raise DailyPredictionAutomationError(
+            DailyPredictionStage.MARKET_SNAPSHOT,
+            "Le service du journal a retourné un reçu inattendu.",
+        )
+    if publication.target_date != target_date:
+        raise DailyPredictionAutomationError(
+            DailyPredictionStage.MARKET_SNAPSHOT,
+            "Le journal prospectif concerne une date inattendue.",
+        )
+    if (
+        not isinstance(publication.snapshot_sha256, str)
+        or len(publication.snapshot_sha256) != 64
+        or any(
+            character not in "0123456789abcdef"
+            for character in publication.snapshot_sha256
+        )
+    ):
+        raise DailyPredictionAutomationError(
+            DailyPredictionStage.MARKET_SNAPSHOT,
+            "L’empreinte du journal prospectif est invalide.",
+        )
+    expected_slot = (
+        project_directory / MARKET_SNAPSHOT_ROOT / target_date.isoformat()
+    )
+    if publication.slot_path.resolve() != expected_slot.resolve():
+        raise DailyPredictionAutomationError(
+            DailyPredictionStage.MARKET_SNAPSHOT,
+            "Le journal prospectif a été écrit dans un dossier inattendu.",
+        )
+    return publication
+
+
 def _french_date_label(value: date) -> str:
     months = (
         "janvier", "fevrier", "mars", "avril", "mai", "juin",
@@ -1990,12 +2112,49 @@ def execute_daily_prediction_publication(
             DailyPredictionStage.CERTIFICATION,
             "Les chemins de certification produits sont inattendus.",
         )
+
+    market_snapshot = _create_certified_market_snapshot(
+        selected,
+        project_directory=project,
+        database_path=database_path,
+    )
+    market_snapshot_paths = tuple(
+        sorted(
+            path.relative_to(project).as_posix()
+            for path in market_snapshot.paths
+        )
+    )
+    expected_market_snapshot_paths = tuple(
+        sorted(
+            (
+                (
+                    MARKET_SNAPSHOT_ROOT
+                    / selected.isoformat()
+                    / "COMPLETED"
+                ).as_posix(),
+                (
+                    MARKET_SNAPSHOT_ROOT
+                    / selected.isoformat()
+                    / "market_snapshot.json"
+                ).as_posix(),
+            )
+        )
+    )
+    if market_snapshot_paths != expected_market_snapshot_paths:
+        raise DailyPredictionAutomationError(
+            DailyPredictionStage.MARKET_SNAPSHOT,
+            "Les chemins du journal prospectif sont inattendus.",
+        )
+    certification_publication_paths = tuple(
+        sorted(certification_paths + market_snapshot_paths)
+    )
     certification_commit = _commit_and_push_exact_paths(
         project_directory=project,
-        expected_paths=certification_paths,
+        expected_paths=certification_publication_paths,
         expected_parent_commit=results_commit,
         commit_message=(
-            f"Enregistrer la certification prospective MLB du {label}"
+            "Enregistrer la certification et le journal prospectifs MLB du "
+            f"{label}"
         ),
         stage=DailyPredictionStage.CERTIFICATION_PUBLICATION,
     )
@@ -2006,6 +2165,8 @@ def execute_daily_prediction_publication(
         certification_commit=certification_commit,
         results_paths=results_paths,
         certification_paths=certification_paths,
+        market_snapshot_paths=market_snapshot_paths,
+        market_snapshot_sha256=market_snapshot.snapshot_sha256,
     )
 
 
@@ -2320,6 +2481,8 @@ __all__ = [
     "DailyResultsStage",
     "GitWorkspaceState",
     "LocalGameDayState",
+    "MARKET_SNAPSHOT_ROOT",
+    "MarketSnapshotPublication",
     "PredictionSlotState",
     "VerifiedLocalBackup",
     "build_daily_operations_overview",

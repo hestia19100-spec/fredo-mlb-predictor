@@ -255,6 +255,27 @@ class BackupServiceTests(unittest.TestCase):
         ):
             self.create_backup()
 
+    def test_active_odds_ingestion_is_rejected(self) -> None:
+        """Une collecte de cotes en cours bloque aussi la sauvegarde."""
+        self.connection.execute(
+            """
+            CREATE TABLE odds_ingestion_runs (
+                run_id INTEGER PRIMARY KEY,
+                status TEXT NOT NULL
+            )
+            """
+        )
+        self.connection.execute(
+            """
+            INSERT INTO odds_ingestion_runs
+            VALUES (1, 'started')
+            """
+        )
+        self.connection.commit()
+
+        with self.assertRaisesRegex(BackupError, "cotes"):
+            self.create_backup()
+
     def test_zlib_error_during_member_listing_is_wrapped(self) -> None:
         """L'erreur observee dans getmembers devient toujours BackupError."""
         result = self.create_backup()

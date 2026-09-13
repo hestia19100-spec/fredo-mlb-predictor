@@ -199,21 +199,22 @@ def _assert_no_active_ingestion(
                 timeout=30,
             )
         ) as connection:
-            if not _table_exists(
-                connection,
+            active_count = 0
+            for table_name in (
                 "ingestion_runs",
+                "odds_ingestion_runs",
             ):
-                return
-
-            active_count = int(
-                connection.execute(
-                    """
-                    SELECT COUNT(*)
-                    FROM ingestion_runs
-                    WHERE status = 'started'
-                    """
-                ).fetchone()[0]
-            )
+                if not _table_exists(connection, table_name):
+                    continue
+                active_count += int(
+                    connection.execute(
+                        f"""
+                        SELECT COUNT(*)
+                        FROM {table_name}
+                        WHERE status = 'started'
+                        """
+                    ).fetchone()[0]
+                )
 
     except sqlite3.Error as error:
         raise BackupError(
@@ -222,7 +223,7 @@ def _assert_no_active_ingestion(
 
     if active_count:
         raise BackupError(
-            "Une collecte MLB est encore en cours. "
+            "Une collecte MLB ou de cotes est encore en cours. "
             "Attends sa fin avant de créer la sauvegarde."
         )
 

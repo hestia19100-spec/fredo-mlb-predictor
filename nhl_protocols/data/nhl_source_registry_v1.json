@@ -1,0 +1,112 @@
+{
+  "base_repository_commit": "c2f0132fd3444823c7c325e860fc35097473092f",
+  "data_policy": {
+    "database_enabled": false,
+    "final_predictive_features_enabled": false,
+    "fixture_marker": "SYNTHETIC_OFFLINE_FIXTURE",
+    "http_client_enabled": false,
+    "interface_enabled": false,
+    "model_enabled": false,
+    "odds_enabled": false,
+    "real_provider_calls_allowed": false,
+    "synthetic_fixtures_only": true
+  },
+  "normalization_contract": {
+    "effective_availability_rule": "max(observed_at_utc, source_updated_at_utc_if_present)",
+    "required_provenance": [
+      "provider",
+      "observation_id",
+      "observed_at_utc",
+      "source_updated_at_utc",
+      "effective_available_at_utc",
+      "response_sha256",
+      "code_commit",
+      "fixture_id",
+      "request_sha256",
+      "temporal_status"
+    ],
+    "silent_imputation_allowed": false,
+    "unknown_must_remain_explicit": true
+  },
+  "protocol_id": "lpf_edge_nhl_source_registry_v1",
+  "protocol_schema_version": 1,
+  "providers": [
+    {
+      "authentication": "NOT_DEFINED",
+      "capabilities": [
+        "EXPECTED_GOALS"
+      ],
+      "credential_environment_variable": null,
+      "display_name": "Source xG à sélectionner",
+      "enabled": false,
+      "historical_availability": "NOT_AUDITED",
+      "licensing_status": "RIGHTS_AND_REPRODUCIBILITY_NOT_VALIDATED",
+      "provider_id": "expected_goals_candidate",
+      "status": "DISABLED_PENDING_RIGHTS_REVIEW"
+    },
+    {
+      "authentication": "NONE_EXPECTED",
+      "capabilities": [
+        "FINAL_RESULTS",
+        "GAME_STATE",
+        "SCHEDULE",
+        "TEAMS"
+      ],
+      "credential_environment_variable": null,
+      "display_name": "NHL Public Web API",
+      "enabled": false,
+      "historical_availability": "TO_AUDIT",
+      "licensing_status": "PUBLIC_DOCUMENTATION_TO_REVIEW",
+      "provider_id": "nhl_public_web_api",
+      "status": "PLANNED_DISABLED"
+    },
+    {
+      "authentication": "NONE_EXPECTED",
+      "capabilities": [
+        "GOALIE_STATISTICS",
+        "PLAYER_STATISTICS",
+        "TEAM_STATISTICS"
+      ],
+      "credential_environment_variable": null,
+      "display_name": "NHL Stats REST API",
+      "enabled": false,
+      "historical_availability": "TO_AUDIT",
+      "licensing_status": "PUBLIC_DOCUMENTATION_TO_REVIEW",
+      "provider_id": "nhl_stats_rest_api",
+      "status": "PLANNED_DISABLED"
+    },
+    {
+      "authentication": "ENVIRONMENT_HEADER_ONLY",
+      "capabilities": [
+        "PLAYER_AVAILABILITY",
+        "PREGAME_GOALIE"
+      ],
+      "credential_environment_variable": "SPORTSDATAIO_API_KEY",
+      "display_name": "SportsDataIO ou fournisseur équivalent",
+      "enabled": false,
+      "historical_availability": "TO_AUDIT",
+      "licensing_status": "COST_QUOTA_AND_COMMERCIAL_RIGHTS_NOT_VALIDATED",
+      "provider_id": "sportsdataio_candidate",
+      "status": "CANDIDATE_DISABLED"
+    }
+  ],
+  "provider_selection_gate": {
+    "cost_audit_required": true,
+    "historical_timestamp_audit_required": true,
+    "licence_and_commercial_rights_audit_required": true,
+    "quota_audit_required": true,
+    "selection_frozen": false
+  },
+  "status": "DRAFT_OFFLINE_NO_PROVIDER_ENABLED",
+  "temporal_policy": {
+    "cutoff_rule": "effective_available_at_utc <= information_cutoff_utc < scheduled_start_utc",
+    "current_aggregate_for_historical_row_allowed": false,
+    "current_injury_for_historical_row_allowed": false,
+    "future_result_allowed": false,
+    "postgame_goalie_backfill_allowed": false,
+    "result_must_be_final_by_cutoff": true,
+    "target_game_may_be_source_game": false,
+    "target_score_or_play_by_play_allowed": false,
+    "timestamps_timezone": "UTC"
+  }
+}

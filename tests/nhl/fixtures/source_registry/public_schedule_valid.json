@@ -1,0 +1,64 @@
+{
+  "capability": "SCHEDULE",
+  "code_commit": "c2f0132fd3444823c7c325e860fc35097473092f",
+  "fixture_id": "public.schedule.valid",
+  "fixture_marker": "SYNTHETIC_OFFLINE_FIXTURE",
+  "fixture_schema_version": 1,
+  "observed_at_utc": "2026-09-30T12:00:00Z",
+  "payload": {
+    "records": [
+      {
+        "entity_id": "game:2026020001",
+        "kind": "SCHEDULED_GAME",
+        "observation_id": "obs.game.2026020001",
+        "source_game_id": null,
+        "target_game_id": 2026020001,
+        "value": {
+          "away_team_id": 10,
+          "game_state": "FUT",
+          "game_type": 2,
+          "home_team_id": 20,
+          "official_date": "2026-10-01",
+          "rescheduled": false,
+          "scheduled_start_utc": "2026-10-01T23:00:00Z",
+          "season_id": 20262027
+        },
+        "value_state": "KNOWN"
+      },
+      {
+        "entity_id": "game:2026020002",
+        "kind": "SCHEDULED_GAME",
+        "observation_id": "obs.game.2026020002",
+        "source_game_id": null,
+        "target_game_id": 2026020002,
+        "value": {
+          "away_team_id": 30,
+          "game_state": "FUT",
+          "game_type": 2,
+          "home_team_id": 40,
+          "official_date": "2026-10-02",
+          "original_start_utc": "2026-10-01T22:00:00Z",
+          "rescheduled": true,
+          "scheduled_start_utc": "2026-10-02T22:30:00Z",
+          "season_id": 20262027
+        },
+        "value_state": "KNOWN"
+      }
+    ]
+  },
+  "provider": "nhl_public_web_api",
+  "request": {
+    "capability": "SCHEDULE",
+    "operation": "schedule_by_date",
+    "parameters": [
+      [
+        "date",
+        "2026-10-01"
+      ]
+    ],
+    "provider": "nhl_public_web_api",
+    "resource_path": "/v1/schedule/{date}"
+  },
+  "response_sha256": "972d128d364cb658b517bfe270958bba3592065992712495337694903c329e28",
+  "source_updated_at_utc": null
+}

@@ -1,0 +1,77 @@
+{
+  "capability": "PREGAME_GOALIE",
+  "code_commit": "c2f0132fd3444823c7c325e860fc35097473092f",
+  "fixture_id": "pregame.goalies.valid",
+  "fixture_marker": "SYNTHETIC_OFFLINE_FIXTURE",
+  "fixture_schema_version": 1,
+  "observed_at_utc": "2026-10-01T18:00:00Z",
+  "payload": {
+    "records": [
+      {
+        "entity_id": "team:10:goalie",
+        "kind": "PREGAME_GOALIE",
+        "observation_id": "obs.goalie.away.probable",
+        "source_game_id": null,
+        "target_game_id": 2026020001,
+        "value": {
+          "goalie_id": 1001,
+          "status": "PROBABLE",
+          "team_id": 10
+        },
+        "value_state": "KNOWN"
+      },
+      {
+        "entity_id": "team:20:goalie",
+        "kind": "PREGAME_GOALIE",
+        "observation_id": "obs.goalie.home.confirmed.early",
+        "source_game_id": null,
+        "source_updated_at_utc": "2026-10-01T20:00:00Z",
+        "target_game_id": 2026020001,
+        "value": {
+          "goalie_id": 2001,
+          "status": "CONFIRMED",
+          "team_id": 20
+        },
+        "value_state": "KNOWN"
+      },
+      {
+        "entity_id": "team:20:goalie",
+        "kind": "PREGAME_GOALIE",
+        "observation_id": "obs.goalie.home.confirmed.late",
+        "source_game_id": null,
+        "source_updated_at_utc": "2026-10-01T22:45:00Z",
+        "target_game_id": 2026020001,
+        "value": {
+          "goalie_id": 2002,
+          "status": "CONFIRMED",
+          "team_id": 20
+        },
+        "value_state": "KNOWN"
+      },
+      {
+        "entity_id": "team:30:goalie",
+        "kind": "PREGAME_GOALIE",
+        "observation_id": "obs.goalie.unknown",
+        "source_game_id": null,
+        "target_game_id": 2026020002,
+        "value": null,
+        "value_state": "UNKNOWN"
+      }
+    ]
+  },
+  "provider": "sportsdataio_candidate",
+  "request": {
+    "capability": "PREGAME_GOALIE",
+    "operation": "pregame_goalies",
+    "parameters": [
+      [
+        "date",
+        "2026-10-01"
+      ]
+    ],
+    "provider": "sportsdataio_candidate",
+    "resource_path": "/v3/nhl/scores/json/starting-goalies-by-date/{date}"
+  },
+  "response_sha256": "67353eb822e8ebbf1763adcbf4e40463b4ab0a70772cb5098a1df088d7eb0fe8",
+  "source_updated_at_utc": null
+}

@@ -1,0 +1,39 @@
+{
+  "capability": "GAME_STATE",
+  "code_commit": "c2f0132fd3444823c7c325e860fc35097473092f",
+  "fixture_id": "public.game.state.valid",
+  "fixture_marker": "SYNTHETIC_OFFLINE_FIXTURE",
+  "fixture_schema_version": 1,
+  "observed_at_utc": "2026-10-01T23:30:00Z",
+  "payload": {
+    "records": [
+      {
+        "entity_id": "game:2026020001",
+        "kind": "GAME_STATE",
+        "observation_id": "obs.state.2026020001.live",
+        "source_game_id": null,
+        "target_game_id": 2026020001,
+        "value": {
+          "game_state": "LIVE",
+          "is_final": false
+        },
+        "value_state": "KNOWN"
+      }
+    ]
+  },
+  "provider": "nhl_public_web_api",
+  "request": {
+    "capability": "GAME_STATE",
+    "operation": "game_state",
+    "parameters": [
+      [
+        "game_id",
+        "2026020001"
+      ]
+    ],
+    "provider": "nhl_public_web_api",
+    "resource_path": "/v1/gamecenter/{game_id}/landing"
+  },
+  "response_sha256": "5bad29cb8211a8c769bc597d79c10ce52ca7f10d2ab05162b3b026e92ace98a9",
+  "source_updated_at_utc": "2026-10-01T23:29:58Z"
+}

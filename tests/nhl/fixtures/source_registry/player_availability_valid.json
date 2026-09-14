@@ -1,0 +1,54 @@
+{
+  "capability": "PLAYER_AVAILABILITY",
+  "code_commit": "c2f0132fd3444823c7c325e860fc35097473092f",
+  "fixture_id": "player.availability.valid",
+  "fixture_marker": "SYNTHETIC_OFFLINE_FIXTURE",
+  "fixture_schema_version": 1,
+  "observed_at_utc": "2026-10-01T17:00:00Z",
+  "payload": {
+    "records": [
+      {
+        "entity_id": "player:1010",
+        "kind": "PLAYER_AVAILABILITY",
+        "observation_id": "obs.injury.1010.early",
+        "source_game_id": null,
+        "target_game_id": 2026020001,
+        "value": {
+          "player_id": 1010,
+          "status": "OUT",
+          "team_id": 10
+        },
+        "value_state": "KNOWN"
+      },
+      {
+        "entity_id": "player:2020",
+        "kind": "PLAYER_AVAILABILITY",
+        "observation_id": "obs.injury.2020.late",
+        "source_game_id": null,
+        "source_updated_at_utc": "2026-10-01T22:40:00Z",
+        "target_game_id": 2026020001,
+        "value": {
+          "player_id": 2020,
+          "status": "QUESTIONABLE",
+          "team_id": 20
+        },
+        "value_state": "KNOWN"
+      }
+    ]
+  },
+  "provider": "sportsdataio_candidate",
+  "request": {
+    "capability": "PLAYER_AVAILABILITY",
+    "operation": "player_availability",
+    "parameters": [
+      [
+        "date",
+        "2026-10-01"
+      ]
+    ],
+    "provider": "sportsdataio_candidate",
+    "resource_path": "/v3/nhl/scores/json/injuries-by-date/{date}"
+  },
+  "response_sha256": "7805a57608ac7f8036c5e9e5f88d0e1a279129838ce3fb0f91bda9f9bb55c7a7",
+  "source_updated_at_utc": null
+}

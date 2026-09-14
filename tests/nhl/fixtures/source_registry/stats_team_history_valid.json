@@ -1,0 +1,53 @@
+{
+  "capability": "TEAM_STATISTICS",
+  "code_commit": "c2f0132fd3444823c7c325e860fc35097473092f",
+  "fixture_id": "stats.team.history.valid",
+  "fixture_marker": "SYNTHETIC_OFFLINE_FIXTURE",
+  "fixture_schema_version": 1,
+  "observed_at_utc": "2026-09-30T10:00:00Z",
+  "payload": {
+    "records": [
+      {
+        "entity_id": "team:20",
+        "kind": "TEAM_STATISTICS",
+        "observation_id": "obs.team.20.history.2025021312",
+        "source_game_id": 2025021312,
+        "target_game_id": 2026020001,
+        "value": {
+          "back_to_back": false,
+          "goals_against": 2,
+          "goals_for": 4,
+          "home_ice": true,
+          "penalty_kill_opportunities": 3,
+          "penalty_kills": 3,
+          "power_play_goals": 1,
+          "power_play_opportunities": 4,
+          "rest_hours": 67,
+          "shots_against": 27,
+          "shots_for": 34,
+          "travel_km_since_previous_game": 0
+        },
+        "value_state": "KNOWN"
+      }
+    ]
+  },
+  "provider": "nhl_stats_rest_api",
+  "request": {
+    "capability": "TEAM_STATISTICS",
+    "operation": "team_game_history",
+    "parameters": [
+      [
+        "game_id",
+        "2025021312"
+      ],
+      [
+        "team_id",
+        "20"
+      ]
+    ],
+    "provider": "nhl_stats_rest_api",
+    "resource_path": "/rest/en/team/summary"
+  },
+  "response_sha256": "54eeb5c40a97cc464f3500ad5b149caa08f3f724981272f878aac1ea3e9448cb",
+  "source_updated_at_utc": null
+}

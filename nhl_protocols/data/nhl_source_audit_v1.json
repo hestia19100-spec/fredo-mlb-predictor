@@ -1,0 +1,139 @@
+{
+  "audit_date": "2026-09-14",
+  "audit_method": "OFFICIAL_DOCUMENTS_ONLY_NO_PROVIDER_CALL",
+  "audits": [
+    {
+      "automated_collection_allowed": false,
+      "blockers": [
+        "PROSPECTIVE_ROW_TIMESTAMPS_NOT_PROVEN",
+        "REPRODUCIBLE_VERSIONED_SNAPSHOTS_NOT_PROVEN"
+      ],
+      "cost_finding": "LISTED_DOWNLOADS_FREE_FOR_NONCOMMERCIAL_USE",
+      "documents": [
+        {
+          "accessed_on": "2026-09-14",
+          "supports": [
+            "DOWNLOADS_PERMITTED_FOR_NONCOMMERCIAL_USE_WITH_ATTRIBUTION",
+            "HISTORICAL_SHOTS_AND_XG_AVAILABLE_FROM_2007_2008",
+            "UNAPPROVED_SCRAPING_IS_FORBIDDEN"
+          ],
+          "url": "https://www.moneypuck.com/data.htm"
+        }
+      ],
+      "historical_finding": "SHOT_AND_XG_HISTORY_LISTED_FROM_2007_2008",
+      "next_authorized_step": "TEST_DOWNLOADED_SYNTHETIC_SCHEMA_WITHOUT_REMOTE_ACCESS",
+      "production_use_allowed": false,
+      "provider_id": "expected_goals_candidate",
+      "quota_finding": "NO_API_QUOTA_DOCUMENTED_FOR_LISTED_DOWNLOAD_FILES",
+      "rights_finding": "MONEYPUCK_NONCOMMERCIAL_DOWNLOADS_WITH_ATTRIBUTION_ONLY",
+      "timestamp_finding": "NIGHTLY_UPDATE_STATED_BUT_ROW_AVAILABILITY_NOT_PROVEN",
+      "verdict": "CONDITIONAL_HISTORICAL_ONLY"
+    },
+    {
+      "automated_collection_allowed": false,
+      "blockers": [
+        "WRITTEN_AUTOMATION_AUTHORIZATION_MISSING",
+        "API_SERVICE_TERMS_MISSING"
+      ],
+      "cost_finding": "NO_OFFICIAL_API_PRICING_FOUND",
+      "documents": [
+        {
+          "accessed_on": "2026-09-14",
+          "supports": [
+            "AUTOMATED_EXTRACTION_REQUIRES_AUTHORIZATION",
+            "CONTENT_USE_IS_RESTRICTED"
+          ],
+          "url": "https://www.nhl.com/info/terms-of-service"
+        }
+      ],
+      "historical_finding": "ENDPOINT_HISTORY_NOT_CONTRACTUALLY_DOCUMENTED",
+      "next_authorized_step": "REQUEST_WRITTEN_NHL_DATA_USE_AUTHORIZATION",
+      "production_use_allowed": false,
+      "provider_id": "nhl_public_web_api",
+      "quota_finding": "NO_OFFICIAL_API_QUOTA_FOUND",
+      "rights_finding": "NO_EXPLICIT_AUTOMATED_DATA_LICENSE_FOUND",
+      "timestamp_finding": "FIELD_LEVEL_AVAILABILITY_NOT_CONTRACTUALLY_DOCUMENTED",
+      "verdict": "BLOCKED"
+    },
+    {
+      "automated_collection_allowed": false,
+      "blockers": [
+        "WRITTEN_AUTOMATION_AUTHORIZATION_MISSING",
+        "HISTORICAL_POINT_IN_TIME_REPRODUCIBILITY_NOT_PROVEN"
+      ],
+      "cost_finding": "NO_OFFICIAL_API_PRICING_FOUND",
+      "documents": [
+        {
+          "accessed_on": "2026-09-14",
+          "supports": [
+            "AUTOMATED_EXTRACTION_REQUIRES_AUTHORIZATION",
+            "CONTENT_USE_IS_RESTRICTED"
+          ],
+          "url": "https://www.nhl.com/info/terms-of-service"
+        }
+      ],
+      "historical_finding": "ENDPOINT_HISTORY_NOT_CONTRACTUALLY_DOCUMENTED",
+      "next_authorized_step": "REQUEST_WRITTEN_NHL_DATA_USE_AUTHORIZATION",
+      "production_use_allowed": false,
+      "provider_id": "nhl_stats_rest_api",
+      "quota_finding": "NO_OFFICIAL_API_QUOTA_FOUND",
+      "rights_finding": "NO_EXPLICIT_AUTOMATED_DATA_LICENSE_FOUND",
+      "timestamp_finding": "HISTORICAL_AS_OF_TIMESTAMPS_NOT_PROVEN",
+      "verdict": "BLOCKED"
+    },
+    {
+      "automated_collection_allowed": false,
+      "blockers": [
+        "NEXT_DAY_DELAY_UNSUITABLE_FOR_PREGAME_STATUS",
+        "REAL_TIME_COMMERCIAL_QUOTE_NOT_OBTAINED",
+        "FIELD_LEVEL_SOURCE_UPDATE_TIMESTAMPS_NOT_AUDITED"
+      ],
+      "cost_finding": "DISCOVERY_LAB_LISTS_PAID_PERSONAL_TIERS_AND_FREE_PRIOR_SEASON",
+      "documents": [
+        {
+          "accessed_on": "2026-09-14",
+          "supports": [
+            "DISCOVERY_LAB_IS_NEXT_DAY_DELAYED",
+            "PERSONAL_TIERS_HAVE_DAILY_CALL_LIMITS",
+            "REAL_TIME_REQUIRES_COMMERCIAL_AGREEMENT"
+          ],
+          "url": "https://sportsdata.io/developers"
+        },
+        {
+          "accessed_on": "2026-09-14",
+          "supports": [
+            "SOURCE_TIMESTAMPS_REQUIRE_FIELD_LEVEL_AUDIT"
+          ],
+          "url": "https://sportsdata.io/developers/data-dictionary/nhl"
+        },
+        {
+          "accessed_on": "2026-09-14",
+          "supports": [
+            "PERSONAL_NONCOMMERCIAL_USE_AVAILABLE",
+            "MODEL_AND_STORAGE_RIGHTS_DEPEND_ON_LICENSE_SCOPE"
+          ],
+          "url": "https://sportsdata.io/help/data-rights-and-licensing-questions"
+        }
+      ],
+      "historical_finding": "FREE_ACCESS_LIMITED_TO_LAST_SEASON",
+      "next_authorized_step": "OBTAIN_WRITTEN_PERSONAL_USE_AND_FEED_SCOPE_CONFIRMATION",
+      "production_use_allowed": false,
+      "provider_id": "sportsdataio_candidate",
+      "quota_finding": "DISCOVERY_LAB_LISTS_100_TO_1000_CALLS_PER_DAY_BY_TIER",
+      "rights_finding": "PERSONAL_USE_EXISTS_BUT_EXACT_FEED_LICENSE_MUST_BE_CONFIRMED",
+      "timestamp_finding": "DISCOVERY_LAB_IS_NEXT_DAY_DELAYED_AND_USES_US_EASTERN_TIMES",
+      "verdict": "CONDITIONAL_HISTORICAL_ONLY"
+    }
+  ],
+  "base_repository_commit": "9b0b8d0ab3a3eb50caeee2c792a8d204ca490022",
+  "decision": {
+    "active_provider": null,
+    "activation_requires_separate_user_validation": true,
+    "first_real_call_allowed": false,
+    "recommended_historical_xg_candidate": "expected_goals_candidate",
+    "recommended_pregame_provider": null
+  },
+  "protocol_id": "lpf_edge_nhl_source_audit_v1",
+  "protocol_schema_version": 1,
+  "status": "DRAFT_RESEARCH_ONLY_NO_PROVIDER_ENABLED"
+}

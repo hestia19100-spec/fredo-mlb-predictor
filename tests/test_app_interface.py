@@ -18,7 +18,10 @@ class AppInterfaceTests(unittest.TestCase):
     def test_navigation_uses_clear_french_page_names(self) -> None:
         self.assertIn("st.navigation", self.router)
         self.assertIn('title="Accueil"', self.router)
-        self.assertIn('title="LPF Edge"', self.router)
+        self.assertIn('title="Aujourd’hui"', self.router)
+        self.assertIn('title="Historique MLB"', self.router)
+        self.assertIn('title="Statistiques MLB"', self.router)
+        self.assertIn('title="Sauvegardes"', self.router)
         self.assertIn('default=True', self.router)
         self.assertIn("navigation.run()", self.router)
 

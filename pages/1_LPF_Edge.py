@@ -4,14 +4,12 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
-import html
 
 import streamlit as st
 
 from src.lpf_edge_daily_operations import (
     DailyAfternoonAutomationError,
     DailyAfternoonOddsStatus,
-    DailyBackupAutomationError,
     DailyActionState,
     DailyOperationsError,
     DailyOddsCollectionError,
@@ -19,54 +17,25 @@ from src.lpf_edge_daily_operations import (
     execute_afternoon_prediction_routine,
     execute_daily_odds_collection,
     execute_daily_results_publication,
-    execute_verified_local_backup,
     inspect_daily_operations,
     inspect_daily_odds_collection,
-    list_local_backup_names,
     load_prediction_preparation,
-    load_verified_local_backup,
 )
 from src.lpf_edge_dashboard import (
-    LPFEdgeDashboardError,
     format_paris_datetime,
     format_paris_time,
-    list_certified_prediction_dates,
-    load_certified_prediction_day,
-    load_latest_score_summary,
-    load_team_names,
     probability_percent,
-    team_label,
-)
-from src.lpf_edge_odds_display import (
-    LPFEdgeOddsDisplayError,
-    load_latest_moneyline_odds_display,
-)
-from src.lpf_edge_market_comparison import (
-    LPFEdgeMarketComparisonError,
-    build_french_market_comparison,
-)
-from src.lpf_edge_market_evaluation import (
-    LIMITED_SAMPLE_THRESHOLD,
-    LPFEdgeMarketEvaluationError,
-    build_market_evaluation_history,
-)
-from src.lpf_edge_market_settlement import (
-    LPFEdgeMarketSettlementError,
-    load_market_settlement,
 )
 from src.lpf_edge_daily_selection import (
     LPFEdgeDailySelectionError,
     load_daily_selection,
 )
-from src.lpf_edge_evaluation_supervision import (
-    EvaluationDayEvidence,
-    LPFEdgeEvaluationSupervisionError,
-    MINIMUM_SELECTION_OBSERVATIONS,
-    MINIMUM_SHADOW_OBSERVATIONS,
-    build_evaluation_supervision,
+from src.lpf_edge_odds_display import (
+    LPFEdgeOddsDisplayError,
+    load_latest_moneyline_odds_display,
 )
 st.set_page_config(
-    page_title="LPF Edge · MLB",
+    page_title="Aujourd’hui · LPF Edge",
     page_icon="⚾",
     layout="wide",
 )
@@ -140,12 +109,11 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-st.markdown('<div class="lpf-badge">PRÉDICTIONS CERTIFIÉES</div>', unsafe_allow_html=True)
-st.title("LPF Edge · MLB")
+st.markdown('<div class="lpf-badge">ROUTINES DU JOUR</div>', unsafe_allow_html=True)
+st.title("Aujourd’hui · LPF Edge MLB")
 st.caption(
-    "Les probabilités affichées sont relues depuis les fichiers immuables "
-    "déjà publiés. Le modèle est lancé uniquement par une action explicite "
-    "et autorisée dans le centre quotidien."
+    "Les actions utiles aujourd’hui sont regroupées ici. Les anciennes "
+    "journées et les statistiques sont maintenant rangées sur leurs pages dédiées."
 )
 
 ACTION_PRESENTATION = {
@@ -191,26 +159,6 @@ def odds_region_label(region: str | None) -> str:
         region,
         "Non renseignée",
     )
-
-
-def format_percentage_point_gap(value: Decimal | None) -> str:
-    if value is None:
-        return "—"
-    return f"{value:+.1f} pt"
-
-
-def format_evaluation_percent(value: Decimal | None) -> str:
-    if value is None:
-        return "—"
-    return f"{value:.1f} %"
-
-
-def format_theoretical_units(value: Decimal) -> str:
-    return f"{value:+.2f} unité(s)"
-
-
-def format_selection_paris_time(value: str) -> str:
-    return format_paris_time(datetime.fromisoformat(value.replace("Z", "+00:00")))
 
 
 st.divider()
@@ -618,34 +566,6 @@ if daily is not None:
                     "constituent pas une recommandation de pari."
                 )
 
-    st.markdown("### Sauvegarde indépendante")
-    backup_status_column, backup_button_column = st.columns((2, 1))
-    with backup_status_column:
-        backup_ready = daily.git.ready_for_publication
-        st.markdown(
-            '<span class="lpf-action-state lpf-action-'
-            f'{"ready" if backup_ready else "blocked"}">'
-            f'{"PRÊT" if backup_ready else "BLOQUÉ"}</span>',
-            unsafe_allow_html=True,
-        )
-        st.caption(
-            "Crée une archive locale vérifiée et téléchargeable."
-            if backup_ready
-            else "Le dépôt doit être propre, sur main et synchronisé."
-        )
-    with backup_button_column:
-        backup_clicked = st.button(
-            "Créer une sauvegarde",
-            type="primary",
-            disabled=not backup_ready,
-            use_container_width=True,
-            help=(
-                None
-                if backup_ready
-                else "Publie ou annule les changements locaux avant la sauvegarde."
-            ),
-        )
-
     prediction_feedback = st.session_state.pop(
         "lpf_edge_prediction_success",
         None,
@@ -805,916 +725,83 @@ if daily is not None:
                 }
                 st.rerun()
 
-    if backup_clicked:
-        with st.spinner("Création et vérification de la sauvegarde en cours..."):
-            try:
-                backup = execute_verified_local_backup()
-            except DailyBackupAutomationError as error:
-                st.error(
-                    f"Sauvegarde arrêtée à l’étape {error.stage.value} : {error}"
-                )
-            except OSError as error:
-                st.error(f"La sauvegarde locale a été interrompue : {error}")
-            else:
-                st.success("Sauvegarde créée et vérifiée.")
-                st.caption(
-                    f"Archive : `{backup.relative_path}`  \n"
-                    f"Taille : {backup.archive_size_bytes} octets  \n"
-                    f"Fichiers : {backup.file_count}, dont "
-                    f"{backup.raw_archive_count} archives MLB  \n"
-                    f"SHA-256 : `{backup.archive_sha256}`"
-                )
-                st.download_button(
-                    "Télécharger la sauvegarde",
-                    data=backup.archive_bytes,
-                    file_name=backup.filename,
-                    mime="application/gzip",
-                    on_click="ignore",
-                    key="download_new_backup",
-                    use_container_width=True,
-                )
-
-st.markdown("#### Historique des sauvegardes")
-try:
-    backup_names = list_local_backup_names()
-except DailyBackupAutomationError as error:
-    st.error(f"L’historique des sauvegardes ne peut pas être lu : {error}")
-    backup_names = ()
-
-if not backup_names:
-    st.info("Aucune sauvegarde locale n’est encore disponible.")
-else:
-    selected_backup_name = st.selectbox(
-        "Sauvegarde à consulter",
-        options=backup_names,
-        format_func=lambda value: value.removeprefix(
-            "fredo-mlb-backup-"
-        ).removesuffix(".tar.gz"),
+    st.divider()
+    st.subheader("Pronostics du jour")
+    st.caption(
+        "Résumé de la sélection scellée cet après-midi. Le détail complet "
+        "reste disponible dans Historique MLB."
     )
     try:
-        selected_backup = load_verified_local_backup(selected_backup_name)
-        backup_created_at = datetime.fromisoformat(
-            selected_backup.created_at_utc
-        )
-    except (DailyBackupAutomationError, OSError, ValueError) as error:
-        st.error(f"La sauvegarde sélectionnée ne peut pas être vérifiée : {error}")
+        today_selection = load_daily_selection(daily.target_date)
+    except (LPFEdgeDailySelectionError, OSError, ValueError) as error:
+        st.error(f"La sélection du jour ne peut pas être vérifiée : {error}")
     else:
-        backup_date_column, backup_size_column, backup_files_column = st.columns(3)
-        backup_date_column.metric(
-            "Créée le",
-            format_paris_datetime(backup_created_at),
-        )
-        backup_size_column.metric(
-            "Taille",
-            f"{selected_backup.archive_size_bytes / (1024 * 1024):.2f} Mo",
-        )
-        backup_files_column.metric(
-            "Fichiers protégés",
-            selected_backup.file_count,
-        )
-        st.caption(
-            f"Archive : `{selected_backup.relative_path}`  \n"
-            f"Archives MLB : {selected_backup.raw_archive_count}  \n"
-            f"Version du code : `{selected_backup.code_version}`  \n"
-            f"SHA-256 : `{selected_backup.archive_sha256}`"
-        )
-        st.download_button(
-            "Télécharger cette sauvegarde vérifiée",
-            data=selected_backup.archive_bytes,
-            file_name=selected_backup.filename,
-            mime="application/gzip",
-            on_click="ignore",
-            key="download_existing_backup",
-            use_container_width=True,
-        )
-
-st.divider()
-st.subheader("Consultation des prédictions certifiées")
-
-available_dates = list_certified_prediction_dates()
-if not available_dates:
-    st.warning("Aucune journée certifiée n'est encore disponible.")
-    st.stop()
-
-st.divider()
-st.subheader("Supervision de l’évaluation")
-st.caption(
-    "Ce tableau relit uniquement les prédictions, sélections et verdicts "
-    "immuables déjà publiés. Il sépare les performances globales de Shadow v2 "
-    "de celles des matchs réellement retenus par le sélecteur."
-)
-try:
-    supervision_evidence: list[EvaluationDayEvidence] = []
-    for supervision_date in available_dates:
-        supervision_prediction_day = load_certified_prediction_day(
-            supervision_date
-        )
-        supervision_score = load_latest_score_summary(
-            supervision_date,
-            certified_predictions=supervision_prediction_day.predictions,
-        )
-        supervision_selection = load_daily_selection(supervision_date)
-        supervision_settlement = load_market_settlement(supervision_date)
-        supervision_evidence.append(
-            EvaluationDayEvidence(
-                prediction_day=supervision_prediction_day,
-                score=supervision_score,
-                selection=supervision_selection,
-                settlement=supervision_settlement,
+        if today_selection is None:
+            st.info(
+                "La sélection apparaîtra ici après la certification des "
+                "prédictions de l’après-midi."
             )
-        )
-    evaluation_supervision = build_evaluation_supervision(
-        supervision_evidence
-    )
-except (
-    LPFEdgeDashboardError,
-    LPFEdgeDailySelectionError,
-    LPFEdgeEvaluationSupervisionError,
-    LPFEdgeMarketSettlementError,
-    OSError,
-    ValueError,
-) as error:
-    st.error(f"La supervision de l’évaluation est impossible : {error}")
-else:
-    st.markdown("#### Shadow v2 — toutes les prédictions")
-    shadow_columns = st.columns(4)
-    shadow_columns[0].metric(
-        "Journées certifiées",
-        evaluation_supervision.certified_day_count,
-    )
-    shadow_columns[1].metric(
-        "Prédictions évaluées",
-        evaluation_supervision.shadow_evaluated_count,
-    )
-    shadow_columns[2].metric(
-        "Réussite globale",
-        format_evaluation_percent(
-            evaluation_supervision.shadow_accuracy_percent
-        ),
-    )
-    shadow_columns[3].metric(
-        "Résultats en attente",
-        evaluation_supervision.shadow_pending_count,
-    )
-    st.progress(
-        float(evaluation_supervision.shadow_progress_percent / Decimal("100")),
-        text=(
-            "Recul statistique minimal : "
-            f"{evaluation_supervision.shadow_evaluated_count} / "
-            f"{MINIMUM_SHADOW_OBSERVATIONS} prédictions évaluées"
-        ),
-    )
-    quality_columns = st.columns(3)
-    quality_columns[0].metric(
-        "Journées entièrement tranchées",
-        evaluation_supervision.completed_day_count,
-    )
-    quality_columns[1].metric(
-        "Log loss moyen",
-        (
-            "—"
-            if evaluation_supervision.weighted_log_loss is None
-            else f"{evaluation_supervision.weighted_log_loss:.4f}"
-        ),
-        help="Plus cette mesure est basse, meilleures sont les probabilités.",
-    )
-    quality_columns[2].metric(
-        "Score de Brier moyen",
-        (
-            "—"
-            if evaluation_supervision.weighted_brier_score is None
-            else f"{evaluation_supervision.weighted_brier_score:.4f}"
-        ),
-        help="Plus cette mesure est basse, meilleures sont les probabilités.",
-    )
-
-    st.markdown("#### Sélecteur de pronostics — mode observation")
-    if evaluation_supervision.selection_publication_day_count == 0:
-        st.info(
-            "Aucune sélection prospective n’a encore été publiée. Le suivi "
-            "commencera automatiquement avec la prochaine certification."
-        )
-    else:
-        selector_columns = st.columns(5)
-        selector_columns[0].metric(
-            "Journées suivies",
-            evaluation_supervision.selection_publication_day_count,
-        )
-        selector_columns[1].metric(
-            "Journées avec prono",
-            evaluation_supervision.selection_day_count,
-        )
-        selector_columns[2].metric(
-            "Journées sans prono",
-            evaluation_supervision.no_pick_day_count,
-        )
-        selector_columns[3].metric(
-            "Choix évalués",
-            evaluation_supervision.selection.evaluated_count,
-        )
-        selector_columns[4].metric(
-            "Choix en attente",
-            evaluation_supervision.selection.pending_count,
-        )
-        st.progress(
-            float(
-                evaluation_supervision.selection_progress_percent
-                / Decimal("100")
-            ),
-            text=(
-                "Recul statistique minimal : "
-                f"{evaluation_supervision.selection.evaluated_count} / "
-                f"{MINIMUM_SELECTION_OBSERVATIONS} choix évalués"
-            ),
-        )
-        selector_result_columns = st.columns(4)
-        selector_result_columns[0].metric(
-            "Réussite des choix",
-            format_evaluation_percent(
-                evaluation_supervision.selection.accuracy_percent
-            ),
-        )
-        selector_result_columns[1].metric(
-            "Résultat théorique",
-            format_theoretical_units(
-                evaluation_supervision.selection.theoretical_net_units
-            ),
-        )
-        selector_result_columns[2].metric(
-            "Rendement théorique",
-            format_evaluation_percent(
-                evaluation_supervision.selection.theoretical_roi_percent
-            ),
-        )
-        selector_result_columns[3].metric(
-            "Baisse maximale théorique",
-            f"-{evaluation_supervision.selection.maximum_drawdown_units:.2f} unité(s)",
-        )
-        st.caption(
-            "Série de défaites actuelle : "
-            f"{evaluation_supervision.selection.current_losing_streak} · "
-            "plus longue série : "
-            f"{evaluation_supervision.selection.maximum_losing_streak} · "
-            f"choix annulés : {evaluation_supervision.selection.void_count}."
-        )
-
-        role_rows = []
-        for role_label, performance in (
-            ("Principal", evaluation_supervision.principal),
-            ("Secondaire", evaluation_supervision.secondary),
-        ):
-            role_rows.append(
-                {
-                    "Type de choix": role_label,
-                    "Publiés": performance.published_count,
-                    "Évalués": performance.evaluated_count,
-                    "Réussis": performance.correct_count,
-                    "En attente": performance.pending_count,
-                    "Réussite": format_evaluation_percent(
-                        performance.accuracy_percent
-                    ),
-                    "Résultat théorique": format_theoretical_units(
-                        performance.theoretical_net_units
-                    ),
-                    "Rendement théorique": format_evaluation_percent(
-                        performance.theoretical_roi_percent
-                    ),
-                    "Pire série de défaites": performance.maximum_losing_streak,
-                }
+        elif not today_selection.picks:
+            st.info(
+                "Aucun prono retenu aujourd’hui : aucun match ne respecte "
+                "toutes les conditions prudentes."
             )
-        st.dataframe(
-            role_rows,
-            width="stretch",
-            height="content",
-            hide_index=True,
-        )
-
-    supervision_day_rows = [
-        {
-            "Journée": status.target_date.strftime("%d/%m/%Y"),
-            "Prédictions": status.prediction_count,
-            "Résultats": status.prediction_status.replace("_", " ").title(),
-            "Choix": status.selection_count,
-            "État du sélecteur": status.selection_status.replace("_", " ").title(),
-            "Choix évalués": status.selected_evaluated_count,
-            "Choix réussis": status.selected_correct_count,
-            "Résultat théorique": format_theoretical_units(
-                status.selected_theoretical_net_units
-            ),
-        }
-        for status in reversed(evaluation_supervision.days)
-    ]
-    st.dataframe(
-        supervision_day_rows,
-        width="stretch",
-        height="content",
-        hide_index=True,
-    )
-    st.warning(
-        "Le seuil de 100 observations indique seulement un recul minimal. "
-        "Il ne valide ni la rentabilité, ni Shadow v2, ni le sélecteur. "
-        "Aucune mise réelle n’est effectuée."
-    )
-
-selected_date = st.selectbox(
-    "Journée à consulter",
-    options=list(reversed(available_dates)),
-    format_func=lambda value: value.strftime("%d/%m/%Y"),
-)
-
-try:
-    day = load_certified_prediction_day(selected_date)
-    score = load_latest_score_summary(
-        selected_date,
-        certified_predictions=day.predictions,
-    )
-except LPFEdgeDashboardError as error:
-    st.error(f"Contrôle d'intégrité impossible : {error}")
-    st.stop()
-
-team_ids = {
-    team_id
-    for prediction in day.predictions
-    for team_id in (prediction.away_team_id, prediction.home_team_id)
-}
-team_names = load_team_names(team_ids)
-
-games_column, issued_column, certification_column, results_column = st.columns(4)
-games_column.metric("Matchs", len(day.predictions))
-issued_column.metric(
-    "Prédictions créées",
-    format_paris_time(day.predictions[0].issued_at_utc),
-)
-certification_column.metric(
-    "Certification avant matchs",
-    f"{float(day.remote_lead_minutes) / 60:.1f} h",
-)
-results_column.metric(
-    "Résultats vérifiés",
-    "Disponibles" if score is not None else "En attente",
-)
-
-st.divider()
-st.subheader("Prédictions de la journée")
-
-table_rows: list[dict[str, str]] = []
-for prediction in day.predictions:
-    away_name = team_label(prediction.away_team_id, team_names)
-    home_name = team_label(prediction.home_team_id, team_names)
-    predicted_name = home_name if prediction.predicted_side == "HOME" else away_name
-    table_rows.append(
-        {
-            "Heure de Paris": format_paris_time(prediction.scheduled_start_utc),
-            "Match": f"{home_name} vs {away_name}",
-            "Équipe donnée devant": predicted_name,
-            "Probabilité": probability_percent(prediction.predicted_probability),
-            "Domicile": probability_percent(prediction.p_home_win),
-            "Extérieur": probability_percent(prediction.p_away_win),
-        }
-    )
-
-st.dataframe(
-    table_rows,
-    width="stretch",
-    height="content",
-    hide_index=True,
-    column_config={
-        "Heure de Paris": st.column_config.TextColumn(width="small"),
-        "Match": st.column_config.TextColumn(width="large"),
-        "Équipe donnée devant": st.column_config.TextColumn(width="large"),
-    },
-)
-
-st.markdown(
-    '<p class="lpf-note">« Équipe donnée devant » signifie seulement que sa '
-    'probabilité dépasse 50 %. Ce n’est ni une cote, ni un conseil de pari.</p>',
-    unsafe_allow_html=True,
-)
-
-st.divider()
-st.subheader("Comparaison LPF Edge / marché français")
-st.caption(
-    "Seule la dernière collecte française terminée avant la certification "
-    "est utilisée ; toute collecte ultérieure est ignorée. Pour chaque "
-    "bookmaker, LPF Edge convertit les deux cotes en "
-    "probabilités puis retire proportionnellement sa marge. La colonne "
-    "« Marché français corrigé » est la moyenne de ces probabilités. "
-    "L’écart reste descriptif et n’est pas un conseil de pari."
-)
-try:
-    french_odds_display = load_latest_moneyline_odds_display(
-        selected_date,
-        required_region="fr",
-        completed_at_or_before_utc=day.certified_at_utc,
-    )
-    market_comparison = build_french_market_comparison(
-        day,
-        french_odds_display,
-        team_names=team_names,
-    )
-except (
-    LPFEdgeMarketComparisonError,
-    LPFEdgeOddsDisplayError,
-    OSError,
-    ValueError,
-) as error:
-    st.error(f"La comparaison avec le marché français est impossible : {error}")
-else:
-    if market_comparison.odds_run_id is None:
-        st.info(
-            "Aucune collecte française terminée avant la certification n’est "
-            "disponible pour cette journée. Les collectes plus tardives ne sont "
-            "volontairement pas utilisées."
-        )
-    else:
-        comparison_columns = st.columns(3)
-        comparison_columns[0].metric(
-            "Collecte française figée",
-            f"N° {market_comparison.odds_run_id}",
-        )
-        comparison_columns[1].metric(
-            "Matchs comparables",
-            f"{market_comparison.comparable_count} / "
-            f"{len(market_comparison.rows)}",
-        )
-        comparison_columns[2].metric(
-            "Collecte terminée",
-            (
-                format_paris_datetime(
-                    market_comparison.odds_completed_at_utc
-                )
-                if market_comparison.odds_completed_at_utc is not None
-                else "—"
-            ),
-        )
-
-        comparison_rows: list[dict[str, str | int]] = []
-        for row in market_comparison.rows:
-            comparison_rows.append(
-                {
-                    "Heure de Paris": format_paris_time(
-                        row.scheduled_start_utc
-                    ),
-                    "Match": (
-                        f"{row.home_team_name} vs {row.away_team_name}"
-                    ),
-                    "Équipe LPF": row.predicted_team_name,
-                    "Probabilité LPF": probability_percent(
-                        row.model_probability
-                    ),
-                    "Marché français corrigé": probability_percent(
-                        row.french_market_probability
-                    )
-                    if row.french_market_probability is not None
-                    else "—",
-                    "Écart LPF – marché": format_percentage_point_gap(
-                        row.gap_percentage_points
-                    ),
-                    "Meilleure cote française": format_decimal_odds(
-                        row.best_decimal_odds
-                    ),
-                    "Chez": ", ".join(row.best_bookmakers) or "—",
-                    "Bookmakers": row.bookmaker_count,
-                }
-            )
-
-        st.dataframe(
-            comparison_rows,
-            width="stretch",
-            height="content",
-            hide_index=True,
-            column_config={
-                "Heure de Paris": st.column_config.TextColumn(width="small"),
-                "Match": st.column_config.TextColumn(width="large"),
-                "Équipe LPF": st.column_config.TextColumn(width="large"),
-                "Probabilité LPF": st.column_config.TextColumn(width="medium"),
-                "Marché français corrigé": st.column_config.TextColumn(
-                    width="medium"
-                ),
-                "Écart LPF – marché": st.column_config.TextColumn(
-                    width="medium"
-                ),
-                "Meilleure cote française": st.column_config.TextColumn(
-                    width="medium"
-                ),
-                "Chez": st.column_config.TextColumn(width="medium"),
-                "Bookmakers": st.column_config.NumberColumn(width="small"),
-            },
-        )
-        st.caption(
-            "Un écart positif signifie uniquement que LPF Edge attribue une "
-            "probabilité plus élevée que la moyenne corrigée des bookmakers. "
-            "Il ne garantit ni victoire ni rentabilité."
-        )
-
-st.divider()
-st.subheader("Matchs retenus pour les pronostics")
-st.caption(
-    "Cette sélection a été décidée et scellée au moment de la certification, "
-    "avec les lanceurs annoncés et les cotes françaises alors disponibles. "
-    "Elle retient au maximum un choix principal et un choix secondaire, mais "
-    "peut aussi conclure qu’aucun match n’est assez intéressant."
-)
-try:
-    sealed_daily_selection = load_daily_selection(selected_date)
-except (LPFEdgeDailySelectionError, OSError, ValueError) as error:
-    st.error(f"La sélection prospective est impossible à vérifier : {error}")
-else:
-    if sealed_daily_selection is None:
-        st.info(
-            "Aucune sélection prospective n’a été publiée pour cette journée. "
-            "Pour les anciennes journées, cela signifie simplement que cette "
-            "fonction n’existait pas encore lors de la certification."
-        )
-    elif not sealed_daily_selection.picks:
-        st.info(
-            "Aucun prono retenu aujourd’hui : aucun match ne respecte toutes "
-            "les conditions prudentes de la politique prospective."
-        )
-        rejection_labels = {
-            "LANCEURS_INCOMPLETS": "lanceurs annoncés incomplets",
-            "COTES_ABSENTES": "cotes françaises absentes",
-            "BOOKMAKERS_INSUFFISANTS": "moins de deux bookmakers",
-            "PROBABILITE_LPF_TROP_FAIBLE": "probabilité LPF inférieure à 52 %",
-            "ECART_LPF_MARCHE_INSUFFISANT": "écart LPF–marché inférieur à 2 points",
-            "VALEUR_THEORIQUE_INSUFFISANTE": "valeur théorique inférieure à 3 %",
-            "COTE_HORS_PLAGE": "cote hors de la plage 1,35–3,00",
-            "LIMITE_DE_DEUX_SELECTIONS": "hors du duo le mieux classé",
-        }
-        if sealed_daily_selection.rejection_reasons:
-            st.markdown("Motifs constatés :")
-            for reason, count in sealed_daily_selection.rejection_reasons:
-                st.markdown(
-                    f"- {count} match(s) : "
-                    f"{rejection_labels.get(reason, reason.lower())}."
-                )
-        st.caption(
-            f"Matchs admissibles avant la limite de deux : "
-            f"{sealed_daily_selection.eligible_count} · "
-            f"SHA-256 : `{sealed_daily_selection.selection_sha256}`"
-        )
-    else:
-        selection_rows: list[dict[str, str | int]] = []
-        for pick in sealed_daily_selection.picks:
-            selection_rows.append(
-                {
-                    "Choix": (
-                        "Principal" if pick.role == "PRINCIPAL" else "Secondaire"
-                    ),
-                    "Heure de Paris": format_selection_paris_time(
-                        pick.scheduled_start_utc
-                    ),
-                    "Match": f"{pick.home_team_name} vs {pick.away_team_name}",
-                    "Équipe retenue": pick.predicted_team_name,
-                    "Probabilité LPF": probability_percent(
-                        pick.model_probability
-                    ),
-                    "Marché français": probability_percent(
-                        pick.french_market_probability
-                    ),
-                    "Écart": format_percentage_point_gap(
-                        pick.gap_percentage_points
-                    ),
-                    "Meilleure cote": format_decimal_odds(
-                        pick.best_decimal_odds
-                    ),
-                    "Chez": ", ".join(pick.best_bookmakers),
-                    "Valeur théorique": format_evaluation_percent(
-                        pick.expected_value_percent
-                    ),
-                    "Lanceur domicile": pick.home_probable_pitcher_name,
-                    "Lanceur extérieur": pick.away_probable_pitcher_name,
-                }
-            )
-        st.dataframe(
-            selection_rows,
-            width="stretch",
-            height="content",
-            hide_index=True,
-            column_config={
-                "Choix": st.column_config.TextColumn(width="small"),
-                "Heure de Paris": st.column_config.TextColumn(width="small"),
-                "Match": st.column_config.TextColumn(width="large"),
-                "Équipe retenue": st.column_config.TextColumn(width="large"),
-                "Chez": st.column_config.TextColumn(width="medium"),
-                "Lanceur domicile": st.column_config.TextColumn(width="medium"),
-                "Lanceur extérieur": st.column_config.TextColumn(width="medium"),
-            },
-        )
-        st.success(
-            f"{sealed_daily_selection.selection_count} match(s) retenu(s) "
-            "avant les rencontres et vérifié(s) par empreinte."
-        )
-        st.caption(
-            f"Matchs admissibles avant la limite de deux : "
-            f"{sealed_daily_selection.eligible_count} · "
-            f"SHA-256 : `{sealed_daily_selection.selection_sha256}`"
-        )
-    st.warning(
-        "Mode observation : cette sélection ne déclenche aucune mise réelle, "
-        "ne garantit aucun gain et doit être évaluée sur plusieurs journées."
-    )
-    st.caption(
-        "Conditions actuelles : deux lanceurs annoncés, au moins deux "
-        "bookmakers, probabilité LPF ≥ 52 %, écart LPF–marché ≥ 2 points, "
-        "valeur théorique ≥ 3 % et cote comprise entre 1,35 et 3,00."
-    )
-
-st.divider()
-st.subheader("Résultats vérifiés")
-if score is None:
-    st.info(
-        "Le moteur officiel de vérification n'a pas encore publié de rapport "
-        "fermé pour cette journée. Les résultats apparaîtront ici dès que ce "
-        "rapport immuable existera."
-    )
-else:
-    scored_column, correct_column, pending_column, accuracy_column = st.columns(4)
-    scored_column.metric("Matchs évalués", score.scored_count)
-    correct_column.metric("Prédictions réussies", score.correct_count)
-    pending_column.metric("Encore en attente", score.pending_count)
-    accuracy_column.metric(
-        "Réussite du jour",
-        "—" if score.accuracy is None else f"{score.accuracy * 100:.1f} %",
-    )
-    st.caption(
-        f"Dernier contrôle officiel : {score.checkpoint_date.strftime('%d/%m/%Y')}. "
-        "Ces chiffres sont provisoires et ne constituent pas encore le verdict final du modèle."
-    )
-    predictions_by_id = {
-        prediction.prediction_id: prediction for prediction in day.predictions
-    }
-    result_rows: list[str] = []
-    for result in score.results:
-        prediction = predictions_by_id[result.prediction_id]
-        away_name = team_label(result.away_team_id, team_names)
-        home_name = team_label(result.home_team_id, team_names)
-        predicted_name = (
-            home_name if result.predicted_side == "HOME" else away_name
-        )
-        if result.away_score is None or result.home_score is None:
-            score_text = "—"
         else:
-            score_text = f"{result.home_score} – {result.away_score}"
-        status_icon = {
-            "correct": "✓",
-            "incorrect": "✕",
-            "neutral": "•",
-        }[result.display_tone]
-        time_text = html.escape(format_paris_time(prediction.scheduled_start_utc))
-        match_text = html.escape(f"{home_name} vs {away_name}")
-        predicted_text = html.escape(predicted_name)
-        probability_text = html.escape(
-            probability_percent(result.predicted_probability)
-        )
-        score_text = html.escape(score_text)
-        status_text = html.escape(f"{status_icon} {result.display_status}")
-        rendered_cells = (
-            f"<td>{time_text}</td>"
-            f'<td class="lpf-match">{match_text}</td>'
-            f"<td>{predicted_text}</td>"
-            f"<td>{probability_text}</td>"
-            f"<td>{score_text}</td>"
-            f'<td class="lpf-result-status">{status_text}</td>'
-        )
-        result_rows.append(
-            f'<tr class="lpf-result-{result.display_tone}">'
-            f"{rendered_cells}</tr>"
-        )
-    st.markdown(
-        '<div class="lpf-results-table"><table>'
-        "<thead><tr>"
-        "<th>Heure de Paris</th>"
-        "<th>Match</th>"
-        "<th>Équipe pronostiquée</th>"
-        "<th>Probabilité</th>"
-        "<th>Score final (dom. – ext.)</th>"
-        "<th>Résultat</th>"
-        "</tr></thead><tbody>"
-        + "".join(result_rows)
-        + "</tbody></table></div>",
-        unsafe_allow_html=True,
-    )
-
-st.divider()
-st.subheader("Verdict prospectif LPF/marché")
-st.caption(
-    "Ce verdict utilise exclusivement le journal de cotes scellé avant les "
-    "matchs et les résultats officiels publiés ensuite. Le journal prospectif "
-    "d’origine n’est jamais modifié."
-)
-try:
-    sealed_market_settlement = load_market_settlement(selected_date)
-except (LPFEdgeMarketSettlementError, OSError, ValueError) as error:
-    st.error(f"Le verdict prospectif est impossible à vérifier : {error}")
-else:
-    if sealed_market_settlement is None:
-        st.info(
-            "Le verdict immuable de cette journée sera créé automatiquement "
-            "par la routine du matin lorsque tous les matchs seront tranchés "
-            "ou annulés."
-        )
-    else:
-        settlement_columns = st.columns(4)
-        settlement_columns[0].metric(
-            "Pronostics évalués",
-            sealed_market_settlement.evaluated_count,
-        )
-        settlement_columns[1].metric(
-            "Réussite scellée",
-            format_evaluation_percent(
-                sealed_market_settlement.accuracy_percent
-            ),
-        )
-        settlement_columns[2].metric(
-            "Résultat théorique scellé",
-            format_theoretical_units(
-                sealed_market_settlement.theoretical_net_units
-            ),
-        )
-        settlement_columns[3].metric(
-            "Rendement théorique scellé",
-            format_evaluation_percent(
-                sealed_market_settlement.theoretical_roi_percent
-            ),
-        )
-        st.success(
-            "Verdict vérifié : les cotes antérieures et les résultats "
-            "officiels sont liés par des empreintes SHA-256."
-        )
-        st.caption(
-            "Contrôle du "
-            f"{sealed_market_settlement.checkpoint_date.strftime('%d/%m/%Y')} · "
-            f"Réussites : {sealed_market_settlement.correct_count} · "
-            f"Sans cote antérieure : "
-            f"{sealed_market_settlement.missing_market_count} · "
-            f"Annulés : {sealed_market_settlement.void_count} · "
-            f"SHA-256 : `{sealed_market_settlement.settlement_sha256}`"
-        )
-        st.warning(
-            "Le résultat et le rendement sont des simulations théoriques à "
-            "mise fixe. Ils ne constituent ni un gain réel ni une "
-            "recommandation de pari."
-        )
-        if sealed_market_settlement.selected_count > 0:
-            st.markdown("#### Verdict des matchs retenus")
-            selected_columns = st.columns(4)
-            selected_columns[0].metric(
-                "Sélections évaluées",
-                sealed_market_settlement.selected_evaluated_count,
-            )
-            selected_columns[1].metric(
-                "Sélections réussies",
-                sealed_market_settlement.selected_correct_count,
-            )
-            selected_columns[2].metric(
-                "Résultat théorique des sélections",
-                format_theoretical_units(
-                    sealed_market_settlement.selected_theoretical_net_units
-                ),
-            )
-            selected_columns[3].metric(
-                "Rendement théorique des sélections",
-                format_evaluation_percent(
-                    sealed_market_settlement.selected_theoretical_roi_percent
-                ),
-            )
-            st.caption(
-                f"Sélections scellées : {sealed_market_settlement.selected_count} · "
-                f"Annulées : {sealed_market_settlement.selected_void_count}."
-            )
-
-st.divider()
-st.subheader("Évaluation historique des écarts LPF–marché")
-st.caption(
-    "Ce bilan associe uniquement les résultats vérifiés aux cotes françaises "
-    "figées avant chaque certification. Il simule une mise identique d’une "
-    "unité sur chaque pronostic comparable ; aucune mise réelle n’est effectuée."
-)
-try:
-    evaluation_days = []
-    for evaluation_date in available_dates:
-        evaluation_prediction_day = load_certified_prediction_day(
-            evaluation_date
-        )
-        evaluation_score = load_latest_score_summary(
-            evaluation_date,
-            certified_predictions=evaluation_prediction_day.predictions,
-        )
-        if evaluation_score is None:
-            continue
-        evaluation_team_ids = {
-            team_id
-            for prediction in evaluation_prediction_day.predictions
-            for team_id in (prediction.away_team_id, prediction.home_team_id)
-        }
-        evaluation_team_names = load_team_names(evaluation_team_ids)
-        evaluation_odds = load_latest_moneyline_odds_display(
-            evaluation_date,
-            required_region="fr",
-            completed_at_or_before_utc=(
-                evaluation_prediction_day.certified_at_utc
-            ),
-        )
-        evaluation_comparison = build_french_market_comparison(
-            evaluation_prediction_day,
-            evaluation_odds,
-            team_names=evaluation_team_names,
-        )
-        evaluation_days.append((evaluation_comparison, evaluation_score))
-    market_history = build_market_evaluation_history(evaluation_days)
-except (
-    LPFEdgeDashboardError,
-    LPFEdgeMarketComparisonError,
-    LPFEdgeMarketEvaluationError,
-    LPFEdgeOddsDisplayError,
-    OSError,
-    ValueError,
-) as error:
-    st.error(f"L’évaluation historique est impossible : {error}")
-else:
-    if market_history.evaluated_count == 0:
-        st.info(
-            "Aucun résultat ne possède encore à la fois un verdict vérifié et "
-            "une collecte française antérieure à sa certification. L’historique "
-            "se remplira automatiquement au fil des prochaines journées."
-        )
-    else:
-        evaluation_columns = st.columns(4)
-        evaluation_columns[0].metric(
-            "Observations évaluées",
-            market_history.evaluated_count,
-        )
-        evaluation_columns[1].metric(
-            "Réussite observée",
-            format_evaluation_percent(market_history.accuracy_percent),
-        )
-        evaluation_columns[2].metric(
-            "Résultat théorique",
-            format_theoretical_units(market_history.theoretical_net_units),
-        )
-        evaluation_columns[3].metric(
-            "Rendement théorique",
-            format_evaluation_percent(
-                market_history.theoretical_roi_percent
-            ),
-        )
-        if market_history.sample_is_limited:
+            pick_columns = st.columns(len(today_selection.picks))
+            for column, pick in zip(pick_columns, today_selection.picks):
+                with column:
+                    role = (
+                        "Choix principal"
+                        if pick.role == "PRINCIPAL"
+                        else "Choix secondaire"
+                    )
+                    st.markdown(f"#### {role}")
+                    st.success(pick.predicted_team_name)
+                    start_time = datetime.fromisoformat(
+                        pick.scheduled_start_utc.replace("Z", "+00:00")
+                    )
+                    st.caption(
+                        f"{format_paris_time(start_time)} · "
+                        f"{pick.home_team_name} vs {pick.away_team_name}"
+                    )
+                    st.write(
+                        f"Probabilité LPF : "
+                        f"**{probability_percent(pick.model_probability)}**  \n"
+                        f"Meilleure cote : **{format_decimal_odds(pick.best_decimal_odds)}**  \n"
+                        f"Bookmaker(s) : **{', '.join(pick.best_bookmakers)}**"
+                    )
             st.warning(
-                f"Seulement {market_history.evaluated_count} observation(s) : "
-                f"avant {LIMITED_SAMPLE_THRESHOLD}, l’échantillon est trop "
-                "limité pour tirer une conclusion fiable."
+                "Mode observation : ces choix ne déclenchent aucune mise "
+                "réelle et ne garantissent aucun gain."
             )
 
-        gap_band_rows = [
-            {
-                "Écart LPF–marché": band.label,
-                "Observations": band.evaluated_count,
-                "Réussites": band.correct_count,
-                "Taux de réussite": format_evaluation_percent(
-                    band.accuracy_percent
-                ),
-                "Résultat théorique": (
-                    format_theoretical_units(band.theoretical_net_units)
-                    if band.evaluated_count > 0
-                    else "—"
-                ),
-                "Rendement théorique": format_evaluation_percent(
-                    band.theoretical_roi_percent
-                ),
-            }
-            for band in market_history.gap_bands
-        ]
-        st.dataframe(
-            gap_band_rows,
-            width="stretch",
-            height="content",
-            hide_index=True,
-        )
-        st.caption(
-            "Période évaluée : "
-            f"{market_history.first_date.strftime('%d/%m/%Y')} au "
-            f"{market_history.last_date.strftime('%d/%m/%Y')}. "
-            f"Journées avec résultats : {market_history.completed_day_count}. "
-            f"Sans cote antérieure : {market_history.missing_odds_count}. "
-            f"Non tranchées ou annulées : {market_history.unsettled_count}."
-        )
-        st.warning(
-            "Le résultat est une simulation rétrospective à la meilleure cote "
-            "archivée. Il suppose une disponibilité et une mise acceptée, sans "
-            "frais ni limitation ; il ne constitue ni un gain réel ni une "
-            "recommandation de pari."
-        )
 
-with st.expander("Voir les preuves de cette journée"):
-    st.write(f"Lot : `{day.batch_id}`")
-    st.write(f"Commit des résultats : `{day.results_commit}`")
-    st.write(f"SHA-256 des prédictions : `{day.predictions_sha256}`")
-    st.write(f"SHA-256 du reçu : `{day.receipt_sha256}`")
-    st.write(f"Certification GitHub : {format_paris_datetime(day.certified_at_utc)}")
-
-st.warning(
-    "LPF Edge affiche des probabilités de victoire et des cotes observées. "
-    "Shadow v2 n’utilise pas ces cotes, ne mesure pas la rentabilité et ne "
-    "produit aucune recommandation de pari."
+st.divider()
+st.subheader("Où trouver le reste ?")
+st.caption(
+    "La page Aujourd’hui s’arrête ici pour ne plus mélanger les dates. "
+    "Les anciennes journées, les statistiques et les sauvegardes disposent "
+    "désormais de leur propre page dans le menu de gauche."
 )
+link_columns = st.columns(3)
+with link_columns[0]:
+    st.page_link(
+        "pages/2_Historique_MLB.py",
+        label="Consulter une journée passée",
+        icon="📅",
+        use_container_width=True,
+    )
+with link_columns[1]:
+    st.page_link(
+        "pages/3_Statistiques_MLB.py",
+        label="Voir les statistiques",
+        icon="📊",
+        use_container_width=True,
+    )
+with link_columns[2]:
+    st.page_link(
+        "pages/4_Sauvegardes.py",
+        label="Gérer les sauvegardes",
+        icon="💾",
+        use_container_width=True,
+    )

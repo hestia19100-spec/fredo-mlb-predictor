@@ -58,6 +58,13 @@ from src.lpf_edge_daily_selection import (
     LPFEdgeDailySelectionError,
     load_daily_selection,
 )
+from src.lpf_edge_evaluation_supervision import (
+    EvaluationDayEvidence,
+    LPFEdgeEvaluationSupervisionError,
+    MINIMUM_SELECTION_OBSERVATIONS,
+    MINIMUM_SHADOW_OBSERVATIONS,
+    build_evaluation_supervision,
+)
 st.set_page_config(
     page_title="LPF Edge · MLB",
     page_icon="⚾",
@@ -888,6 +895,226 @@ available_dates = list_certified_prediction_dates()
 if not available_dates:
     st.warning("Aucune journée certifiée n'est encore disponible.")
     st.stop()
+
+st.divider()
+st.subheader("Supervision de l’évaluation")
+st.caption(
+    "Ce tableau relit uniquement les prédictions, sélections et verdicts "
+    "immuables déjà publiés. Il sépare les performances globales de Shadow v2 "
+    "de celles des matchs réellement retenus par le sélecteur."
+)
+try:
+    supervision_evidence: list[EvaluationDayEvidence] = []
+    for supervision_date in available_dates:
+        supervision_prediction_day = load_certified_prediction_day(
+            supervision_date
+        )
+        supervision_score = load_latest_score_summary(
+            supervision_date,
+            certified_predictions=supervision_prediction_day.predictions,
+        )
+        supervision_selection = load_daily_selection(supervision_date)
+        supervision_settlement = load_market_settlement(supervision_date)
+        supervision_evidence.append(
+            EvaluationDayEvidence(
+                prediction_day=supervision_prediction_day,
+                score=supervision_score,
+                selection=supervision_selection,
+                settlement=supervision_settlement,
+            )
+        )
+    evaluation_supervision = build_evaluation_supervision(
+        supervision_evidence
+    )
+except (
+    LPFEdgeDashboardError,
+    LPFEdgeDailySelectionError,
+    LPFEdgeEvaluationSupervisionError,
+    LPFEdgeMarketSettlementError,
+    OSError,
+    ValueError,
+) as error:
+    st.error(f"La supervision de l’évaluation est impossible : {error}")
+else:
+    st.markdown("#### Shadow v2 — toutes les prédictions")
+    shadow_columns = st.columns(4)
+    shadow_columns[0].metric(
+        "Journées certifiées",
+        evaluation_supervision.certified_day_count,
+    )
+    shadow_columns[1].metric(
+        "Prédictions évaluées",
+        evaluation_supervision.shadow_evaluated_count,
+    )
+    shadow_columns[2].metric(
+        "Réussite globale",
+        format_evaluation_percent(
+            evaluation_supervision.shadow_accuracy_percent
+        ),
+    )
+    shadow_columns[3].metric(
+        "Résultats en attente",
+        evaluation_supervision.shadow_pending_count,
+    )
+    st.progress(
+        float(evaluation_supervision.shadow_progress_percent / Decimal("100")),
+        text=(
+            "Recul statistique minimal : "
+            f"{evaluation_supervision.shadow_evaluated_count} / "
+            f"{MINIMUM_SHADOW_OBSERVATIONS} prédictions évaluées"
+        ),
+    )
+    quality_columns = st.columns(3)
+    quality_columns[0].metric(
+        "Journées entièrement tranchées",
+        evaluation_supervision.completed_day_count,
+    )
+    quality_columns[1].metric(
+        "Log loss moyen",
+        (
+            "—"
+            if evaluation_supervision.weighted_log_loss is None
+            else f"{evaluation_supervision.weighted_log_loss:.4f}"
+        ),
+        help="Plus cette mesure est basse, meilleures sont les probabilités.",
+    )
+    quality_columns[2].metric(
+        "Score de Brier moyen",
+        (
+            "—"
+            if evaluation_supervision.weighted_brier_score is None
+            else f"{evaluation_supervision.weighted_brier_score:.4f}"
+        ),
+        help="Plus cette mesure est basse, meilleures sont les probabilités.",
+    )
+
+    st.markdown("#### Sélecteur de pronostics — mode observation")
+    if evaluation_supervision.selection_publication_day_count == 0:
+        st.info(
+            "Aucune sélection prospective n’a encore été publiée. Le suivi "
+            "commencera automatiquement avec la prochaine certification."
+        )
+    else:
+        selector_columns = st.columns(5)
+        selector_columns[0].metric(
+            "Journées suivies",
+            evaluation_supervision.selection_publication_day_count,
+        )
+        selector_columns[1].metric(
+            "Journées avec prono",
+            evaluation_supervision.selection_day_count,
+        )
+        selector_columns[2].metric(
+            "Journées sans prono",
+            evaluation_supervision.no_pick_day_count,
+        )
+        selector_columns[3].metric(
+            "Choix évalués",
+            evaluation_supervision.selection.evaluated_count,
+        )
+        selector_columns[4].metric(
+            "Choix en attente",
+            evaluation_supervision.selection.pending_count,
+        )
+        st.progress(
+            float(
+                evaluation_supervision.selection_progress_percent
+                / Decimal("100")
+            ),
+            text=(
+                "Recul statistique minimal : "
+                f"{evaluation_supervision.selection.evaluated_count} / "
+                f"{MINIMUM_SELECTION_OBSERVATIONS} choix évalués"
+            ),
+        )
+        selector_result_columns = st.columns(4)
+        selector_result_columns[0].metric(
+            "Réussite des choix",
+            format_evaluation_percent(
+                evaluation_supervision.selection.accuracy_percent
+            ),
+        )
+        selector_result_columns[1].metric(
+            "Résultat théorique",
+            format_theoretical_units(
+                evaluation_supervision.selection.theoretical_net_units
+            ),
+        )
+        selector_result_columns[2].metric(
+            "Rendement théorique",
+            format_evaluation_percent(
+                evaluation_supervision.selection.theoretical_roi_percent
+            ),
+        )
+        selector_result_columns[3].metric(
+            "Baisse maximale théorique",
+            f"-{evaluation_supervision.selection.maximum_drawdown_units:.2f} unité(s)",
+        )
+        st.caption(
+            "Série de défaites actuelle : "
+            f"{evaluation_supervision.selection.current_losing_streak} · "
+            "plus longue série : "
+            f"{evaluation_supervision.selection.maximum_losing_streak} · "
+            f"choix annulés : {evaluation_supervision.selection.void_count}."
+        )
+
+        role_rows = []
+        for role_label, performance in (
+            ("Principal", evaluation_supervision.principal),
+            ("Secondaire", evaluation_supervision.secondary),
+        ):
+            role_rows.append(
+                {
+                    "Type de choix": role_label,
+                    "Publiés": performance.published_count,
+                    "Évalués": performance.evaluated_count,
+                    "Réussis": performance.correct_count,
+                    "En attente": performance.pending_count,
+                    "Réussite": format_evaluation_percent(
+                        performance.accuracy_percent
+                    ),
+                    "Résultat théorique": format_theoretical_units(
+                        performance.theoretical_net_units
+                    ),
+                    "Rendement théorique": format_evaluation_percent(
+                        performance.theoretical_roi_percent
+                    ),
+                    "Pire série de défaites": performance.maximum_losing_streak,
+                }
+            )
+        st.dataframe(
+            role_rows,
+            width="stretch",
+            height="content",
+            hide_index=True,
+        )
+
+    supervision_day_rows = [
+        {
+            "Journée": status.target_date.strftime("%d/%m/%Y"),
+            "Prédictions": status.prediction_count,
+            "Résultats": status.prediction_status.replace("_", " ").title(),
+            "Choix": status.selection_count,
+            "État du sélecteur": status.selection_status.replace("_", " ").title(),
+            "Choix évalués": status.selected_evaluated_count,
+            "Choix réussis": status.selected_correct_count,
+            "Résultat théorique": format_theoretical_units(
+                status.selected_theoretical_net_units
+            ),
+        }
+        for status in reversed(evaluation_supervision.days)
+    ]
+    st.dataframe(
+        supervision_day_rows,
+        width="stretch",
+        height="content",
+        hide_index=True,
+    )
+    st.warning(
+        "Le seuil de 100 observations indique seulement un recul minimal. "
+        "Il ne valide ni la rentabilité, ni Shadow v2, ni le sélecteur. "
+        "Aucune mise réelle n’est effectuée."
+    )
 
 selected_date = st.selectbox(
     "Journée à consulter",

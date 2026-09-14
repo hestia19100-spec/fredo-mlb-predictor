@@ -1,0 +1,95 @@
+{
+  "base_repository_commit": "88a0e4312dc0f7779c1a9178497680f68d30e9be",
+  "chronological_validation": {
+    "season_split_status": "NOT_FROZEN_PENDING_SOURCE_COVERAGE_AUDIT",
+    "target_definition_status": "NOT_FROZEN",
+    "test_outcomes_must_remain_sealed": true
+  },
+  "evidence_contract": {
+    "append_only": true,
+    "canonical_request_must_exclude_credentials": true,
+    "required_fields": [
+      "provider",
+      "observation_id",
+      "observed_at_utc",
+      "response_sha256",
+      "code_commit"
+    ],
+    "source_updated_at_utc_required_when_provider_exposes_it": true
+  },
+  "forbidden_inputs": [
+    "TARGET_GAME_SCORE",
+    "TARGET_GAME_PLAY_BY_PLAY",
+    "POSTGAME_CONFIRMED_STARTER_USED_AS_PREGAME_FACT",
+    "CURRENT_AGGREGATE_USED_FOR_HISTORICAL_ROW",
+    "CURRENT_INJURY_STATUS_USED_FOR_HISTORICAL_ROW",
+    "UNPROVEN_HISTORICAL_PREGAME_STATUS",
+    "FUTURE_MATCH_RESULT",
+    "BETTING_OUTCOME"
+  ],
+  "missing_data_policy": {
+    "postgame_backfill_of_pregame_fact_allowed": false,
+    "silent_imputation_allowed": false,
+    "unknown_goalie_status_value": "UNKNOWN",
+    "unverifiable_feature_action": "MARK_MISSING_OR_EXCLUDE_GAME"
+  },
+  "network_policy": {
+    "api_calls_allowed_in_this_stage": false,
+    "http_clients_allowed_in_foundation_modules": false,
+    "synthetic_test_data_only": true
+  },
+  "provider_strategy": {
+    "advanced_expected_goals": {
+      "enabled": false,
+      "reason": "SOURCE_AND_COMMERCIAL_USAGE_RIGHTS_NOT_VALIDATED"
+    },
+    "core_schedule_results_and_statistics": {
+      "authentication": "NONE_EXPECTED",
+      "provider": "NHL_PUBLIC_WEB_AND_STATS_APIS",
+      "status": "PLANNED_NOT_CALLED"
+    },
+    "pregame_goalies_and_injuries": {
+      "authentication_environment_variable": "SPORTSDATAIO_API_KEY",
+      "credential_transport": "HTTP_HEADER_ONLY",
+      "provider": "SPORTSDATAIO_CANDIDATE",
+      "status": "NOT_SELECTED_OR_CALLED"
+    }
+  },
+  "protocol_id": "lpf_edge_nhl_data_foundation_v1",
+  "protocol_schema_version": 1,
+  "secrets_policy": {
+    "credential_hash_persistence_allowed": false,
+    "credential_logging_allowed": false,
+    "credential_query_parameter_allowed": false,
+    "credentials_in_code_allowed": false,
+    "credentials_in_git_allowed": false,
+    "environment_or_codespaces_secret_required": true
+  },
+  "separation_contract": {
+    "mlb_database_forbidden": "data/fredo_mlb.db",
+    "mlb_runtime_imports_forbidden": true,
+    "nhl_data_root": "data/nhl",
+    "nhl_module_root": "src/nhl",
+    "nhl_protocol_root": "nhl_protocols",
+    "nhl_test_root": "tests/nhl",
+    "protected_mlb_execution_manifest": "shadow_protocols/logistic_team_form_v1_platt_shadow_v2_execution.json"
+  },
+  "scope": {
+    "api_client_enabled": false,
+    "database_enabled": false,
+    "interface_enabled": false,
+    "model_enabled": false,
+    "odds_enabled": false,
+    "real_bet_execution_enabled": false,
+    "shadow_prediction_enabled": false
+  },
+  "status": "DRAFT_LOCAL_BEFORE_FIRST_NHL_API_CALL",
+  "temporal_policy": {
+    "cutoff_rule": "effective_available_at_utc <= information_cutoff_utc < scheduled_start_utc",
+    "effective_availability_rule": "max(observed_at_utc, source_updated_at_utc_if_present)",
+    "historical_aggregate_rule": "REBUILD_CHRONOLOGICALLY_FROM_ELIGIBLE_PRIOR_GAMES",
+    "prior_result_rule": "final_observed_at_utc <= information_cutoff_utc",
+    "target_game_may_be_source_game": false,
+    "timestamps_timezone": "UTC"
+  }
+}

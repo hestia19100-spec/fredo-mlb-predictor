@@ -26,6 +26,10 @@ data/*.sqlite3
 data/raw/
 data/processed/
 
+# Données NHL locales séparées de la MLB
+
+data/nhl/
+
 # Sauvegardes locales à télécharger
 
 backups/

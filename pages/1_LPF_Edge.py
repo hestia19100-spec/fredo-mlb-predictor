@@ -22,9 +22,16 @@ from src.lpf_edge_daily_operations import (
     load_prediction_preparation,
 )
 from src.lpf_edge_dashboard import (
+    LPFEdgeDashboardError,
     format_paris_datetime,
     format_paris_time,
+    load_certified_prediction_day,
+    load_team_names,
     probability_percent,
+)
+from src.lpf_edge_internal_prudence import (
+    LPFEdgeInternalPrudenceError,
+    select_internal_prudence,
 )
 from src.lpf_edge_daily_selection import (
     LPFEdgeDailySelectionError,
@@ -773,6 +780,69 @@ if daily is not None:
             st.warning(
                 "Mode observation : ces choix ne déclenchent aucune mise "
                 "réelle et ne garantissent aucun gain."
+            )
+
+    st.divider()
+    st.subheader("Choix ayant la plus forte probabilité")
+    st.caption(
+        "Indicateur privé : il reprend simplement la probabilité LPF la plus "
+        "élevée parmi les prédictions certifiées de la journée."
+    )
+    if not daily.prediction_certified:
+        st.info(
+            "Ce choix apparaîtra après la certification des prédictions de "
+            "l’après-midi."
+        )
+    else:
+        try:
+            prudence_day = load_certified_prediction_day(daily.target_date)
+            prudence_team_ids = {
+                team_id
+                for prediction in prudence_day.predictions
+                for team_id in (
+                    prediction.away_team_id,
+                    prediction.home_team_id,
+                )
+            }
+            prudence_choice = select_internal_prudence(
+                prudence_day,
+                team_names=load_team_names(prudence_team_ids),
+            )
+        except (
+            LPFEdgeDashboardError,
+            LPFEdgeInternalPrudenceError,
+            OSError,
+            ValueError,
+        ) as error:
+            st.error(f"Le choix interne ne peut pas être vérifié : {error}")
+        else:
+            choice_columns = st.columns(4)
+            choice_columns[0].metric(
+                "Équipe choisie",
+                prudence_choice.predicted_team_name,
+            )
+            choice_columns[1].metric(
+                "Probabilité LPF",
+                probability_percent(prudence_choice.model_probability),
+            )
+            choice_columns[2].metric(
+                "Heure de Paris",
+                format_paris_time(prudence_choice.scheduled_start_utc),
+            )
+            choice_columns[3].metric("Rang", "1 / journée")
+            st.write(
+                f"**{prudence_choice.home_team_name} vs "
+                f"{prudence_choice.away_team_name}**"
+            )
+            if prudence_choice.tie_break_rule_applied:
+                st.caption(
+                    "Plusieurs matchs avaient la même probabilité maximale ; "
+                    "la règle déterministe du plus petit identifiant de match "
+                    "a départagé le choix."
+                )
+            st.warning(
+                "Usage interne uniquement : ce classement ne constitue pas "
+                "un pari sûr, une promesse de gain ni une publication publique."
             )
 
 

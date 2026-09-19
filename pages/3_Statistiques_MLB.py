@@ -12,10 +12,19 @@ from src.lpf_edge_daily_selection import (
 )
 from src.lpf_edge_dashboard import (
     LPFEdgeDashboardError,
+    format_paris_time,
     list_certified_prediction_dates,
     load_certified_prediction_day,
     load_latest_score_summary,
     load_team_names,
+    probability_percent,
+)
+from src.lpf_edge_internal_prudence import LPFEdgeInternalPrudenceError
+from src.lpf_edge_internal_prudence_reporting import (
+    InternalPrudenceEvidence,
+    LPFEdgeInternalPrudenceReportingError,
+    PrudenceResultStatus,
+    build_internal_prudence_report,
 )
 from src.lpf_edge_evaluation_supervision import (
     EvaluationDayEvidence,
@@ -61,6 +70,112 @@ if not available_dates:
     st.warning("Aucune journée certifiée n'est encore disponible.")
     st.stop()
 
+st.subheader("Choix à plus forte probabilité — bilan depuis le début")
+st.caption(
+    "Ce bilan est recalculé automatiquement à chaque affichage depuis les "
+    "prédictions certifiées et les derniers résultats vérifiés. Après la "
+    "routine du matin, une simple actualisation de cette page suffit."
+)
+try:
+    prudence_evidence: list[InternalPrudenceEvidence] = []
+    for prudence_date in available_dates:
+        prudence_day = load_certified_prediction_day(prudence_date)
+        prudence_team_ids = {
+            team_id
+            for prediction in prudence_day.predictions
+            for team_id in (
+                prediction.away_team_id,
+                prediction.home_team_id,
+            )
+        }
+        prudence_evidence.append(
+            InternalPrudenceEvidence(
+                prediction_day=prudence_day,
+                team_names=load_team_names(prudence_team_ids),
+                score=load_latest_score_summary(
+                    prudence_date,
+                    certified_predictions=prudence_day.predictions,
+                ),
+            )
+        )
+    prudence_report = build_internal_prudence_report(prudence_evidence)
+except (
+    LPFEdgeDashboardError,
+    LPFEdgeInternalPrudenceError,
+    LPFEdgeInternalPrudenceReportingError,
+    OSError,
+    ValueError,
+) as error:
+    st.error(f"Le bilan du choix interne est impossible : {error}")
+else:
+    prudence_columns = st.columns(5)
+    prudence_columns[0].metric("Journées suivies", prudence_report.total_count)
+    prudence_columns[1].metric("Choix réussis", prudence_report.won_count)
+    prudence_columns[2].metric("Choix ratés", prudence_report.lost_count)
+    prudence_columns[3].metric("En attente", prudence_report.pending_count)
+    prudence_columns[4].metric(
+        "Taux de réussite",
+        format_evaluation_percent(prudence_report.hit_rate_percent),
+    )
+    probability_columns = st.columns(4)
+    probability_columns[0].metric(
+        "Probabilité moyenne",
+        probability_percent(prudence_report.mean_model_probability),
+    )
+    probability_columns[1].metric(
+        "Plus longue série réussie",
+        prudence_report.longest_winning_streak,
+    )
+    probability_columns[2].metric(
+        "Plus longue série ratée",
+        prudence_report.longest_losing_streak,
+    )
+    current_streak_label = "Aucune"
+    if prudence_report.current_streak_status is PrudenceResultStatus.WON:
+        current_streak_label = (
+            f"{prudence_report.current_streak_count} réussie(s)"
+        )
+    elif prudence_report.current_streak_status is PrudenceResultStatus.LOST:
+        current_streak_label = f"{prudence_report.current_streak_count} ratée(s)"
+    probability_columns[3].metric("Série actuelle", current_streak_label)
+
+    result_labels = {
+        PrudenceResultStatus.WON: "Réussi",
+        PrudenceResultStatus.LOST: "Raté",
+        PrudenceResultStatus.PENDING: "En attente",
+        PrudenceResultStatus.VOID: "Annulé",
+    }
+    prudence_rows = [
+        {
+            "Journée": day.choice.target_date.strftime("%d/%m/%Y"),
+            "Heure de Paris": format_paris_time(
+                day.choice.scheduled_start_utc
+            ),
+            "Match": (
+                f"{day.choice.home_team_name} vs "
+                f"{day.choice.away_team_name}"
+            ),
+            "Choix LPF": day.choice.predicted_team_name,
+            "Probabilité": probability_percent(
+                day.choice.model_probability
+            ),
+            "Score (dom. - ext.)": day.score_text,
+            "Résultat": result_labels[day.result_status],
+        }
+        for day in reversed(prudence_report.days)
+    ]
+    st.dataframe(
+        prudence_rows,
+        width="stretch",
+        height="content",
+        hide_index=True,
+    )
+    st.warning(
+        "Usage interne uniquement : ces statistiques décrivent les choix "
+        "passés. Elles ne garantissent pas les résultats futurs."
+    )
+
+st.divider()
 st.subheader("Supervision de l’évaluation")
 st.caption(
     "Les performances de toutes les prédictions sont séparées de celles des "

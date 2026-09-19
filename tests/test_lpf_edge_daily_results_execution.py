@@ -52,6 +52,7 @@ class LPFEdgeDailyResultsExecutionTests(unittest.TestCase):
             results_action=action or self._action(),
             results_target_date=TARGET,
             git=mock.Mock(head_commit="e" * 40),
+            scoring_runtime_preparation_required=False,
         )
 
     def _scoring(
@@ -116,6 +117,156 @@ class LPFEdgeDailyResultsExecutionTests(unittest.TestCase):
         self.assertEqual(arguments["stage"], operations.DailyResultsStage.RESULTS_PUBLICATION)
         self.assertIs(arguments["error_type"], operations.DailyResultsAutomationError)
         self.assertEqual(set(arguments["expected_paths"]), set(result.results_paths))
+
+    def test_certification_head_is_advanced_by_empty_runtime_commit(self) -> None:
+        overview = self._overview()
+        overview.scoring_runtime_preparation_required = True
+        runtime_commit = "f" * 40
+        with (
+            mock.patch.object(operations, "_utc_now", return_value=NOW),
+            mock.patch.object(
+                operations,
+                "inspect_daily_operations",
+                return_value=overview,
+            ),
+            mock.patch.object(
+                operations,
+                "_prepare_scoring_runtime_if_needed",
+                return_value=runtime_commit,
+            ) as prepare,
+            mock.patch.object(
+                operations,
+                "_execute_scoring_engine",
+                return_value=self._scoring(),
+            ),
+            mock.patch.object(
+                operations,
+                "_commit_and_push_exact_paths",
+                return_value=RESULTS_COMMIT,
+            ) as publish,
+        ):
+            self._run()
+
+        prepare.assert_called_once_with(
+            project_directory=self.project.resolve(),
+            expected_parent_commit="e" * 40,
+            scoring_target=TARGET,
+            required=True,
+        )
+        self.assertEqual(
+            publish.call_args.kwargs["expected_parent_commit"],
+            runtime_commit,
+        )
+
+    def test_runtime_preparation_is_noop_when_head_is_already_later(self) -> None:
+        with mock.patch.object(operations, "_run_git_mutation") as run_git:
+            result = operations._prepare_scoring_runtime_if_needed(
+                project_directory=self.project,
+                expected_parent_commit="e" * 40,
+                scoring_target=TARGET,
+                required=False,
+            )
+        self.assertEqual(result, "e" * 40)
+        run_git.assert_not_called()
+
+    def test_runtime_preparation_creates_and_pushes_exact_empty_commit(self) -> None:
+        runtime_commit = "f" * 40
+        outputs = iter(
+            (
+                "main",
+                "e" * 40,
+                "e" * 40,
+                "",
+                "",
+                runtime_commit,
+                "",
+                "",
+                runtime_commit,
+                "",
+            )
+        )
+        with mock.patch.object(
+            operations,
+            "_run_git_mutation",
+            side_effect=lambda *args, **kwargs: next(outputs),
+        ) as run_git:
+            result = operations._prepare_scoring_runtime_if_needed(
+                project_directory=self.project,
+                expected_parent_commit="e" * 40,
+                scoring_target=TARGET,
+                required=True,
+            )
+
+        self.assertEqual(result, runtime_commit)
+        arguments = [call.args[1] for call in run_git.call_args_list]
+        self.assertIn(
+            (
+                "commit",
+                "--allow-empty",
+                "-m",
+                "Preparer le runtime scoring MLB du 11 septembre 2026",
+            ),
+            arguments,
+        )
+        self.assertIn(("push", "origin", "main"), arguments)
+        self.assertIn(
+            (
+                "diff-tree",
+                "--no-commit-id",
+                "--name-only",
+                "-r",
+                runtime_commit,
+            ),
+            arguments,
+        )
+
+    def test_runtime_preparation_failure_stops_before_scoring(self) -> None:
+        overview = self._overview()
+        overview.scoring_runtime_preparation_required = True
+        failure = operations.DailyResultsAutomationError(
+            operations.DailyResultsStage.RUNTIME_PREPARATION,
+            "push du runtime impossible",
+        )
+        with (
+            mock.patch.object(operations, "_utc_now", return_value=NOW),
+            mock.patch.object(
+                operations,
+                "inspect_daily_operations",
+                return_value=overview,
+            ),
+            mock.patch.object(
+                operations,
+                "_prepare_scoring_runtime_if_needed",
+                side_effect=failure,
+            ),
+            mock.patch.object(operations, "_execute_scoring_engine") as scoring,
+        ):
+            with self.assertRaises(operations.DailyResultsAutomationError) as caught:
+                self._run()
+        self.assertIs(caught.exception, failure)
+        scoring.assert_not_called()
+
+    def test_runtime_requirement_is_idempotent_after_empty_commit(self) -> None:
+        prospective_commit = "e" * 40
+        with mock.patch.object(
+            operations,
+            "_run_git",
+            return_value=prospective_commit,
+        ):
+            self.assertTrue(
+                operations._scoring_runtime_preparation_is_required(
+                    TARGET,
+                    head_commit=prospective_commit,
+                    project_directory=self.project,
+                )
+            )
+            self.assertFalse(
+                operations._scoring_runtime_preparation_is_required(
+                    TARGET,
+                    head_commit="f" * 40,
+                    project_directory=self.project,
+                )
+            )
 
     def test_final_results_and_market_verdict_are_published_atomically(self) -> None:
         settlement_slot = (

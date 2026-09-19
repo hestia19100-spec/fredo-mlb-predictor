@@ -193,6 +193,7 @@ class DailyResultsStage(str, Enum):
     """Etape exacte atteinte par l'automatisation du scoring."""
 
     PREFLIGHT = "PREFLIGHT"
+    RUNTIME_PREPARATION = "RUNTIME_PREPARATION"
     SCORING = "SCORING"
     MARKET_SETTLEMENT = "MARKET_SETTLEMENT"
     RESULTS_PUBLICATION = "RESULTS_PUBLICATION"
@@ -399,6 +400,7 @@ class DailyOperationsOverview:
     morning_action: DailyAction
     afternoon_action: DailyAction
     integrity_errors: tuple[str, ...]
+    scoring_runtime_preparation_required: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -760,6 +762,7 @@ def build_daily_operations_overview(
     has_past_certified: bool,
     latest_score_pending_count: int | None,
     checkpoint_slot_exists: bool,
+    scoring_runtime_preparation_required: bool = False,
     integrity_errors: Sequence[str] = (),
 ) -> DailyOperationsOverview:
     """Construit les trois decisions sans aucun acces disque ou reseau."""
@@ -839,6 +842,9 @@ def build_daily_operations_overview(
         morning_action=morning_action,
         afternoon_action=afternoon_action,
         integrity_errors=errors,
+        scoring_runtime_preparation_required=(
+            scoring_runtime_preparation_required
+        ),
     )
 
 
@@ -858,6 +864,44 @@ def _run_git(
         timeout=15,
     )
     return completed.stdout.strip()
+
+
+def _scoring_runtime_preparation_is_required(
+    target_date: date,
+    *,
+    head_commit: str,
+    project_directory: Path,
+) -> bool:
+    """Détecte si HEAD est encore la certification ou le journal à scorer."""
+
+    if not isinstance(target_date, date) or isinstance(target_date, datetime):
+        raise TypeError("target_date doit être une date exacte.")
+    if (
+        not isinstance(head_commit, str)
+        or len(head_commit) != 40
+        or any(character not in "0123456789abcdef" for character in head_commit)
+    ):
+        raise DailyOperationsError("Le commit Git de scoring est invalide.")
+    target_text = target_date.isoformat()
+    prospective_paths = (
+        (CERTIFICATION_ROOT / f"{target_text}.json").as_posix(),
+        (CERTIFICATION_ROOT / f"{target_text}.remote.json.gz").as_posix(),
+        (
+            MARKET_SNAPSHOT_ROOT
+            / target_text
+            / "market_snapshot.json"
+        ).as_posix(),
+        (MARKET_SNAPSHOT_ROOT / target_text / "COMPLETED").as_posix(),
+    )
+    source_commits = {
+        _run_git(
+            project_directory,
+            ("log", "-1", "--format=%H", "--", relative_path),
+        )
+        for relative_path in prospective_paths
+    }
+    source_commits.discard("")
+    return head_commit in source_commits
 
 
 def inspect_git_workspace(
@@ -1252,6 +1296,7 @@ def inspect_daily_operations(
         errors.append(str(error))
 
     checkpoint_exists = False
+    runtime_preparation_required = False
     if results_target is not None:
         checkpoint_slot = (
             project_directory
@@ -1263,6 +1308,19 @@ def inspect_daily_operations(
         checkpoint_exists = checkpoint_slot.exists()
         if checkpoint_exists and checkpoint_slot.is_symlink():
             errors.append("Le créneau de scoring local est un lien interdit.")
+        if git.ready_for_publication and git.head_commit is not None:
+            try:
+                runtime_preparation_required = (
+                    _scoring_runtime_preparation_is_required(
+                        results_target,
+                        head_commit=git.head_commit,
+                        project_directory=project_directory,
+                    )
+                )
+            except (DailyOperationsError, OSError, subprocess.SubprocessError):
+                errors.append(
+                    "Le commit prospectif du scoring ne peut pas être contrôlé."
+                )
 
     return build_daily_operations_overview(
         target_date=selected,
@@ -1276,6 +1334,7 @@ def inspect_daily_operations(
         has_past_certified=bool(past_certified_dates),
         latest_score_pending_count=latest_pending,
         checkpoint_slot_exists=checkpoint_exists,
+        scoring_runtime_preparation_required=runtime_preparation_required,
         integrity_errors=errors,
     )
 
@@ -1832,6 +1891,114 @@ def _commit_and_push_exact_paths(
             "Le commit local n'est pas proprement synchronise avec origin/main.",
         )
     return commit
+
+
+def _prepare_scoring_runtime_if_needed(
+    *,
+    project_directory: Path,
+    expected_parent_commit: str,
+    scoring_target: date,
+    required: bool,
+) -> str:
+    """Publie un commit vide lorsque HEAD est encore la preuve prospective."""
+
+    if not required:
+        return expected_parent_commit
+    label = _french_date_label(scoring_target)
+    try:
+        branch = _run_git_mutation(
+            project_directory,
+            ("branch", "--show-current"),
+        )
+        head_before = _run_git_mutation(
+            project_directory,
+            ("rev-parse", "HEAD"),
+        )
+        remote_before = _run_git_mutation(
+            project_directory,
+            ("rev-parse", "origin/main"),
+        )
+        status_before = _run_git_mutation(
+            project_directory,
+            ("status", "--porcelain=v1", "--untracked-files=all"),
+        )
+        if (
+            branch != "main"
+            or head_before != expected_parent_commit
+            or remote_before != expected_parent_commit
+            or status_before
+        ):
+            raise DailyResultsAutomationError(
+                DailyResultsStage.RUNTIME_PREPARATION,
+                "La base Git a changé avant la préparation du runtime scoring.",
+            )
+        _run_git_mutation(
+            project_directory,
+            (
+                "commit",
+                "--allow-empty",
+                "-m",
+                f"Preparer le runtime scoring MLB du {label}",
+            ),
+        )
+        runtime_commit = _run_git_mutation(
+            project_directory,
+            ("rev-parse", "HEAD"),
+        )
+        if (
+            len(runtime_commit) != 40
+            or any(
+                character not in "0123456789abcdef"
+                for character in runtime_commit
+            )
+            or runtime_commit == expected_parent_commit
+        ):
+            raise DailyResultsAutomationError(
+                DailyResultsStage.RUNTIME_PREPARATION,
+                "Le commit vide de préparation est invalide.",
+            )
+        changed_paths = _run_git_mutation(
+            project_directory,
+            (
+                "diff-tree",
+                "--no-commit-id",
+                "--name-only",
+                "-r",
+                runtime_commit,
+            ),
+        )
+        if changed_paths:
+            raise DailyResultsAutomationError(
+                DailyResultsStage.RUNTIME_PREPARATION,
+                "Le commit de préparation devait être strictement vide.",
+            )
+        _run_git_mutation(
+            project_directory,
+            ("push", "origin", "main"),
+            timeout_seconds=180,
+        )
+        remote_after = _run_git_mutation(
+            project_directory,
+            ("rev-parse", "origin/main"),
+        )
+        status_after = _run_git_mutation(
+            project_directory,
+            ("status", "--porcelain=v1", "--untracked-files=all"),
+        )
+    except DailyResultsAutomationError:
+        raise
+    except (OSError, subprocess.SubprocessError, UnicodeError) as error:
+        raise DailyResultsAutomationError(
+            DailyResultsStage.RUNTIME_PREPARATION,
+            "La préparation Git du runtime scoring a échoué ; le scoring "
+            "n'a pas été lancé.",
+        ) from error
+    if remote_after != runtime_commit or status_after:
+        raise DailyResultsAutomationError(
+            DailyResultsStage.RUNTIME_PREPARATION,
+            "Le runtime scoring n'est pas proprement synchronisé avec origin/main.",
+        )
+    return runtime_commit
 
 
 def _execute_prediction_engine(
@@ -2580,6 +2747,12 @@ def execute_daily_results_publication(
             DailyResultsStage.PREFLIGHT,
             "Aucune journée certifiée en attente n'a été sélectionnée.",
         )
+    starting_commit = _prepare_scoring_runtime_if_needed(
+        project_directory=project,
+        expected_parent_commit=starting_commit,
+        scoring_target=scoring_target,
+        required=overview.scoring_runtime_preparation_required,
+    )
     checkpoint = instant.date()
     try:
         scoring = _execute_scoring_engine(

@@ -19,6 +19,10 @@ from src.lpf_edge_internal_prudence_reporting import (
     PrudenceResultStatus,
     build_internal_prudence_report,
 )
+from src.lpf_edge_market_comparison import (
+    MarketComparison,
+    MarketComparisonRow,
+)
 
 
 NAMES = {1: "Home", 2: "Away", 3: "Other Home", 4: "Other Away"}
@@ -113,6 +117,44 @@ def make_score(
     )
 
 
+def make_comparison(
+    day: CertifiedPredictionDay,
+    *,
+    best_decimal_odds: str | None,
+) -> MarketComparison:
+    selected = day.predictions[0]
+    odds = (
+        None
+        if best_decimal_odds is None
+        else Decimal(best_decimal_odds)
+    )
+    return MarketComparison(
+        target_date=day.target_date,
+        odds_run_id=10,
+        odds_completed_at_utc=day.certified_at_utc - timedelta(minutes=5),
+        rows=(
+            MarketComparisonRow(
+                game_id=selected.game_id,
+                scheduled_start_utc=selected.scheduled_start_utc,
+                home_team_name=NAMES[selected.home_team_id],
+                away_team_name=NAMES[selected.away_team_id],
+                predicted_side=selected.predicted_side,
+                predicted_team_name=NAMES[selected.home_team_id],
+                model_probability=selected.predicted_probability,
+                french_market_probability=(
+                    None if odds is None else Decimal("0.57")
+                ),
+                gap_percentage_points=(
+                    None if odds is None else Decimal("4")
+                ),
+                best_decimal_odds=odds,
+                best_bookmakers=() if odds is None else ("Betclic",),
+                bookmaker_count=0 if odds is None else 1,
+            ),
+        ),
+    )
+
+
 class LPFEdgeInternalPrudenceReportingTests(unittest.TestCase):
     def test_report_covers_wins_losses_pending_void_and_streaks(self) -> None:
         days = [
@@ -124,10 +166,30 @@ class LPFEdgeInternalPrudenceReportingTests(unittest.TestCase):
         ]
         report = build_internal_prudence_report(
             (
-                InternalPrudenceEvidence(days[0], NAMES, make_score(days[0], classification_correct=True)),
-                InternalPrudenceEvidence(days[1], NAMES, make_score(days[1], classification_correct=True)),
-                InternalPrudenceEvidence(days[2], NAMES, make_score(days[2], classification_correct=False)),
-                InternalPrudenceEvidence(days[3], NAMES, None),
+                InternalPrudenceEvidence(
+                    days[0],
+                    NAMES,
+                    make_score(days[0], classification_correct=True),
+                    make_comparison(days[0], best_decimal_odds="1.80"),
+                ),
+                InternalPrudenceEvidence(
+                    days[1],
+                    NAMES,
+                    make_score(days[1], classification_correct=True),
+                    make_comparison(days[1], best_decimal_odds="2.10"),
+                ),
+                InternalPrudenceEvidence(
+                    days[2],
+                    NAMES,
+                    make_score(days[2], classification_correct=False),
+                    make_comparison(days[2], best_decimal_odds="1.70"),
+                ),
+                InternalPrudenceEvidence(
+                    days[3],
+                    NAMES,
+                    None,
+                    make_comparison(days[3], best_decimal_odds="1.90"),
+                ),
                 InternalPrudenceEvidence(
                     days[4],
                     NAMES,
@@ -136,6 +198,7 @@ class LPFEdgeInternalPrudenceReportingTests(unittest.TestCase):
                         classification_correct=None,
                         status="VOID_CANCELLED",
                     ),
+                    make_comparison(days[4], best_decimal_odds=None),
                 ),
             )
         )
@@ -157,6 +220,16 @@ class LPFEdgeInternalPrudenceReportingTests(unittest.TestCase):
         self.assertEqual(report.current_streak_status, PrudenceResultStatus.LOST)
         self.assertEqual(report.current_streak_count, 1)
         self.assertEqual(report.days[0].score_text, "5 - 2")
+        self.assertEqual(report.days[0].best_decimal_odds, Decimal("1.80"))
+        self.assertEqual(report.days[0].net_result_euros, Decimal("0.80"))
+        self.assertEqual(report.days[1].net_result_euros, Decimal("1.10"))
+        self.assertEqual(report.days[2].net_result_euros, Decimal("-1"))
+        self.assertIsNone(report.days[3].net_result_euros)
+        self.assertEqual(report.days[4].net_result_euros, Decimal("0"))
+        self.assertEqual(report.odds_evaluated_count, 3)
+        self.assertEqual(report.missing_odds_count, 0)
+        self.assertEqual(report.theoretical_net_euros, Decimal("0.90"))
+        self.assertEqual(report.theoretical_roi_percent, Decimal("30.0"))
 
     def test_rebuild_after_morning_score_updates_pending_day(self) -> None:
         day = make_day(0, selected_probability="0.61")
@@ -213,6 +286,26 @@ class LPFEdgeInternalPrudenceReportingTests(unittest.TestCase):
             build_internal_prudence_report(
                 (InternalPrudenceEvidence(day, NAMES, wrong_score),)
             )
+
+    def test_resolved_choice_without_locked_odds_is_excluded_from_gain(self) -> None:
+        day = make_day(0, selected_probability="0.61")
+        report = build_internal_prudence_report(
+            (
+                InternalPrudenceEvidence(
+                    day,
+                    NAMES,
+                    make_score(day, classification_correct=True),
+                    make_comparison(day, best_decimal_odds=None),
+                ),
+            )
+        )
+
+        self.assertEqual(report.won_count, 1)
+        self.assertEqual(report.odds_evaluated_count, 0)
+        self.assertEqual(report.missing_odds_count, 1)
+        self.assertEqual(report.theoretical_net_euros, Decimal("0"))
+        self.assertIsNone(report.theoretical_roi_percent)
+        self.assertIsNone(report.days[0].net_result_euros)
 
     def test_duplicate_day_is_rejected(self) -> None:
         day = make_day(0, selected_probability="0.61")

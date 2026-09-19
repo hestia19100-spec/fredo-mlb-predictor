@@ -70,6 +70,12 @@ if not available_dates:
     st.warning("Aucune journée certifiée n'est encore disponible.")
     st.stop()
 
+
+def format_euro_result(value: Decimal) -> str:
+    rounded = value.quantize(Decimal("0.01"))
+    sign = "+" if rounded > 0 else ""
+    return f"{sign}{rounded:.2f} €".replace(".", ",")
+
 st.subheader("Choix à plus forte probabilité — bilan depuis le début")
 st.caption(
     "Ce bilan est recalculé automatiquement à chaque affichage depuis les "
@@ -88,13 +94,25 @@ try:
                 prediction.home_team_id,
             )
         }
+        prudence_team_names = load_team_names(prudence_team_ids)
         prudence_evidence.append(
             InternalPrudenceEvidence(
                 prediction_day=prudence_day,
-                team_names=load_team_names(prudence_team_ids),
+                team_names=prudence_team_names,
                 score=load_latest_score_summary(
                     prudence_date,
                     certified_predictions=prudence_day.predictions,
+                ),
+                market_comparison=build_french_market_comparison(
+                    prudence_day,
+                    load_latest_moneyline_odds_display(
+                        prudence_date,
+                        required_region="fr",
+                        completed_at_or_before_utc=(
+                            prudence_day.certified_at_utc
+                        ),
+                    ),
+                    team_names=prudence_team_names,
                 ),
             )
         )
@@ -103,6 +121,8 @@ except (
     LPFEdgeDashboardError,
     LPFEdgeInternalPrudenceError,
     LPFEdgeInternalPrudenceReportingError,
+    LPFEdgeMarketComparisonError,
+    LPFEdgeOddsDisplayError,
     OSError,
     ValueError,
 ) as error:
@@ -139,12 +159,39 @@ else:
         current_streak_label = f"{prudence_report.current_streak_count} ratée(s)"
     probability_columns[3].metric("Série actuelle", current_streak_label)
 
+    financial_columns = st.columns(4)
+    financial_columns[0].metric(
+        "Mises de 1 € évaluées",
+        prudence_report.odds_evaluated_count,
+    )
+    financial_columns[1].metric(
+        "Total net théorique",
+        format_euro_result(prudence_report.theoretical_net_euros),
+    )
+    financial_columns[2].metric(
+        "Rendement théorique",
+        format_evaluation_percent(
+            prudence_report.theoretical_roi_percent
+        ),
+    )
+    financial_columns[3].metric(
+        "Résultats sans cote",
+        prudence_report.missing_odds_count,
+    )
+
     result_labels = {
         PrudenceResultStatus.WON: "Réussi",
         PrudenceResultStatus.LOST: "Raté",
         PrudenceResultStatus.PENDING: "En attente",
         PrudenceResultStatus.VOID: "Annulé",
     }
+    def daily_net_label(day) -> str:
+        if day.net_result_euros is not None:
+            return format_euro_result(day.net_result_euros)
+        if day.result_status is PrudenceResultStatus.PENDING:
+            return "En attente"
+        return "Cote absente"
+
     prudence_rows = [
         {
             "Journée": day.choice.target_date.strftime("%d/%m/%Y"),
@@ -159,8 +206,14 @@ else:
             "Probabilité": probability_percent(
                 day.choice.model_probability
             ),
+            "Meilleure cote française": (
+                format(day.best_decimal_odds, "f")
+                if day.best_decimal_odds is not None
+                else "—"
+            ),
             "Score (dom. - ext.)": day.score_text,
             "Résultat": result_labels[day.result_status],
+            "Résultat net (mise 1 €)": daily_net_label(day),
         }
         for day in reversed(prudence_report.days)
     ]
@@ -173,6 +226,11 @@ else:
     st.warning(
         "Usage interne uniquement : ces statistiques décrivent les choix "
         "passés. Elles ne garantissent pas les résultats futurs."
+    )
+    st.caption(
+        "Calcul théorique à mise fixe : une réussite à la cote 2,10 vaut "
+        "+1,10 € net, un échec vaut −1,00 €, et un match annulé vaut 0 €. "
+        "Les cotes absentes et les résultats en attente sont exclus du total."
     )
 
 st.divider()

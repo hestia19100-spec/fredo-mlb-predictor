@@ -29,6 +29,11 @@ class LPFEdgeInternalPrudenceInterfaceTests(unittest.TestCase):
         self.assertIn("load_latest_score_summary", source)
         self.assertIn("routine du matin", source)
         self.assertIn("simple actualisation", source)
+        self.assertIn("Mises de 1 € évaluées", source)
+        self.assertIn("Total net théorique", source)
+        self.assertIn("Résultat net (mise 1 €)", source)
+        self.assertIn("completed_at_or_before_utc", source)
+        self.assertIn("Les cotes absentes", source)
         self.assertNotIn("Actualiser les statistiques du choix", source)
 
     def test_selector_cannot_read_results_or_market_data(self) -> None:

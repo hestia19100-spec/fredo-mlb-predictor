@@ -19,8 +19,10 @@ from src.lpf_edge_internal_prudence import (
     LPFEdgeInternalPrudenceError,
     select_internal_prudence,
 )
+from src.lpf_edge_market_comparison import MarketComparison
 
 
+ONE = Decimal("1")
 HUNDRED = Decimal("100")
 
 
@@ -40,6 +42,7 @@ class InternalPrudenceEvidence:
     prediction_day: CertifiedPredictionDay
     team_names: Mapping[int, str]
     score: DailyScoreSummary | None
+    market_comparison: MarketComparison | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,6 +51,9 @@ class InternalPrudenceDayResult:
     result_status: PrudenceResultStatus
     home_score: int | None
     away_score: int | None
+    best_decimal_odds: Decimal | None
+    best_bookmakers: tuple[str, ...]
+    net_result_euros: Decimal | None
 
     @property
     def score_text(self) -> str:
@@ -72,18 +78,69 @@ class InternalPrudenceReport:
     longest_losing_streak: int
     current_streak_status: PrudenceResultStatus | None
     current_streak_count: int
+    odds_evaluated_count: int
+    missing_odds_count: int
+    theoretical_net_euros: Decimal
+    theoretical_roi_percent: Decimal | None
+
+
+def _market_odds(
+    choice: InternalPrudenceChoice,
+    comparison: MarketComparison | None,
+) -> tuple[Decimal | None, tuple[str, ...]]:
+    if comparison is None:
+        return None, ()
+    if comparison.target_date != choice.target_date:
+        raise LPFEdgeInternalPrudenceReportingError(
+            "La comparaison de marché vise une autre journée."
+        )
+    rows = [row for row in comparison.rows if row.game_id == choice.game_id]
+    if len(rows) != 1:
+        raise LPFEdgeInternalPrudenceReportingError(
+            "La cote du choix interne est absente ou répétée."
+        )
+    row = rows[0]
+    if (
+        row.scheduled_start_utc != choice.scheduled_start_utc
+        or row.home_team_name != choice.home_team_name
+        or row.away_team_name != choice.away_team_name
+        or row.predicted_side != choice.predicted_side
+        or row.predicted_team_name != choice.predicted_team_name
+        or row.model_probability != choice.model_probability
+    ):
+        raise LPFEdgeInternalPrudenceReportingError(
+            "La cote ne correspond pas exactement au choix interne."
+        )
+    odds = row.best_decimal_odds
+    bookmakers = row.best_bookmakers
+    if odds is None:
+        if bookmakers:
+            raise LPFEdgeInternalPrudenceReportingError(
+                "Des bookmakers existent sans cote française."
+            )
+        return None, ()
+    if not odds.is_finite() or odds <= ONE or not bookmakers:
+        raise LPFEdgeInternalPrudenceReportingError(
+            "La meilleure cote française est invalide."
+        )
+    return odds, bookmakers
 
 
 def _evaluate_choice(
     choice: InternalPrudenceChoice,
     score: DailyScoreSummary | None,
+    market_comparison: MarketComparison | None,
 ) -> InternalPrudenceDayResult:
+    best_odds, best_bookmakers = _market_odds(choice, market_comparison)
     if score is None:
         return InternalPrudenceDayResult(
             choice=choice,
             result_status=PrudenceResultStatus.PENDING,
             home_score=None,
             away_score=None,
+            best_decimal_odds=best_odds,
+            best_bookmakers=best_bookmakers,
+            net_result_euros=None,
         )
     matches = [
         result
@@ -114,11 +171,22 @@ def _evaluate_choice(
         raise LPFEdgeInternalPrudenceReportingError(
             "Le verdict du choix interne est incohérent."
         )
+    if status is PrudenceResultStatus.VOID:
+        net_result = Decimal("0")
+    elif status is PrudenceResultStatus.PENDING or best_odds is None:
+        net_result = None
+    elif status is PrudenceResultStatus.WON:
+        net_result = best_odds - ONE
+    else:
+        net_result = -ONE
     return InternalPrudenceDayResult(
         choice=choice,
         result_status=status,
         home_score=result.home_score,
         away_score=result.away_score,
+        best_decimal_odds=best_odds,
+        best_bookmakers=best_bookmakers,
+        net_result_euros=net_result,
     )
 
 
@@ -179,6 +247,7 @@ def build_internal_prudence_report(
                     team_names=item.team_names,
                 ),
                 item.score,
+                item.market_comparison,
             )
             for item in ordered
         )
@@ -194,6 +263,26 @@ def build_internal_prudence_report(
     void = statuses.count(PrudenceResultStatus.VOID)
     evaluated = won + lost
     probabilities = [day.choice.model_probability for day in days]
+    odds_evaluated = sum(
+        day.result_status
+        in {PrudenceResultStatus.WON, PrudenceResultStatus.LOST}
+        and day.net_result_euros is not None
+        for day in days
+    )
+    missing_odds = sum(
+        day.result_status
+        in {PrudenceResultStatus.WON, PrudenceResultStatus.LOST}
+        and day.net_result_euros is None
+        for day in days
+    )
+    theoretical_net = sum(
+        (
+            day.net_result_euros
+            for day in days
+            if day.net_result_euros is not None
+        ),
+        Decimal("0"),
+    )
     current_status, current_count = _current_streak(statuses)
     return InternalPrudenceReport(
         days=days,
@@ -221,6 +310,14 @@ def build_internal_prudence_report(
         ),
         current_streak_status=current_status,
         current_streak_count=current_count,
+        odds_evaluated_count=odds_evaluated,
+        missing_odds_count=missing_odds,
+        theoretical_net_euros=theoretical_net,
+        theoretical_roi_percent=(
+            None
+            if odds_evaluated == 0
+            else theoretical_net / Decimal(odds_evaluated) * HUNDRED
+        ),
     )
 
 

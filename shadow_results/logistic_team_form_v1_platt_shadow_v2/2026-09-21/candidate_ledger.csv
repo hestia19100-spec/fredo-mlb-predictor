@@ -1,0 +1,4 @@
+batch_id,game_id,occurrence_key,season,official_date,away_team_id,home_team_id,scheduled_start_utc,status_code,abstract_state,detailed_state,eligibility_status,exclusion_reason
+12c0139376706b693ba44fb17ecf31c46e9840edff08d6c69b561737d508f1de,824787,844680196966e78fa5220aabefe64759de3ca484e44fdfe556b73b333f0bce33,2026,2026-09-21,141,110,2026-09-21T22:35:00Z,S,Preview,Scheduled,ELIGIBLE,
+12c0139376706b693ba44fb17ecf31c46e9840edff08d6c69b561737d508f1de,824221,86c8700a1ea697602b55c5ba19d8f82e627b183f39f4e1803f92cfa9991dba20,2026,2026-09-21,120,116,2026-09-21T22:40:00Z,S,Preview,Scheduled,ELIGIBLE,
+12c0139376706b693ba44fb17ecf31c46e9840edff08d6c69b561737d508f1de,823169,5f877a61fee3d900b7eb2e0931548aa323b3be2500ea0750bc9e8f066e817871,2026,2026-09-21,142,137,2026-09-22T01:45:00Z,S,Preview,Scheduled,ELIGIBLE,

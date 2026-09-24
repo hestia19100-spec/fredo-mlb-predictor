@@ -358,6 +358,7 @@ class LPFEdgeDailyOperationsTests(unittest.TestCase):
         summaries = {
             oldest: SimpleNamespace(pending_count=0),
             pending: SimpleNamespace(pending_count=2),
+            newest: SimpleNamespace(pending_count=0),
         }
 
         def load_day(value, **_kwargs):
@@ -406,7 +407,133 @@ class LPFEdgeDailyOperationsTests(unittest.TestCase):
             )
         self.assertEqual(overview.results_target_date, pending)
         self.assertEqual(overview.latest_score_pending_count, 2)
-        self.assertEqual(scores.call_count, 2)
+        self.assertEqual(scores.call_count, 3)
+
+    def test_unobserved_day_precedes_old_postponed_checkpoint(self) -> None:
+        postponed = TARGET - timedelta(days=2)
+        unobserved = TARGET - timedelta(days=1)
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory)
+            consumed_slot = (
+                project
+                / operations.SCORING_ROOT
+                / postponed.isoformat()
+                / "observations"
+                / TARGET.isoformat()
+            )
+            consumed_slot.mkdir(parents=True)
+
+            with (
+                mock.patch.object(
+                    operations,
+                    "load_local_game_day_state",
+                    return_value=self._games(),
+                ),
+                mock.patch.object(
+                    operations,
+                    "inspect_git_workspace",
+                    return_value=self._git(),
+                ),
+                mock.patch.object(
+                    operations,
+                    "inspect_prediction_slot",
+                    return_value=operations.PredictionSlotState.ABSENT,
+                ),
+                mock.patch.object(
+                    operations,
+                    "list_certified_prediction_dates",
+                    return_value=[postponed, unobserved],
+                ),
+                mock.patch.object(
+                    operations,
+                    "load_certified_prediction_day",
+                    side_effect=lambda value, **_kwargs: SimpleNamespace(
+                        predictions=(value.isoformat(),)
+                    ),
+                ),
+                mock.patch.object(
+                    operations,
+                    "load_latest_score_summary",
+                    side_effect=lambda value, **_kwargs: (
+                        SimpleNamespace(pending_count=1)
+                        if value == postponed
+                        else None
+                    ),
+                ),
+                mock.patch.object(
+                    operations,
+                    "_scoring_runtime_preparation_is_required",
+                    return_value=False,
+                ),
+            ):
+                overview = operations.inspect_daily_operations(
+                    TARGET,
+                    now_utc=NOW,
+                    project_directory=project,
+                    database_path=Path("database"),
+                )
+
+        self.assertEqual(overview.results_target_date, unobserved)
+        self.assertIsNone(overview.latest_score_pending_count)
+        self.assertEqual(
+            overview.morning_action.state,
+            operations.DailyActionState.READY,
+        )
+
+    def test_postponed_day_is_revisited_after_unobserved_days_close(self) -> None:
+        postponed = TARGET - timedelta(days=2)
+        recent = TARGET - timedelta(days=1)
+
+        with (
+            mock.patch.object(
+                operations,
+                "load_local_game_day_state",
+                return_value=self._games(),
+            ),
+            mock.patch.object(
+                operations,
+                "inspect_git_workspace",
+                return_value=self._git(),
+            ),
+            mock.patch.object(
+                operations,
+                "inspect_prediction_slot",
+                return_value=operations.PredictionSlotState.ABSENT,
+            ),
+            mock.patch.object(
+                operations,
+                "list_certified_prediction_dates",
+                return_value=[postponed, recent],
+            ),
+            mock.patch.object(
+                operations,
+                "load_certified_prediction_day",
+                side_effect=lambda value, **_kwargs: SimpleNamespace(
+                    predictions=(value.isoformat(),)
+                ),
+            ),
+            mock.patch.object(
+                operations,
+                "load_latest_score_summary",
+                side_effect=lambda value, **_kwargs: SimpleNamespace(
+                    pending_count=1 if value == postponed else 0
+                ),
+            ),
+            mock.patch.object(
+                operations,
+                "_scoring_runtime_preparation_is_required",
+                return_value=False,
+            ),
+        ):
+            overview = operations.inspect_daily_operations(
+                TARGET,
+                now_utc=NOW,
+                project_directory=Path("project"),
+                database_path=Path("database"),
+            )
+
+        self.assertEqual(overview.results_target_date, postponed)
+        self.assertEqual(overview.latest_score_pending_count, 1)
 
     def test_daily_data_refresh_uses_only_audited_ingestion_service(self) -> None:
         expected = SimpleNamespace(run_id=42, games_received=15, games_saved=15)

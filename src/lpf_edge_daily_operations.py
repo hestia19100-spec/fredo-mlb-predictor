@@ -1270,6 +1270,7 @@ def inspect_daily_operations(
     past_certified_dates = [value for value in certified_dates if value < selected]
     results_target: date | None = None
     latest_pending: int | None = None
+    oldest_pending: tuple[date, int] | None = None
     try:
         if certified:
             load_certified_prediction_day(
@@ -1286,12 +1287,13 @@ def inspect_daily_operations(
                 certified_predictions=candidate_day.predictions,
                 project_directory=project_directory,
             )
-            if summary is None or summary.pending_count > 0:
+            if summary is None:
                 results_target = candidate
-                latest_pending = (
-                    None if summary is None else summary.pending_count
-                )
                 break
+            if summary.pending_count > 0 and oldest_pending is None:
+                oldest_pending = (candidate, summary.pending_count)
+        if results_target is None and oldest_pending is not None:
+            results_target, latest_pending = oldest_pending
     except LPFEdgeDashboardError as error:
         errors.append(str(error))
 
@@ -2707,7 +2709,7 @@ def execute_daily_results_publication(
     *,
     project_directory: Path = PROJECT_ROOT,
 ) -> DailyResultsPublication:
-    """Observe la plus ancienne journee en attente et pousse ses preuves."""
+    """Observe une journée sans rapport, puis reprend les résultats en attente."""
     instant = _utc_now()
     if not isinstance(instant, datetime) or instant.tzinfo is None:
         raise DailyResultsAutomationError(

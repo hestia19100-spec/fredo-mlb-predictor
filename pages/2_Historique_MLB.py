@@ -33,6 +33,10 @@ from src.lpf_edge_odds_display import (
     LPFEdgeOddsDisplayError,
     load_latest_moneyline_odds_display,
 )
+from src.lpf_edge_postponement_reconciliation import (
+    PostponementReconciliationError,
+    load_resolutions,
+)
 from src.lpf_edge_streamlit_shared import (
     format_decimal_odds,
     format_evaluation_percent,
@@ -67,7 +71,8 @@ try:
         selected_date,
         certified_predictions=day.predictions,
     )
-except LPFEdgeDashboardError as error:
+    resolutions = load_resolutions(day, score)
+except (LPFEdgeDashboardError, PostponementReconciliationError) as error:
     st.error(f"Contrôle d'intégrité impossible : {error}")
     st.stop()
 
@@ -290,6 +295,24 @@ with st.expander("Voir les résultats vérifiés", expanded=score is not None):
             "cette journée."
         )
     else:
+        if resolutions:
+            st.info(
+                f"{len(resolutions)} report(s) résolu(s) dans le suivi "
+                "complémentaire. L'évaluation Shadow V2 garde son état officiel."
+            )
+            st.dataframe(
+                [
+                    {
+                        "Match MLB": resolved.game_id,
+                        "Date initiale": resolved.original_official_date.strftime("%d/%m/%Y"),
+                        "Date officielle finale": resolved.final_official_date.strftime("%d/%m/%Y"),
+                        "Suivi quotidien": "Neutralisé — match reprogrammé",
+                        "Preuve SHA-256": resolved.receipt_sha256,
+                    }
+                    for resolved in resolutions.values()
+                ],
+                width="stretch", hide_index=True,
+            )
         columns = st.columns(4)
         columns[0].metric("Matchs évalués", score.scored_count)
         columns[1].metric("Prédictions réussies", score.correct_count)

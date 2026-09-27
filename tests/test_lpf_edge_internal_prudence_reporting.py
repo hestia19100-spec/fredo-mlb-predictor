@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unittest
+from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
@@ -23,6 +24,7 @@ from src.lpf_edge_market_comparison import (
     MarketComparison,
     MarketComparisonRow,
 )
+from src.lpf_edge_postponement_reconciliation import RescheduledGame
 
 
 NAMES = {1: "Home", 2: "Away", 3: "Other Home", 4: "Other Away"}
@@ -156,6 +158,37 @@ def make_comparison(
 
 
 class LPFEdgeInternalPrudenceReportingTests(unittest.TestCase):
+    def test_postponed_choice_is_neutralized_without_becoming_a_win(self) -> None:
+        day = make_day(12, selected_probability="0.61")
+        original = make_score(
+            day, classification_correct=None, status="PENDING_POSTPONED",
+        )
+        score = replace(original, pending_count=1)
+        resolution = RescheduledGame(
+            prediction_id=day.predictions[0].prediction_id,
+            game_id=day.predictions[0].game_id,
+            original_official_date=day.target_date,
+            final_official_date=day.target_date + timedelta(days=1),
+            away_score=2, home_score=4, receipt_sha256="a" * 64,
+            observed_at_utc=datetime(2026, 9, 27, 8, tzinfo=timezone.utc),
+        )
+        report = build_internal_prudence_report((
+            InternalPrudenceEvidence(
+                day, NAMES, score,
+                make_comparison(day, best_decimal_odds="1.50"),
+                resolutions={resolution.game_id: resolution},
+            ),
+        ))
+        self.assertEqual((report.won_count, report.lost_count,
+                          report.pending_count, report.void_count),
+                         (0, 0, 0, 1))
+        self.assertEqual(report.odds_evaluated_count, 0)
+        self.assertEqual(report.theoretical_net_euros, Decimal("0"))
+        self.assertIsNone(report.hit_rate_percent)
+        self.assertIsNone(report.theoretical_roi_percent)
+        self.assertIs(report.days[0].resolution, resolution)
+        self.assertEqual("PENDING_POSTPONED", score.results[0].outcome_status)
+
     def test_report_covers_wins_losses_pending_void_and_streaks(self) -> None:
         days = [
             make_day(0, selected_probability="0.61"),

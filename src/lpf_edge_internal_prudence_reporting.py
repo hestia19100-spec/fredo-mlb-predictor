@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 from enum import Enum
 from typing import Mapping, Sequence
@@ -20,6 +20,7 @@ from src.lpf_edge_internal_prudence import (
     select_internal_prudence,
 )
 from src.lpf_edge_market_comparison import MarketComparison
+from src.lpf_edge_postponement_reconciliation import RescheduledGame
 
 
 ONE = Decimal("1")
@@ -43,6 +44,7 @@ class InternalPrudenceEvidence:
     team_names: Mapping[int, str]
     score: DailyScoreSummary | None
     market_comparison: MarketComparison | None = None
+    resolutions: Mapping[int, RescheduledGame] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,6 +56,7 @@ class InternalPrudenceDayResult:
     best_decimal_odds: Decimal | None
     best_bookmakers: tuple[str, ...]
     net_result_euros: Decimal | None
+    resolution: RescheduledGame | None = None
 
     @property
     def score_text(self) -> str:
@@ -130,6 +133,7 @@ def _evaluate_choice(
     choice: InternalPrudenceChoice,
     score: DailyScoreSummary | None,
     market_comparison: MarketComparison | None,
+    resolutions: Mapping[int, RescheduledGame],
 ) -> InternalPrudenceDayResult:
     best_odds, best_bookmakers = _market_odds(choice, market_comparison)
     if score is None:
@@ -153,7 +157,16 @@ def _evaluate_choice(
             "Le résultat du choix interne est absent ou répété."
         )
     result = matches[0]
-    if result.outcome_status in VOID_STATUSES:
+    resolution = resolutions.get(choice.game_id)
+    if resolution is not None:
+        if (resolution.prediction_id != choice.prediction_id
+                or resolution.original_official_date != choice.target_date
+                or result.outcome_status != "PENDING_POSTPONED"):
+            raise LPFEdgeInternalPrudenceReportingError(
+                "Le complément de report ne correspond pas au choix en attente."
+            )
+        status = PrudenceResultStatus.VOID
+    elif result.outcome_status in VOID_STATUSES:
         status = PrudenceResultStatus.VOID
     elif result.outcome_status in PENDING_STATUSES:
         status = PrudenceResultStatus.PENDING
@@ -182,11 +195,12 @@ def _evaluate_choice(
     return InternalPrudenceDayResult(
         choice=choice,
         result_status=status,
-        home_score=result.home_score,
-        away_score=result.away_score,
+        home_score=None if resolution is not None else result.home_score,
+        away_score=None if resolution is not None else result.away_score,
         best_decimal_odds=best_odds,
         best_bookmakers=best_bookmakers,
         net_result_euros=net_result,
+        resolution=resolution,
     )
 
 
@@ -248,6 +262,7 @@ def build_internal_prudence_report(
                 ),
                 item.score,
                 item.market_comparison,
+                item.resolutions,
             )
             for item in ordered
         )

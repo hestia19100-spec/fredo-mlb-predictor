@@ -17,6 +17,7 @@ from src.lpf_edge_daily_operations import (
     execute_afternoon_prediction_routine,
     execute_daily_odds_collection,
     execute_daily_results_publication,
+    execute_postponement_reconciliation,
     inspect_daily_operations,
     inspect_daily_odds_collection,
     load_prediction_preparation,
@@ -201,6 +202,16 @@ if daily is not None:
                 else daily.morning_action.message
             ),
             key="morning_results_routine",
+        )
+        st.caption(
+            "Contrôle complémentaire des matchs reportés : un appel au calendrier "
+            "public MLB au maximum par journée encore ouverte."
+        )
+        reconciliation_clicked = st.button(
+            "Vérifier les matchs reportés",
+            disabled=not daily.git.ready_for_publication,
+            use_container_width=True,
+            key="postponement_reconciliation",
         )
     with afternoon_column:
         st.markdown("### Après-midi — Prédictions")
@@ -700,6 +711,14 @@ if daily is not None:
             f"Observation : `{results_feedback['observation_id']}`  \n"
             f"Commit du scoring : `{results_feedback['results_commit']}`"
         )
+        if results_feedback.get("reconciliation_commit"):
+            st.info(
+                "Complément de report publié : "
+                f"{results_feedback['resolved_postponement_count']} match(s) "
+                "reprogrammé(s) confirmé(s)."
+            )
+        if results_feedback.get("reconciliation_message"):
+            st.warning(results_feedback["reconciliation_message"])
 
     if results_clicked:
         with st.spinner(
@@ -729,8 +748,30 @@ if daily is not None:
                     "market_settlement_sha256": (
                         publication.market_settlement_sha256
                     ),
+                    "reconciliation_commit": publication.reconciliation_commit,
+                    "resolved_postponement_count": (
+                        publication.resolved_postponement_count
+                    ),
+                    "reconciliation_message": publication.reconciliation_message,
                 }
                 st.rerun()
+
+    if reconciliation_clicked:
+        with st.spinner("Vérification et publication des reports en cours..."):
+            try:
+                supplementary = execute_postponement_reconciliation()
+            except DailyResultsAutomationError as error:
+                st.error(f"Rapprochement arrêté à l’étape {error.stage.value} : {error}")
+            else:
+                if supplementary is None:
+                    st.info("Aucun report ouvert ne nécessite un contrôle aujourd’hui.")
+                else:
+                    commit, resolved_count = supplementary
+                    st.success(
+                        "Contrôle complémentaire publié : "
+                        f"{resolved_count} match(s) reprogrammé(s) confirmé(s)."
+                    )
+                    st.caption(f"Commit du complément : `{commit}`")
 
     st.divider()
     st.subheader("Pronostics du jour")

@@ -454,6 +454,9 @@ class DailyResultsPublication:
     results_paths: tuple[str, ...]
     market_settlement_paths: tuple[str, ...] = ()
     market_settlement_sha256: str | None = None
+    reconciliation_commit: str | None = None
+    resolved_postponement_count: int = 0
+    reconciliation_message: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -2830,6 +2833,21 @@ def execute_daily_results_publication(
         stage=DailyResultsStage.RESULTS_PUBLICATION,
         error_type=DailyResultsAutomationError,
     )
+    reconciliation_commit: str | None = None
+    resolved_postponement_count = 0
+    reconciliation_message: str | None = None
+    if scoring.outcome == "COMPLETED":
+        try:
+            supplementary = execute_postponement_reconciliation(
+                project_directory=project,
+            )
+            if supplementary is not None:
+                reconciliation_commit, resolved_postponement_count = supplementary
+        except (DailyResultsAutomationError, OSError, ValueError) as error:
+            reconciliation_message = (
+                "Le scoring est publié ; le rapprochement des reports requiert "
+                f"une vérification séparée : {error}"
+            )
     return DailyResultsPublication(
         target_date=scoring_target,
         checkpoint_date=checkpoint,
@@ -2843,7 +2861,83 @@ def execute_daily_results_publication(
             if market_settlement is None
             else market_settlement.settlement_sha256
         ),
+        reconciliation_commit=reconciliation_commit,
+        resolved_postponement_count=resolved_postponement_count,
+        reconciliation_message=reconciliation_message,
     )
+
+
+def execute_postponement_reconciliation(
+    *,
+    project_directory: Path = PROJECT_ROOT,
+) -> tuple[str, int] | None:
+    """Publie une observation complémentaire pour le plus ancien report ouvert."""
+    from src.lpf_edge_postponement_reconciliation import (
+        LAST_CHECKPOINT, ROOT, PostponementReconciliationError,
+        create_reconciliation, load_resolutions,
+    )
+
+    project = Path(project_directory).resolve(strict=True)
+    instant = _utc_now().astimezone(timezone.utc)
+    checkpoint = instant.date()
+    if checkpoint > LAST_CHECKPOINT:
+        return None
+    git = inspect_git_workspace(project_directory=project)
+    if not git.ready_for_publication or git.head_commit is None:
+        raise DailyResultsAutomationError(
+            DailyResultsStage.PREFLIGHT,
+            "Le dépôt doit être propre et synchronisé pour publier le complément.",
+        )
+    try:
+        dates = list_certified_prediction_dates(project_directory=project)
+        for target in dates:
+            if target >= checkpoint or target < date(2026, 9, 10) or target > date(2026, 9, 27):
+                continue
+            day = load_certified_prediction_day(target, project_directory=project)
+            score = load_latest_score_summary(
+                target, certified_predictions=day.predictions,
+                project_directory=project,
+            )
+            if score is None:
+                continue
+            pending = {
+                row.game_id for row in score.results
+                if row.outcome_status == "PENDING_POSTPONED"
+            }
+            if not pending:
+                continue
+            known = load_resolutions(day, score, project_directory=project)
+            if not pending.difference(known):
+                continue
+            slot = project / ROOT / target.isoformat() / checkpoint.isoformat()
+            if slot.exists() or slot.is_symlink():
+                continue
+            publication = create_reconciliation(
+                day, score, project_directory=project,
+                checkpoint_date=checkpoint,
+            )
+            if publication is None:
+                continue
+            paths = tuple(sorted(path.relative_to(project).as_posix()
+                                 for path in publication.paths))
+            commit = _commit_and_push_exact_paths(
+                project_directory=project,
+                expected_paths=paths,
+                expected_parent_commit=git.head_commit,
+                commit_message=(
+                    "Enregistrer le rapprochement des reports MLB du "
+                    f"{_french_date_label(target)}"
+                ),
+                stage=DailyResultsStage.RESULTS_PUBLICATION,
+                error_type=DailyResultsAutomationError,
+            )
+            return commit, len(publication.resolved)
+    except (LPFEdgeDashboardError, PostponementReconciliationError) as error:
+        raise DailyResultsAutomationError(
+            DailyResultsStage.SCORING,
+            f"Le rapprochement complémentaire a été arrêté : {error}",
+        ) from error
+    return None
 
 
 __all__ = [
@@ -2884,6 +2978,7 @@ __all__ = [
     "execute_daily_odds_collection",
     "execute_daily_prediction_publication",
     "execute_daily_results_publication",
+    "execute_postponement_reconciliation",
     "execute_verified_local_backup",
     "inspect_daily_operations",
     "inspect_daily_odds_collection",

@@ -26,6 +26,15 @@ from src.lpf_edge_internal_prudence_reporting import (
     PrudenceResultStatus,
     build_internal_prudence_report,
 )
+from src.lpf_edge_postponement_reconciliation import (
+    PostponementReconciliationError,
+    load_resolutions,
+)
+from src.lpf_edge_operational_selection import (
+    OperationalSelectionDay,
+    OperationalSelectionError,
+    build_operational_selection,
+)
 from src.lpf_edge_evaluation_supervision import (
     EvaluationDayEvidence,
     LPFEdgeEvaluationSupervisionError,
@@ -84,8 +93,15 @@ st.caption(
 )
 try:
     prudence_evidence: list[InternalPrudenceEvidence] = []
+    operational_resolutions = {}
     for prudence_date in available_dates:
         prudence_day = load_certified_prediction_day(prudence_date)
+        prudence_score = load_latest_score_summary(
+            prudence_date,
+            certified_predictions=prudence_day.predictions,
+        )
+        day_resolutions = load_resolutions(prudence_day, prudence_score)
+        operational_resolutions[prudence_date] = day_resolutions
         prudence_team_ids = {
             team_id
             for prediction in prudence_day.predictions
@@ -99,10 +115,7 @@ try:
             InternalPrudenceEvidence(
                 prediction_day=prudence_day,
                 team_names=prudence_team_names,
-                score=load_latest_score_summary(
-                    prudence_date,
-                    certified_predictions=prudence_day.predictions,
-                ),
+                score=prudence_score,
                 market_comparison=build_french_market_comparison(
                     prudence_day,
                     load_latest_moneyline_odds_display(
@@ -114,6 +127,7 @@ try:
                     ),
                     team_names=prudence_team_names,
                 ),
+                resolutions=day_resolutions,
             )
         )
     prudence_report = build_internal_prudence_report(prudence_evidence)
@@ -121,6 +135,7 @@ except (
     LPFEdgeDashboardError,
     LPFEdgeInternalPrudenceError,
     LPFEdgeInternalPrudenceReportingError,
+    PostponementReconciliationError,
     LPFEdgeMarketComparisonError,
     LPFEdgeOddsDisplayError,
     OSError,
@@ -128,6 +143,7 @@ except (
 ) as error:
     st.error(f"Le bilan du choix interne est impossible : {error}")
 else:
+    neutralized_choice_count = sum(day.resolution is not None for day in prudence_report.days)
     prudence_columns = st.columns(5)
     prudence_columns[0].metric("Journées suivies", prudence_report.total_count)
     prudence_columns[1].metric("Choix réussis", prudence_report.won_count)
@@ -137,6 +153,12 @@ else:
         "Taux de réussite",
         format_evaluation_percent(prudence_report.hit_rate_percent),
     )
+    if neutralized_choice_count:
+        st.info(
+            f"{neutralized_choice_count} choix neutralisé(s) après report, "
+            "avec preuve complémentaire vérifiée. Les mesures Shadow V2 "
+            "gardent leur statut officiel."
+        )
     probability_columns = st.columns(4)
     probability_columns[0].metric(
         "Probabilité moyenne",
@@ -212,7 +234,10 @@ else:
                 else "—"
             ),
             "Score (dom. - ext.)": day.score_text,
-            "Résultat": result_labels[day.result_status],
+            "Résultat": (
+                "Neutralisé — match reprogrammé"
+                if day.resolution is not None else result_labels[day.result_status]
+            ),
             "Résultat net (mise 1 €)": daily_net_label(day),
         }
         for day in reversed(prudence_report.days)
@@ -256,10 +281,20 @@ try:
             )
         )
     evaluation_supervision = build_evaluation_supervision(supervision_evidence)
+    operational_selection = build_operational_selection([
+        OperationalSelectionDay(
+            item.prediction_day.target_date,
+            item.selection,
+            item.score,
+            operational_resolutions.get(item.prediction_day.target_date, {}),
+        )
+        for item in supervision_evidence
+    ])
 except (
     LPFEdgeDashboardError,
     LPFEdgeDailySelectionError,
     LPFEdgeEvaluationSupervisionError,
+    OperationalSelectionError,
     LPFEdgeMarketSettlementError,
     OSError,
     ValueError,
@@ -309,6 +344,11 @@ else:
     )
 
     st.markdown("#### Sélecteur de pronostics — mode observation")
+    st.caption(
+        "Ces compteurs reprennent les rapports Shadow V2 sans les modifier. "
+        "Un match reprogrammé peut donc encore y apparaître en attente ; "
+        "le suivi opérationnel corrigé figure juste en dessous."
+    )
     if evaluation_supervision.selection_publication_day_count == 0:
         st.info(
             "Aucune sélection prospective n’a encore été publiée. Le suivi "
@@ -397,6 +437,9 @@ else:
             "Journée": status.target_date.strftime("%d/%m/%Y"),
             "Prédictions": status.prediction_count,
             "Résultats": status.prediction_status.replace("_", " ").title(),
+            "Reports résolus (complément)": len(
+                operational_resolutions.get(status.target_date, {})
+            ),
             "Choix": status.selection_count,
             "État du sélecteur": status.selection_status.replace("_", " ").title(),
             "Choix évalués": status.selected_evaluated_count,
@@ -408,6 +451,47 @@ else:
         for status in reversed(evaluation_supervision.days)
     ]
     st.dataframe(day_rows, width="stretch", height="content", hide_index=True)
+    if operational_selection.supplemented_void_count:
+        st.markdown("#### Suivi opérationnel des choix après rapprochement")
+        st.info(
+            "Suivi complémentaire des choix : "
+            f"{operational_selection.supplemented_void_count} neutralisé(s) "
+            "après report. Les chiffres officiels ci-dessus suivent leur "
+            "propre échéance de clôture."
+        )
+        operational_columns = st.columns(4)
+        operational_columns[0].metric(
+            "Choix évalués", operational_selection.evaluated_count
+        )
+        operational_columns[1].metric(
+            "Choix en attente", operational_selection.pending_count
+        )
+        operational_columns[2].metric(
+            "Choix neutralisés", operational_selection.supplemented_void_count
+        )
+        operational_columns[3].metric(
+            "Résultat théorique", format_theoretical_units(operational_selection.net_units)
+        )
+        st.dataframe(
+            [
+                {
+                    "Journée": row.target_date.strftime("%d/%m/%Y"),
+                    "Choix": "Principal" if row.role == "PRINCIPAL" else "Secondaire",
+                    "Match MLB": row.game_id,
+                    "Équipe choisie": row.predicted_team_name,
+                    "Suivi": (
+                        "Neutralisé — match reprogrammé"
+                        if row.status == "VOID_RESCHEDULED" else row.status
+                    ),
+                    "Net théorique": (
+                        "—" if row.net_units is None
+                        else format_theoretical_units(row.net_units)
+                    ),
+                }
+                for row in reversed(operational_selection.rows)
+            ],
+            width="stretch", height="content", hide_index=True,
+        )
     st.warning(
         "Le seuil de 100 observations indique seulement un recul minimal. "
         "Il ne valide ni la rentabilité, ni Shadow v2, ni le sélecteur. "

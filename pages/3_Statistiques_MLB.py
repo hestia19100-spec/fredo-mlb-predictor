@@ -432,6 +432,13 @@ else:
             )
         st.dataframe(role_rows, width="stretch", height="content", hide_index=True)
 
+    operational_labels = {
+        "WON": "Réussi",
+        "LOST": "Raté",
+        "PENDING": "En attente",
+        "VOID": "Annulé",
+        "VOID_RESCHEDULED": "Neutralisé après report",
+    }
     day_rows = [
         {
             "Journée": status.target_date.strftime("%d/%m/%Y"),
@@ -442,6 +449,14 @@ else:
             ),
             "Choix": status.selection_count,
             "État du sélecteur": status.selection_status.replace("_", " ").title(),
+            "Suivi des choix par match": (
+                ", ".join(
+                    f"{'Principal' if row.role == 'PRINCIPAL' else 'Secondaire'} : "
+                    f"{operational_labels[row.status]}"
+                    for row in operational_selection.rows
+                    if row.target_date == status.target_date
+                ) or "—"
+            ),
             "Choix évalués": status.selected_evaluated_count,
             "Choix réussis": status.selected_correct_count,
             "Résultat théorique": format_theoretical_units(
@@ -451,13 +466,15 @@ else:
         for status in reversed(evaluation_supervision.days)
     ]
     st.dataframe(day_rows, width="stretch", height="content", hide_index=True)
-    if operational_selection.supplemented_void_count:
-        st.markdown("#### Suivi opérationnel des choix après rapprochement")
+    if any(operational_resolutions.values()):
+        st.markdown("#### Suivi opérationnel après rapprochement")
         st.info(
-            "Suivi complémentaire des choix : "
-            f"{operational_selection.supplemented_void_count} neutralisé(s) "
-            "après report. Les chiffres officiels ci-dessus suivent leur "
-            "propre échéance de clôture."
+            f"{sum(map(len, operational_resolutions.values()))} match(s) "
+            "reprogrammé(s) confirmé(s), dont "
+            f"{operational_selection.supplemented_void_count} choix "
+            "directement neutralisé(s). Les pronostics joués sur d'autres "
+            "matchs déjà terminés sont évalués ici sans attendre la clôture "
+            "de toute la journée. Les rapports officiels ci-dessus restent inchangés."
         )
         operational_columns = st.columns(4)
         operational_columns[0].metric(
@@ -479,10 +496,7 @@ else:
                     "Choix": "Principal" if row.role == "PRINCIPAL" else "Secondaire",
                     "Match MLB": row.game_id,
                     "Équipe choisie": row.predicted_team_name,
-                    "Suivi": (
-                        "Neutralisé — match reprogrammé"
-                        if row.status == "VOID_RESCHEDULED" else row.status
-                    ),
+                    "Suivi": operational_labels[row.status],
                     "Net théorique": (
                         "—" if row.net_units is None
                         else format_theoretical_units(row.net_units)

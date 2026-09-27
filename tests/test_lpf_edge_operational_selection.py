@@ -35,6 +35,28 @@ def selection_for(day, odds: str):
 
 
 class OperationalSelectionTests(unittest.TestCase):
+    def test_an_unrelated_report_does_not_hide_a_lost_selected_match(self):
+        day = make_day(12, selected_probability="0.62")
+        score = make_score(day, classification_correct=False, status="SCORED_FINAL")
+        unrelated = RescheduledGame(
+            prediction_id="x" * 64, game_id=824785,
+            original_official_date=day.target_date,
+            final_official_date=day.target_date + timedelta(days=1),
+            away_score=2, home_score=4, receipt_sha256="e" * 64,
+            observed_at_utc=datetime(2026, 9, 27, 8, tzinfo=timezone.utc),
+        )
+        report = build_operational_selection((
+            OperationalSelectionDay(
+                day.target_date, selection_for(day, "2.08"), score,
+                {unrelated.game_id: unrelated},
+            ),
+        ))
+        self.assertEqual((report.evaluated_count, report.lost_count,
+                          report.pending_count, report.supplemented_void_count),
+                         (1, 1, 0, 0))
+        self.assertEqual(report.net_units, Decimal("-1"))
+        self.assertEqual(report.rows[0].status, "LOST")
+
     def test_a_report_is_void_and_excluded_from_roi_denominator(self):
         earlier = make_day(11, selected_probability="0.61")
         postponed = make_day(12, selected_probability="0.62")

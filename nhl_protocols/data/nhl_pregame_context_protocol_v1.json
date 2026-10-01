@@ -1,0 +1,32 @@
+{
+  "protocol_id": "nhl_pregame_context_features_v1",
+  "stage": "NHL-07",
+  "base_commit": "1c3857345be4aaddae11eeaef644a248105b7ed5",
+  "purpose": "Read-only goalie and observed player-availability context at a proven pregame cutoff",
+  "scope": {
+    "input": "Synthetic offline NHL fixture archive only",
+    "real_provider_activation": false,
+    "api_requests": false,
+    "model_training": false,
+    "prediction_publication": false,
+    "wagering": false,
+    "mlb_database_mutation": false,
+    "nhl_database_mutation": false
+  },
+  "asof_rules": {
+    "storage_audit_before_read": true,
+    "storage_read_only": true,
+    "effective_availability_no_later_than_cutoff": true,
+    "target_game_state_excluded": true,
+    "latest_known_version_selected_by_asof_view": true
+  },
+  "missingness": {
+    "goalie_not_observed": "UNKNOWN with NOT_OBSERVED evidence state",
+    "goalie_source_unknown": "UNKNOWN with SOURCE_UNKNOWN evidence state",
+    "player_unknown_without_team": "Unattributed observation ID; never assigned to a team",
+    "absent_player_record": "No inference of availability or roster completeness",
+    "roster_completeness_proven": false
+  },
+  "interpretation": "Only statuses and observations are descriptive. No injury weighting, probability, recommendation or wager is computed.",
+  "next_gate": "Real provider rights and timestamps, broader data coverage, leakage audit and prospective evaluation require separate validation"
+}

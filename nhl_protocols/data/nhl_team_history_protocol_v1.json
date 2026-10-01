@@ -1,0 +1,36 @@
+{
+  "protocol_id": "nhl_team_history_features_v1",
+  "stage": "NHL-06",
+  "base_commit": "8c70ac36f5903a8acc99be6dc2c1430ab356ec2e",
+  "purpose": "Read-only candidate historical team aggregates from the audited NHL-05 as-of game view",
+  "scope": {
+    "input": "Synthetic offline NHL fixture archive only",
+    "real_provider_activation": false,
+    "api_requests": false,
+    "model_training": false,
+    "prediction_publication": false,
+    "wagering": false,
+    "mlb_database_mutation": false,
+    "nhl_database_mutation": false
+  },
+  "temporal_rules": [
+    "A statistic is eligible only when its historical source game has a known final outcome before the target cutoff.",
+    "No target-game state or result is a predictive input.",
+    "The effective availability timestamp of every included statistic is at or before the target cutoff.",
+    "Historical rest, travel, back-to-back, and home-ice values are not treated as current target-game facts."
+  ],
+  "aggregations": {
+    "required_per_game_fields": [
+      "goals_for", "goals_against", "shots_for", "shots_against",
+      "power_play_goals", "power_play_opportunities",
+      "penalty_kills", "penalty_kill_opportunities"
+    ],
+    "means": "Arithmetic mean of complete historical source-game rows, rounded to six decimal places",
+    "special_teams": "Ratio of total successes to total opportunities; a zero denominator remains unavailable",
+    "missing": "Unknown and incomplete source rows are counted explicitly, never zero-imputed",
+    "minimum_sample_per_team": 5,
+    "minimum_sample_interpretation": "Descriptive coverage flag only; it does not approve any model or publication",
+    "ordering": "Source game IDs are sorted numerically for reproducibility, not treated as chronological recency"
+  },
+  "next_gate": "Source-rights audit, season split, leakage review, model evaluation, and explicit production approval remain separate future decisions"
+}

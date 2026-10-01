@@ -1,0 +1,30 @@
+{
+  "base_repository_commit": "015bd0c941829cf1ea8a76709eb31fa754c44896",
+  "protocol_id": "lpf_edge_nhl_storage_protocol_v1",
+  "protocol_schema_version": 1,
+  "safety": {
+    "interface_enabled": false,
+    "mlb_database_access_allowed": false,
+    "model_enabled": false,
+    "odds_enabled": false,
+    "provider_calls_allowed": false,
+    "synthetic_offline_fixtures_only": true
+  },
+  "status": "OFFLINE_SYNTHETIC_STORAGE_ONLY",
+  "storage": {
+    "append_only_tables": [
+      "nhl_ingestion_runs",
+      "nhl_normalized_observations",
+      "nhl_schema_migrations"
+    ],
+    "atomic_archival_required": true,
+    "default_database": "data/nhl/fredo_nhl.db",
+    "forbidden_database": "data/fredo_mlb.db",
+    "idempotency_key": "fixture_id_and_bundle_sha256",
+    "import_creates_database": false,
+    "observation_hash_required": true,
+    "read_only_audit_required": true,
+    "schema_version": 1,
+    "unknown_value_storage": "EXPLICIT_NULL_WITH_UNKNOWN_STATE"
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "base_repository_commit": "eb24be8ab8c75c91dd54177b975ab83fd43c943a",
+  "protocol_id": "lpf_edge_nhl_asof_view_v1",
+  "protocol_schema_version": 1,
+  "status": "OFFLINE_SYNTHETIC_ASOF_ONLY",
+  "safety": {
+    "provider_calls_allowed": false,
+    "synthetic_offline_fixtures_only": true,
+    "mlb_database_access_allowed": false,
+    "database_mutation_allowed": false,
+    "model_enabled": false,
+    "odds_enabled": false,
+    "interface_enabled": false,
+    "real_bet_execution_enabled": false
+  },
+  "asof_rules": {
+    "timestamp_timezone": "UTC",
+    "cutoff_before_scheduled_start_required": true,
+    "schedule_must_be_known_by_cutoff": true,
+    "latest_known_version_per_kind_entity_source_game": true,
+    "simultaneous_conflicting_versions": "REJECT",
+    "effective_availability": "MAX_OBSERVED_AND_SOURCE_UPDATED_AT",
+    "historical_statistic_requires_source_final_by_cutoff": true,
+    "target_game_state_as_predictor_allowed": false,
+    "source_final_result_as_predictor_allowed": false,
+    "postgame_backfill_allowed": false,
+    "unknown_value_policy": "EXPLICIT_NULL_NO_IMPUTATION",
+    "storage_audit_before_read": true,
+    "storage_read_only": true,
+    "snapshot_sha256_required": true
+  }
+}

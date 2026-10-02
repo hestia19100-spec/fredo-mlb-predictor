@@ -1,0 +1,35 @@
+{
+  "protocol_id": "nhl_feature_bundle_v1",
+  "stage": "NHL-08",
+  "base_commit": "0eca08164dd41b0b19a67cf97edf0e0f88cad5bd",
+  "purpose": "One deterministic candidate-feature bundle from the same audited NHL as-of view",
+  "scope": {
+    "input": "Synthetic offline NHL fixture archive only",
+    "real_provider_activation": false,
+    "api_requests": false,
+    "model_training": false,
+    "probability_generation": false,
+    "prediction_publication": false,
+    "wagering": false,
+    "mlb_database_mutation": false,
+    "nhl_database_mutation": false
+  },
+  "asof_rules": {
+    "storage_audit_before_read": true,
+    "storage_read_only": true,
+    "single_view_for_both_feature_families": true,
+    "effective_availability_no_later_than_cutoff": true,
+    "source_game_requires_final_before_cutoff": true,
+    "target_game_state_and_result_excluded": true,
+    "component_snapshot_hashes_must_match": true
+  },
+  "missingness": {
+    "unobserved_history": "null metrics; no zero imputation",
+    "unobserved_goalie": "UNKNOWN with NOT_OBSERVED evidence state",
+    "unknown_goalie": "UNKNOWN with SOURCE_UNKNOWN evidence state",
+    "observed_players": "Not a complete roster; absence is not availability",
+    "minimum_history_sample": "Descriptive only, never a recommendation gate"
+  },
+  "output": "Typed bundle and SHA-256 linking both component hashes to one as-of snapshot; no probability or betting choice",
+  "next_gate": "Source rights and timestamps, broader data coverage, label construction, leakage audit and prospective validation require separate approval"
+}

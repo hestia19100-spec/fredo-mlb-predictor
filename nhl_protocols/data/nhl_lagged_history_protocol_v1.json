@@ -1,0 +1,32 @@
+{
+  "protocol_id": "lpf_edge_nhl_lagged_history_v1",
+  "stage": "NHL-13",
+  "input_protocol": "lpf_edge_nhl_five_season_coverage_v1",
+  "reference_season_start_years": [
+    2021,
+    2022,
+    2023,
+    2024,
+    2025
+  ],
+  "target_game_type": "02",
+  "history_game_type": "02",
+  "playoffs_excluded": true,
+  "required_situations": [
+    "all",
+    "5on5"
+  ],
+  "default_lookback_games": 5,
+  "maximum_lookback_games": 30,
+  "history_season_scope": "same_season_only",
+  "history_date_rule": "source_game_date < target_game_date",
+  "same_day_games_excluded": true,
+  "target_game_outcome_excluded": true,
+  "labels_included": false,
+  "source_receipt_is_historical_asof_proof": false,
+  "training_permitted": false,
+  "prediction_publication_permitted": false,
+  "network_access": false,
+  "database_mutation": false,
+  "note": "Les statistiques des matchs antérieurs sont des candidats descriptifs. La vérification des sources avant chaque match, les étiquettes finales indépendantes et un audit anti-fuite restent nécessaires avant entraînement."
+}

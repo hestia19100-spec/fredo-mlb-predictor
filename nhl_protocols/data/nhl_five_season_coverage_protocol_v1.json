@@ -1,0 +1,38 @@
+{
+  "protocol_id": "lpf_edge_nhl_five_season_coverage_v1",
+  "stage": "NHL-12",
+  "source_protocol": "lpf_edge_nhl_moneypuck_import_v1",
+  "reference_season_start_years": [
+    2021,
+    2022,
+    2023,
+    2024,
+    2025
+  ],
+  "season_labels": [
+    "2021-2022",
+    "2022-2023",
+    "2023-2024",
+    "2024-2025",
+    "2025-2026"
+  ],
+  "game_types": {
+    "regular": "02",
+    "playoffs": "03",
+    "excluded": [
+      "01",
+      "other"
+    ]
+  },
+  "required_team_situations": [
+    "all",
+    "5on5"
+  ],
+  "expected_regular_games_per_season": 1312,
+  "coverage_is_not_asof_proof": true,
+  "training_permitted": false,
+  "prediction_publication_permitted": false,
+  "network_access": false,
+  "database_mutation": false,
+  "note": "Une réception de fichier après les matchs ne prouve pas la disponibilité historique avant chaque match. Un archivage prospectif horodaté et des résultats indépendants sont nécessaires avant tout entraînement."
+}

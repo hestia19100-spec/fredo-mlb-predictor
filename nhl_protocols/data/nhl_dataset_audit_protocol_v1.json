@@ -1,0 +1,32 @@
+{
+  "protocol_id": "nhl_dataset_audit_v1",
+  "stage": "NHL-10",
+  "base_commit": "60d808be17343408d0858487bb6ca99a23f615ed",
+  "purpose": "Audit temporal leakage and postgame-label coverage before considering model training",
+  "scope": {
+    "input": "Audited synthetic offline NHL fixture archive only",
+    "real_provider_activation": false,
+    "api_requests": false,
+    "model_training": false,
+    "probability_generation": false,
+    "prediction_publication": false,
+    "wagering": false,
+    "mlb_database_mutation": false,
+    "nhl_database_mutation": false
+  },
+  "checks": {
+    "distinct_target_games": true,
+    "pregame_cutoff_precedes_scheduled_start": true,
+    "pregame_observations_available_by_cutoff": true,
+    "target_result_and_game_state_excluded_from_features": true,
+    "feature_components_share_view_proof": true,
+    "postgame_label_available_only_after_cutoff": true,
+    "winner_matches_untied_final_score": true,
+    "pair_hash_recomputed": true,
+    "missing_labels_remain_pending": true,
+    "coverage_and_audit_hash_deterministic": true
+  },
+  "output": "Coverage counts, pending IDs and SHA-256 audit proof; never a training or betting approval",
+  "limitation": "Synthetic fixtures do not establish source rights, real-game coverage or model performance",
+  "next_gate": "Approve a real NHL source contract and timestamp provenance separately, then repeat the audit on broader point-in-time data before any chronological model evaluation"
+}

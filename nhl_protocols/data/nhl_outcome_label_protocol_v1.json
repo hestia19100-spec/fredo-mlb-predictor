@@ -1,0 +1,31 @@
+{
+  "protocol_id": "nhl_outcome_label_v1",
+  "stage": "NHL-09",
+  "base_commit": "7b60c87d35365ec410fde28fecb65834e0821076",
+  "purpose": "Separate postgame final-result labels from sealed pregame NHL features",
+  "scope": {
+    "input": "Audited synthetic offline NHL fixture archive only",
+    "real_provider_activation": false,
+    "api_requests": false,
+    "model_training": false,
+    "probability_generation": false,
+    "prediction_publication": false,
+    "wagering": false,
+    "mlb_database_mutation": false,
+    "nhl_database_mutation": false
+  },
+  "label_rules": {
+    "storage_audit_before_read": true,
+    "storage_read_only": true,
+    "final_proof_must_be_available_by_explicit_label_checkpoint": true,
+    "final_observed_after_scheduled_start": true,
+    "winner_must_match_untied_final_score_and_pregame_teams": true,
+    "missing_final_remains_pending": true,
+    "simultaneous_conflicting_finals_rejected": true,
+    "target_result_excluded_from_pregame_feature_view": true,
+    "pair_hash_links_pregame_and_postgame_proofs": true
+  },
+  "output": "Typed final label and SHA-256 pair; no model or betting signal",
+  "limitation": "Synthetic source-final proof is linked by source_game_id; standalone real-game outcome capture needs an independently approved source contract",
+  "next_gate": "Leakage and label-coverage audit on broader licensed point-in-time data before model training"
+}

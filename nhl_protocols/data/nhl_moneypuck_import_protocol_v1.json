@@ -1,0 +1,32 @@
+{
+  "protocol_id": "lpf_edge_nhl_moneypuck_import_v1",
+  "stage": "NHL-11",
+  "base_commit": "1e15c4f1eace1d417b32932dd3a35fa46b3ff99b",
+  "purpose": "Offline import of the published MoneyPuck team game-by-game CSV for personal non-commercial research, without retroactive as-of claims",
+  "source": {
+    "page": "https://moneypuck.com/data.htm",
+    "download": "https://moneypuck.com/moneypuck/playerData/careers/gameByGame/all_teams.csv",
+    "attribution": "Données : MoneyPuck.com",
+    "intended_use": "PERSONAL_NONCOMMERCIAL_USER_CONFIRMED"
+  },
+  "scope": {
+    "local_downloaded_csv_only": true,
+    "scraping": false,
+    "api_calls_in_application": false,
+    "nhl_database_mutation": false,
+    "mlb_database_mutation": false,
+    "model_training": false,
+    "probability_generation": false,
+    "prediction_publication": false,
+    "wagering": false
+  },
+  "checks": {
+    "required_schema_and_unique_team_game_situation": true,
+    "numeric_values_finite_and_nonnegative": true,
+    "file_sha256_recorded": true,
+    "observed_at_utc_captured_after_successful_import": true,
+    "historical_asof_inferred_from_game_date": false,
+    "postgame_stats_can_be_used_before_import_time": false
+  },
+  "next_gate": "Archive immutable prospective downloads with reception timestamps, independently prove source games final and integrate only rows available before target cutoff; audit actual coverage before training."
+}

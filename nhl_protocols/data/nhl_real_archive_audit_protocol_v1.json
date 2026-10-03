@@ -1,0 +1,33 @@
+{
+  "protocol_id": "lpf_edge_nhl_real_archive_audit_v1",
+  "stage": "NHL-15",
+  "input_protocols": [
+    "lpf_edge_nhl_five_season_coverage_v1",
+    "lpf_edge_nhl_lagged_history_v1",
+    "lpf_edge_nhl_retrospective_regular_labels_v1"
+  ],
+  "reference_season_start_years": [2021, 2022, 2023, 2024, 2025],
+  "source": {
+    "page": "https://moneypuck.com/data.htm",
+    "local_csv_only": true,
+    "sha256_required": true,
+    "attribution": "Données : MoneyPuck.com",
+    "out_of_scope_seasons_excluded_explicitly": true
+  },
+  "checks": {
+    "regular_games_expected_per_season": 1312,
+    "playoffs_excluded_from_candidates": true,
+    "prior_dates_strictly_before_target": true,
+    "same_day_games_not_used_as_priors": true,
+    "source_scores_mirrored": true,
+    "tied_source_scores_unresolved_without_independent_final": true,
+    "source_observed_after_historical_games_is_not_asof_proof": true
+  },
+  "historical_pregame_availability_proven": false,
+  "independent_final_labels_proven": false,
+  "training_permitted": false,
+  "prediction_publication_permitted": false,
+  "network_access_in_audit": false,
+  "database_mutation": false,
+  "note": "Couverture et ordre des dates ne prouvent pas la disponibilité historique des variables avant chaque match. Les scores égaux du CSV ne désignent pas un vainqueur; une source finale indépendante et des archives pré-match horodatées sont requises."
+}

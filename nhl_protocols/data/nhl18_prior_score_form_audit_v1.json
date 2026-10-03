@@ -1,0 +1,32 @@
+{
+  "cold_start_rows": 101,
+  "features_contain_target_score": false,
+  "form_rows_sha256": "beeea047069ca3b435e6d297668ca4be7ab134aa92a2a93e7d9db3f0905642e1",
+  "historical_pregame_availability_proven": false,
+  "lookback_games": 5,
+  "nhl15_report_sha256": "a1c0604d2417fdd7d480c2517d6ff512a5be1c7bb5b6fc862145f93e507407b6",
+  "nhl17_manifest_sha256": "7430da5b3d872c1d9197ce199e9521f392770d386070186708197edcd0fea89a",
+  "observed_at_utc": "2026-10-03T17:18:44.999771+00:00",
+  "postseason_included": false,
+  "prediction_publication_permitted": false,
+  "regular_final_games": 6560,
+  "regular_final_games_by_season": {
+    "2022": 1312,
+    "2023": 1312,
+    "2024": 1312,
+    "2025": 1312,
+    "2026": 1312
+  },
+  "release_archive_sha256": {
+    "2022": "48a756f9f867ba9800edbb3480181476f98887e01ca5d9795f0ff6fcc9e32b98",
+    "2023": "04c68162d7f83390d9c3204ec73d94971d90fba97f6efef506ee992b44d7d247",
+    "2024": "9292b99f8d5daf362a9e7316f3146fd677e5bafe99063f6fb759baa9383f8d07",
+    "2025": "017f89619c13857e8b7f2f52ccbf7c1ea20fcef46f5bc90de719ea12475d1e00",
+    "2026": "51bf53885ad4807ae9cb65b96a09715473ae5f466c834269d4df521b8debef4c"
+  },
+  "same_date_results_used_as_priors": false,
+  "schema_version": "nhl18_prior_score_form_v1",
+  "source": "SportsDataverse processed NHL schedule release",
+  "source_is_historical_pregame_snapshot": false,
+  "training_permitted": false
+}

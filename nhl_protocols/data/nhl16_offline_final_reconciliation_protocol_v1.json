@@ -1,0 +1,25 @@
+{
+  "protocol_id": "lpf_edge_nhl16_offline_final_reconciliation_v1",
+  "stage": "NHL-16",
+  "target_market": "MATCH_WINNER_INCLUDING_OT_AND_SHOOTOUT",
+  "source": {
+    "mode": "OFFLINE_USER_SUPPLIED_FINAL_EVIDENCE",
+    "network_calls": false,
+    "claimed_origin_is_not_proof": true,
+    "source_file_sha256_required": true
+  },
+  "checks": {
+    "game_id_and_season_match": true,
+    "date_and_home_away_teams_match": true,
+    "decisive_source_scores_must_match_final": true,
+    "tied_source_scores_need_one_extra_final_goal": true,
+    "regulation_result_cannot_resolve_tied_source_score": true,
+    "duplicate_or_foreign_games_rejected": true
+  },
+  "historical_pregame_availability_proven": false,
+  "independent_final_origin_verified": false,
+  "training_permitted": false,
+  "prediction_publication_permitted": false,
+  "database_mutation": false,
+  "note": "Le rapprochement local ne prouve ni l'origine authentique du fichier fourni, ni la disponibilité des variables historiques avant match."
+}

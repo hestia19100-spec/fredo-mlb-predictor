@@ -1,0 +1,51 @@
+{
+  "archives": [
+    {
+      "season": 2022,
+      "sha256": "48a756f9f867ba9800edbb3480181476f98887e01ca5d9795f0ff6fcc9e32b98",
+      "url": "https://github.com/sportsdataverse/sportsdataverse-data/releases/download/nhl_schedules/nhl_schedule_2022.csv"
+    },
+    {
+      "season": 2023,
+      "sha256": "04c68162d7f83390d9c3204ec73d94971d90fba97f6efef506ee992b44d7d247",
+      "url": "https://github.com/sportsdataverse/sportsdataverse-data/releases/download/nhl_schedules/nhl_schedule_2023.csv"
+    },
+    {
+      "season": 2024,
+      "sha256": "9292b99f8d5daf362a9e7316f3146fd677e5bafe99063f6fb759baa9383f8d07",
+      "url": "https://github.com/sportsdataverse/sportsdataverse-data/releases/download/nhl_schedules/nhl_schedule_2024.csv"
+    },
+    {
+      "season": 2025,
+      "sha256": "017f89619c13857e8b7f2f52ccbf7c1ea20fcef46f5bc90de719ea12475d1e00",
+      "url": "https://github.com/sportsdataverse/sportsdataverse-data/releases/download/nhl_schedules/nhl_schedule_2025.csv"
+    },
+    {
+      "season": 2026,
+      "sha256": "51bf53885ad4807ae9cb65b96a09715473ae5f466c834269d4df521b8debef4c",
+      "url": "https://github.com/sportsdataverse/sportsdataverse-data/releases/download/nhl_schedules/nhl_schedule_2026.csv"
+    }
+  ],
+  "historical_pregame_availability_proven": false,
+  "independent_final_labels_proven": false,
+  "moneypuck_archive_sha256": "1f4f07687a3c56da27b67db12626f55650bdc4c8cf119832b4b408fcba0d44b4",
+  "nhl15_report_sha256": "a1c0604d2417fdd7d480c2517d6ff512a5be1c7bb5b6fc862145f93e507407b6",
+  "observed_at_utc": "2026-10-03T17:00:28.914767+00:00",
+  "outcomes_sha256": "e0a690a63c7b3a6465c6f24c7e80d90b0b9181e116ed31d6e3fdad00deb2c197",
+  "prediction_publication_permitted": false,
+  "release_assets_may_change": true,
+  "resolved_count": 475,
+  "resolved_count_by_season": {
+    "2022": 102,
+    "2023": 95,
+    "2024": 82,
+    "2025": 77,
+    "2026": 119
+  },
+  "resolved_ids_sha256": "2c6b29a1f2bd9097cb84b218ce906dab87568d46ec305d3db5d87089b8a2f314",
+  "schema_version": "nhl17_public_schedule_reconciliation_v1",
+  "source": "SportsDataverse processed NHL schedule release",
+  "source_is_direct_nhl_gamecenter_evidence": false,
+  "source_origin": "NHL public data, republished by SportsDataverse",
+  "training_permitted": false
+}

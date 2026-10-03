@@ -1,0 +1,24 @@
+{
+  "protocol_id": "lpf_edge_nhl19_local_capture_v1",
+  "stage": "NHL-19",
+  "purpose": "Conserver des copies NHL locales horodatees pour un audit prospectif ulterieur, sans attribuer a tort une disponibilite historique avant match.",
+  "input": "Fichier JSON local fourni par l'operateur; aucune requete reseau n'est lancee.",
+  "output_root": "data/nhl/pregame_captures",
+  "source_registry": "nhl_protocols/data/nhl_source_registry_v1.json",
+  "capture_rules": {
+    "observed_at_utc": "Horloge du processus lors de l'import local; non fourni par l'operateur.",
+    "information_cutoff_utc": "Strictement anterieur au debut programme du match.",
+    "raw_response": "Octets exacts et empreinte SHA-256; JSON syntaxiquement valide seulement.",
+    "declared_source_url": "Metadonnee non authentifiee; HTTPS sans identifiant ni parametre sensible.",
+    "target_game_id": "Declare par l'operateur; la presence dans la reponse reste non verifiee.",
+    "overwrite": "Interdit; chaque capture est un nouveau fichier local.",
+    "precutoff_status": "PRE_CUTOFF_LOCAL_COPY_UNVERIFIED",
+    "late_status": "LATE_LOCAL_COPY"
+  },
+  "network_collection_enabled": false,
+  "source_origin_authenticated": false,
+  "historical_pregame_availability_proven": false,
+  "training_permitted": false,
+  "prediction_publication_permitted": false,
+  "next_audit": "Selectionner et autoriser une source, capturer la reponse directement avec horodatage fiable, verifier le match et les champs au cutoff, puis valider independamment les etiquettes finales."
+}

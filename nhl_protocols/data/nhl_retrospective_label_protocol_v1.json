@@ -1,0 +1,22 @@
+{
+  "protocol_id": "lpf_edge_nhl_retrospective_regular_labels_v1",
+  "stage": "NHL-14",
+  "input_protocol": "lpf_edge_nhl_lagged_history_v1",
+  "schema": "nhl_retrospective_regular_labels_v1",
+  "reference_season_start_years": [2021, 2022, 2023, 2024, 2025],
+  "source": "MoneyPuck team game-by-game archive already imported offline",
+  "game_type": "02",
+  "score_situation": "all",
+  "playoffs_excluded": true,
+  "pregame_form_rule": "Only earlier dates from the same regular season; same-day games excluded",
+  "final_result_rule": "Two mirrored all-situation team scores, no tie",
+  "source_observation_rule": "Download observed after target game date, without claiming historical pregame availability",
+  "feature_label_separation": true,
+  "candidate_features_recomputed_from_source": true,
+  "historical_pregame_availability_proven": false,
+  "training_permitted": false,
+  "prediction_publication_permitted": false,
+  "network_access": false,
+  "database_mutation": false,
+  "note": "Rapprochement descriptif rétrospectif. Le résultat final n'entre jamais dans la forme du match cible. Un audit des disponibilités historiques et une évaluation prospective restent requis avant tout modèle NHL."
+}

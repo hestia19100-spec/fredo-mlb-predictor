@@ -1,0 +1,13 @@
+{
+  "protocol_id": "lpf_edge_nhl21_schedule_capture_readiness_v1",
+  "status": "OFFLINE_SCHEDULE_IDENTITY_AUDIT_ONLY",
+  "input": "Capture NHL-20 locale scellée et vérifiée",
+  "output": "IDs de match et d'équipes, abréviations, saison, début UTC et empreinte source",
+  "odds_ignored": true,
+  "scores_ignored": true,
+  "database_mutation_enabled": false,
+  "network_collection_enabled": false,
+  "historical_team_history_verified": false,
+  "training_permitted": false,
+  "prediction_publication_permitted": false
+}

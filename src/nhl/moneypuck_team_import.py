@@ -130,10 +130,18 @@ def _row(record: dict[str, str | None], line: int) -> TeamGameRow:
     )
 
 
-def import_team_games(path: Path, *, season: int | None = None) -> MoneyPuckTeamSnapshot:
+def import_team_games(path: Path, *, season: int | None = None,
+                      seasons: tuple[int, ...] | None = None) -> MoneyPuckTeamSnapshot:
     """Lit un fichier local; aucune requête réseau, écriture ni rétrodatation."""
     if season is not None and (type(season) is not int or season < 2007):
         raise NHLMoneyPuckImportError("La saison filtrée est invalide.")
+    if seasons is not None and (
+        season is not None or type(seasons) is not tuple or not seasons
+        or any(type(value) is not int or value < 2007 for value in seasons)
+        or len(seasons) != len(set(seasons))
+    ):
+        raise NHLMoneyPuckImportError("Les saisons filtrées sont invalides.")
+    allowed_seasons = {str(value) for value in seasons} if seasons is not None else None
     try:
         size = path.stat().st_size
         if size <= 0 or size > MAX_FILE_BYTES:
@@ -158,6 +166,8 @@ def import_team_games(path: Path, *, season: int | None = None) -> MoneyPuckTeam
             if record.get("situation") not in SITUATIONS:
                 continue
             if season is not None and record.get("season") != str(season):
+                continue
+            if allowed_seasons is not None and record.get("season") not in allowed_seasons:
                 continue
             parsed = _row(record, line)
             key = (parsed.game_id, parsed.team, parsed.situation)

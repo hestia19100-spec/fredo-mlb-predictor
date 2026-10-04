@@ -1,0 +1,17 @@
+{
+  "schema_version": "nhl_moneypuck_team_capture_v1",
+  "stage": "NHL-23",
+  "source_page": "https://moneypuck.com/data.htm",
+  "source_url": "https://moneypuck.com/moneypuck/playerData/careers/gameByGame/all_teams.csv",
+  "usage": "personal_non_commercial_with_attribution",
+  "capture_mode": "manual_explicit_https_get_or_local_file_intake",
+  "availability_rule": "receipt_observed_at_utc_must_not_exceed_game_cutoff",
+  "history_date_rule": "source_game_date_strictly_before_target_utc_date",
+  "reference_seasons": [2021, 2022, 2023, 2024, 2025],
+  "historical_asof_availability_proven": false,
+  "training_permitted": false,
+  "prediction_publication_permitted": false,
+  "database_mutation": false,
+  "local_file_origin_independently_verified": false,
+  "note": "A present-day archive cannot prove its rows were available before past games."
+}

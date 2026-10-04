@@ -1,0 +1,16 @@
+{
+  "protocol_id": "lpf_edge_nhl_schedule_capture_v1",
+  "protocol_schema_version": 1,
+  "status": "MANUAL_SCHEDULE_CAPTURE_ONLY",
+  "provider_id": "nhl_public_web_api",
+  "endpoint_template": "https://api-web.nhle.com/v1/schedule/{date}",
+  "authorization_basis": "USER_ATTESTED_ORAL_PERSONAL_AUTOMATED_COLLECTION_AND_MODEL_TRAINING",
+  "authorization_independently_verified": false,
+  "manual_schedule_capture_allowed": true,
+  "automatic_daily_collection_allowed": false,
+  "historical_as_of_availability_proven": false,
+  "training_permitted_from_this_capture": false,
+  "prediction_publication_permitted": false,
+  "source_registry_v1_provider_enabled": false,
+  "scope_note": "Exception limitee aux captures manuelles du calendrier; aucun fournisseur general ni modele n'est active."
+}

@@ -1,0 +1,17 @@
+{
+  "schema_version": "nhl_team_history_store_v1",
+  "stage": "NHL-24",
+  "database": "data/nhl/team_history.db",
+  "source_capture_protocol": "nhl_moneypuck_team_capture_v1",
+  "source_page": "https://moneypuck.com/data.htm",
+  "attribution": "Données : MoneyPuck.com",
+  "storage_mode": "append_only_local_sqlite",
+  "availability_rule": "max(capture_observed_at_utc,imported_at_utc)<=information_cutoff_utc",
+  "schedule_rule": "schedule_observed_at_utc<=information_cutoff_utc",
+  "history_date_rule": "regular_source_game_date<target_utc_date",
+  "historical_backtest_asof_proven": false,
+  "training_permitted": false,
+  "prediction_publication_permitted": false,
+  "mlb_database_mutation": false,
+  "synthetic_nhl_journal_mutation": false
+}

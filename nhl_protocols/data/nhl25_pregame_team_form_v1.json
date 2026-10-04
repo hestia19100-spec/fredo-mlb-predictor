@@ -1,0 +1,23 @@
+{
+  "schema_version": "nhl25_pregame_team_form_v1",
+  "stage": "NHL-25",
+  "purpose": "descriptive_pregame_team_form_only",
+  "source_database": "data/nhl/team_history.db",
+  "source_capture_protocol": "nhl_moneypuck_team_capture_v1",
+  "schedule_capture_protocol": "nhl_public_schedule_capture_v1",
+  "source_situation_pairs": ["all", "5on5"],
+  "game_type": "REGULAR",
+  "ordering": "game_date_desc_then_game_id_desc",
+  "default_window_games": 10,
+  "default_min_games_per_team": 5,
+  "missing_pair_policy": "exclude_and_report",
+  "source_game_rule": "source_game_date<target_utc_date_and_source_game_id!=target_game_id",
+  "availability_rule": "max(capture_observed_at_utc,imported_at_utc)<=information_cutoff_utc",
+  "schedule_rule": "verified_schedule_observed_at_utc<=information_cutoff_utc",
+  "historical_backtest_asof_proven": false,
+  "training_permitted": false,
+  "prediction_publication_permitted": false,
+  "odds_ingestion": false,
+  "mlb_database_mutation": false,
+  "synthetic_nhl_journal_mutation": false
+}

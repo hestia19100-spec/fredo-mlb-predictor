@@ -1,0 +1,14 @@
+{
+  "protocol_id": "lpf_edge_nhl22_pregame_stats_readiness_v1",
+  "status": "OFFLINE_ASOF_STATISTICS_AUDIT_ONLY",
+  "input": "Capture NHL-20 vérifiée et base NHL locale en lecture seule si présente",
+  "cutoff": "Minutes d'avance explicites et strictement positives pour chaque match",
+  "minimum_complete_games_per_team_default": 5,
+  "missing_database_is_not_ready": true,
+  "late_schedule_capture_is_not_ready": true,
+  "historical_asof_availability_independently_proven": false,
+  "database_mutation_enabled": false,
+  "network_collection_enabled": false,
+  "training_permitted": false,
+  "prediction_publication_permitted": false
+}

@@ -1,0 +1,13 @@
+{
+  "schema_version": "nhl_current_season_import_v1",
+  "stage": "NHL-28",
+  "purpose": "verified_current_season_regular_team_rows_from_sealed_moneypuck_capture",
+  "source_capture_protocol": "nhl_moneypuck_team_capture_v1",
+  "storage_mode": "append_only_local_files",
+  "availability_rule": "max(source_capture_observed_at_utc,imported_at_utc)<=information_cutoff_utc",
+  "historical_backtest_asof_proven": false,
+  "training_permitted": false,
+  "prediction_publication_permitted": false,
+  "mlb_database_mutation": false,
+  "nhl_historical_database_mutation": false
+}

@@ -9,6 +9,9 @@ import json
 from pathlib import Path
 
 from .contracts import require_utc
+from .current_season_import import (
+    assess_current_season_before_game, verify_current_season_import,
+)
 from .database import NHL_DATA_ROOT, PROJECT_ROOT
 from .pregame_team_form import summarize_pregame_team_form
 from .public_schedule_candidates import ScheduledGame
@@ -60,6 +63,7 @@ def audit_real_pregame_readiness(
     schedule_slot: Path, *, lead_minutes: int = 120,
     min_games_per_team: int = 5, window_games: int = 10,
     database_path: Path = DATABASE_PATH, allowed_root: Path = NHL_DATA_ROOT,
+    current_season_import_slot: Path | None = None,
 ) -> dict[str, object]:
     """Audit one sealed schedule and the as-of real-source history, without I/O writes.
 
@@ -71,6 +75,8 @@ def audit_real_pregame_readiness(
             or type(window_games) is not int or window_games < min_games_per_team):
         raise NHLProspectiveReadinessError("Fenêtre ou échantillon minimal invalide.")
     schedule = audit_schedule_capture(Path(schedule_slot))
+    current_import = (verify_current_season_import(Path(current_season_import_slot))
+                      if current_season_import_slot is not None else None)
     observed = _utc(schedule["observed_at_utc"])
     database = Path(database_path)
     has_database = database.is_file()
@@ -94,6 +100,22 @@ def audit_real_pregame_readiness(
             "schedule_before_cutoff": observed <= cutoff,
             "current_season": season,
         }
+        current_assessment = None
+        if current_import is not None:
+            if current_import.season != season:
+                raise NHLProspectiveReadinessError("Import saison courante incompatible.")
+            scheduled = ScheduledGame(item["game_id"], item["season"], start,
+                                      item["away_abbr"], item["home_abbr"])
+            current_assessment = assess_current_season_before_game(
+                current_import, scheduled, lead_minutes=lead_minutes,
+            )
+            row.update({
+                "current_season_import_id": current_assessment["current_season_import_id"],
+                "current_season_import_effective_at_utc": current_assessment["current_season_import_effective_at_utc"],
+                "current_season_import_before_cutoff": current_assessment["current_season_import_before_cutoff"],
+                "away_current_season_imported_games": current_assessment["prior_regular_games_by_team"][item["away_abbr"]],
+                "home_current_season_imported_games": current_assessment["prior_regular_games_by_team"][item["home_abbr"]],
+            })
         if observed > cutoff:
             row["status"] = "SCHEDULE_AFTER_CUTOFF"
         elif not has_database:
@@ -139,6 +161,14 @@ def audit_real_pregame_readiness(
                     if not current_away or not current_home
                     else "DESCRIPTIVE_FORM_ONLY"
                 )
+        if current_assessment is not None and row["status"] == "CURRENT_SEASON_HISTORY_NOT_IMPORTED":
+            if not current_assessment["current_season_import_before_cutoff"]:
+                row["status"] = "CURRENT_SEASON_IMPORT_AFTER_CUTOFF"
+            elif (row["away_current_season_imported_games"] > 0
+                  and row["home_current_season_imported_games"] > 0):
+                row["status"] = "CURRENT_SEASON_SIDECAR_READY_FOR_FORM_JOIN"
+            else:
+                row["status"] = "CURRENT_SEASON_TEAM_COVERAGE_MISSING"
         games.append(row)
     return {
         "schema_version": "nhl26_prospective_readiness_v1",
@@ -149,6 +179,8 @@ def audit_real_pregame_readiness(
         "schedule_response_sha256": schedule["response_sha256"],
         "schedule_acquisition_mode": schedule.get("acquisition_mode", "direct_https"),
         "schedule_observed_at_utc": schedule["observed_at_utc"],
+        "current_season_import_verified": current_import is not None,
+        "current_season_import_id": current_import.path.name if current_import is not None else None,
         "lead_minutes": lead_minutes,
         "window_games": window_games,
         "min_games_per_team": min_games_per_team,

@@ -1,6 +1,7 @@
 """NHL-26: verified prospective evidence remains descriptive and read-only."""
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date, datetime, timezone
 from decimal import Decimal
 import json
@@ -9,6 +10,7 @@ from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
 
+from src.nhl.current_season_import import CurrentSeasonImport
 from src.nhl.moneypuck_team_import import TeamGameRow
 from src.nhl.prospective_real_readiness import (
     NHLProspectiveReadinessError, POLICY_PATH, audit_real_pregame_readiness,
@@ -125,6 +127,39 @@ class ProspectiveReadinessTests(unittest.TestCase):
         self.assertNotIn("probability", json.dumps(result))
         self.assertNotIn("odds", json.dumps(result))
         self.assertFalse(result["prediction_publication_permitted"])
+
+    def test_verified_current_season_sidecar_is_visible_but_not_joined(self) -> None:
+        self.database.touch()
+        current = history(season=2026)
+        imported = CurrentSeasonImport(
+            self.root / "current", 2026, "capture-current", "c" * 64,
+            datetime(2026, 10, 4, tzinfo=UTC),
+            datetime(2026, 10, 5, tzinfo=UTC),
+            datetime(2026, 10, 5, tzinfo=UTC),
+            current.away_rows + current.home_rows, 1,
+        )
+        with (patch("src.nhl.prospective_real_readiness.audit_schedule_capture", return_value=schedule()),
+              patch("src.nhl.prospective_real_readiness.verify_history_database"),
+              patch("src.nhl.prospective_real_readiness.load_pregame_team_history", return_value=history()),
+              patch("src.nhl.prospective_real_readiness.verify_current_season_import", return_value=imported)):
+            result = audit_real_pregame_readiness(
+                self.slot, database_path=self.database, allowed_root=self.root,
+                current_season_import_slot=self.root / "current", min_games_per_team=1,
+            )
+            self.assertEqual(result["games"][0]["status"],
+                             "CURRENT_SEASON_SIDECAR_READY_FOR_FORM_JOIN")
+            self.assertEqual(result["games"][0]["away_current_season_imported_games"], 1)
+            self.assertEqual(result["games"][0]["home_current_season_imported_games"], 1)
+            self.assertTrue(result["current_season_import_verified"])
+            self.assertFalse(result["training_permitted"])
+            late = replace(imported, effective_available_at_utc=datetime(2026, 10, 6, 20, tzinfo=UTC))
+            with patch("src.nhl.prospective_real_readiness.verify_current_season_import", return_value=late):
+                blocked = audit_real_pregame_readiness(
+                    self.slot, database_path=self.database, allowed_root=self.root,
+                    current_season_import_slot=self.root / "current", min_games_per_team=1,
+                )
+            self.assertEqual(blocked["games"][0]["status"],
+                             "CURRENT_SEASON_IMPORT_AFTER_CUTOFF")
 
     def test_insufficient_sample_precedes_season_status(self) -> None:
         self.database.touch()

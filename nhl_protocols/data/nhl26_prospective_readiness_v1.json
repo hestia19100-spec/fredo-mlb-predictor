@@ -1,0 +1,17 @@
+{
+  "schema_version": "nhl26_prospective_readiness_v1",
+  "stage": "NHL-26",
+  "purpose": "audit_real_source_before_future_games",
+  "source_database": "data/nhl/team_history.db",
+  "schedule_capture_protocol": "nhl_public_schedule_capture_v1",
+  "team_history_protocol": "nhl_team_history_store_v1",
+  "capture_mode": "manual_only",
+  "report_mode": "read_only",
+  "cutoff_rule": "schedule_and_history_effective_available_at_utc<=start_utc-lead_minutes",
+  "current_season_rule": "report_missing_imported_current_season_rows_separately",
+  "historical_backtest_asof_proven": false,
+  "training_permitted": false,
+  "prediction_publication_permitted": false,
+  "odds_ingestion": false,
+  "mlb_database_mutation": false
+}

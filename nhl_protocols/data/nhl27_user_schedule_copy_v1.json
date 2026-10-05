@@ -1,0 +1,13 @@
+{
+  "schema_version": "nhl_public_schedule_user_copy_v1",
+  "stage": "NHL-27",
+  "purpose": "manual_intake_of_user_supplied_browser_json_when_remote_https_blocked",
+  "acquisition_mode": "user_supplied_browser_copy",
+  "manual_intake_allowed": true,
+  "source_origin_independently_verified": false,
+  "automatic_collection_allowed": false,
+  "availability_rule": "intake_observed_at_utc_only_no_backdating",
+  "historical_as_of_availability_proven": false,
+  "training_permitted": false,
+  "prediction_publication_permitted": false
+}

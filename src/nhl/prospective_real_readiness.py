@@ -142,9 +142,12 @@ def audit_real_pregame_readiness(
         games.append(row)
     return {
         "schema_version": "nhl26_prospective_readiness_v1",
-        "status": "AUDIT_ONLY_NOT_MODEL_ELIGIBLE",
+        "status": ("AUDIT_ONLY_USER_SUPPLIED_COPY"
+                   if schedule.get("acquisition_mode") == "user_supplied_browser_copy"
+                   else "AUDIT_ONLY_NOT_MODEL_ELIGIBLE"),
         "target_date": schedule["target_date"],
         "schedule_response_sha256": schedule["response_sha256"],
+        "schedule_acquisition_mode": schedule.get("acquisition_mode", "direct_https"),
         "schedule_observed_at_utc": schedule["observed_at_utc"],
         "lead_minutes": lead_minutes,
         "window_games": window_games,

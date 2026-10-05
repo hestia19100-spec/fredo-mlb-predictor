@@ -19,6 +19,8 @@ from src.nhl.public_schedule_candidates import (
 POLICY_PATH = PROJECT_ROOT / "nhl_protocols" / "data" / "nhl20_schedule_capture_protocol_v1.json"
 DEFAULT_ROOT = NHL_DATA_ROOT / "public_schedule_captures"
 SCHEMA_VERSION = "nhl_public_schedule_capture_v1"
+USER_COPY_SCHEMA_VERSION = "nhl_public_schedule_user_copy_v1"
+USER_COPY_POLICY_PATH = PROJECT_ROOT / "nhl_protocols" / "data" / "nhl27_user_schedule_copy_v1.json"
 BASE_URL = "https://api-web.nhle.com/v1/schedule/"
 
 
@@ -154,6 +156,85 @@ def capture_public_schedule(
     return ScheduleCaptureReceipt(slot, digest, observed, len(games))
 
 
+def ingest_user_supplied_schedule(
+    target_date: date,
+    source_path: Path,
+    *,
+    explicit_manual_run: bool = False,
+    root: Path = DEFAULT_ROOT,
+    policy_path: Path = USER_COPY_POLICY_PATH,
+    now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+) -> ScheduleCaptureReceipt:
+    """Archive a user's browser copy without claiming a direct NHL API capture.
+
+    The intake time is the only proven availability time. The supplied content
+    cannot establish its own origin, response headers, or historical timestamp.
+    """
+    if explicit_manual_run is not True:
+        raise PublicScheduleCaptureError("Import manuel explicite requis.")
+    if not isinstance(target_date, date) or isinstance(target_date, datetime):
+        raise PublicScheduleCaptureError("Date cible invalide.")
+    try:
+        policy_raw = Path(policy_path).read_bytes()
+        policy = json.loads(policy_raw)
+    except (OSError, ValueError) as error:
+        raise PublicScheduleCaptureError("Protocole de copie illisible.") from error
+    required = {
+        "schema_version": USER_COPY_SCHEMA_VERSION,
+        "acquisition_mode": "user_supplied_browser_copy",
+        "manual_intake_allowed": True,
+        "source_origin_independently_verified": False,
+        "automatic_collection_allowed": False,
+        "training_permitted": False,
+        "prediction_publication_permitted": False,
+    }
+    if not isinstance(policy, dict) or any(policy.get(key) != value for key, value in required.items()):
+        raise PublicScheduleCaptureError("Protocole de copie non autorisé.")
+    started = _clock_utc(now)
+    try:
+        with Path(source_path).open("rb") as source:
+            raw = source.read(MAX_SCHEDULE_BYTES + 1)
+    except OSError as error:
+        raise PublicScheduleCaptureError("Copie de calendrier illisible.") from error
+    observed = _clock_utc(now)
+    if observed < started:
+        raise PublicScheduleCaptureError("Horloge incohérente.")
+    try:
+        games = parse_public_schedule(raw, target_date, observed)
+    except PublicScheduleError as error:
+        raise PublicScheduleCaptureError("Copie de calendrier NHL rejetée.") from error
+    digest = hashlib.sha256(raw).hexdigest()
+    receipt = {
+        "schema_version": USER_COPY_SCHEMA_VERSION,
+        "status": "CAPTURE_ONLY_NOT_MODEL_ELIGIBLE",
+        "provider_id": "user_supplied_browser_copy",
+        "claimed_source_url": BASE_URL + target_date.isoformat(),
+        "acquisition_mode": "user_supplied_browser_copy",
+        "source_origin_independently_verified": False,
+        "target_date": target_date.isoformat(),
+        "intake_started_at_utc": _stamp(started),
+        "observed_at_utc": _stamp(observed),
+        "response_sha256": digest,
+        "policy_sha256": hashlib.sha256(policy_raw).hexdigest(),
+        "future_regular_games": [_game_record(game) for game in games],
+        "historical_as_of_availability_proven": False,
+        "training_permitted": False,
+        "prediction_publication_permitted": False,
+    }
+    key = observed.strftime("%Y%m%dT%H%M%S%fZ") + "-" + digest[:16]
+    slot = Path(root) / target_date.isoformat() / key
+    try:
+        slot.mkdir(parents=True, exist_ok=False)
+        with (slot / "response.json").open("xb") as output:
+            output.write(raw)
+        with (slot / "receipt.json").open("xb") as output:
+            output.write((json.dumps(receipt, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8"))
+        with (slot / "COMPLETED").open("xb"):
+            pass
+    except OSError as error:
+        raise PublicScheduleCaptureError("Archivage incomplet; créneau non utilisable.") from error
+    return ScheduleCaptureReceipt(slot, digest, observed, len(games))
+
 def verify_public_schedule_capture(slot: Path) -> dict[str, object]:
     """Relit le brut et le reçu; ne consulte jamais le réseau."""
     slot = Path(slot)
@@ -167,11 +248,23 @@ def verify_public_schedule_capture(slot: Path) -> dict[str, object]:
         receipt = json.loads(receipt_bytes)
         target = date.fromisoformat(receipt["target_date"])
         observed = datetime.fromisoformat(receipt["observed_at_utc"].replace("Z", "+00:00"))
-        started = datetime.fromisoformat(receipt["request_started_at_utc"].replace("Z", "+00:00"))
-        if (receipt["schema_version"] != SCHEMA_VERSION
+        schema = receipt["schema_version"]
+        if schema == SCHEMA_VERSION:
+            started = datetime.fromisoformat(receipt["request_started_at_utc"].replace("Z", "+00:00"))
+            provenance_valid = (receipt["provider_id"] == "nhl_public_web_api"
+                                and receipt["source_url"] == BASE_URL + target.isoformat())
+        elif schema == USER_COPY_SCHEMA_VERSION:
+            started = datetime.fromisoformat(receipt["intake_started_at_utc"].replace("Z", "+00:00"))
+            provenance_valid = (
+                receipt["provider_id"] == "user_supplied_browser_copy"
+                and receipt["claimed_source_url"] == BASE_URL + target.isoformat()
+                and receipt["acquisition_mode"] == "user_supplied_browser_copy"
+                and receipt["source_origin_independently_verified"] is False
+            )
+        else:
+            raise PublicScheduleCaptureError("Schéma de capture inconnu.")
+        if (not provenance_valid
                 or receipt["status"] != "CAPTURE_ONLY_NOT_MODEL_ELIGIBLE"
-                or receipt["provider_id"] != "nhl_public_web_api"
-                or receipt["source_url"] != BASE_URL + target.isoformat()
                 or receipt["response_sha256"] != hashlib.sha256(raw).hexdigest()
                 or started.utcoffset() != timedelta(0)
                 or observed.utcoffset() != timedelta(0)

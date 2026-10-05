@@ -9,7 +9,9 @@ import hashlib
 import json
 from pathlib import Path
 
-from .public_schedule_capture import PublicScheduleCaptureError, verify_public_schedule_capture
+from .public_schedule_capture import (
+    PublicScheduleCaptureError, USER_COPY_SCHEMA_VERSION, verify_public_schedule_capture,
+)
 
 
 class ScheduleCaptureReadinessError(ValueError):
@@ -73,6 +75,9 @@ def audit_schedule_capture(slot: Path) -> dict[str, object]:
             "schema_version": "nhl21_schedule_capture_readiness_v1",
             "status": "SCHEDULE_IDENTITY_ONLY",
             "target_date": receipt["target_date"],
+            "acquisition_mode": ("user_supplied_browser_copy"
+                                 if receipt["schema_version"] == USER_COPY_SCHEMA_VERSION
+                                 else "direct_https"),
             "observed_at_utc": receipt["observed_at_utc"],
             "response_sha256": receipt["response_sha256"],
             "game_count": len(games),

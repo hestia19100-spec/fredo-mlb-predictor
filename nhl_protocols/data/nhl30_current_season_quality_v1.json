@@ -1,0 +1,12 @@
+{
+  "schema_version": "nhl30_current_season_quality_v1",
+  "purpose": "read_only_capture_comparison",
+  "prior_import_immutable": true,
+  "later_import_not_backdated": true,
+  "current_season_coverage_complete_proven": false,
+  "historical_backtest_asof_proven": false,
+  "training_permitted": false,
+  "prediction_publication_permitted": false,
+  "mlb_database_mutation": false,
+  "nhl_historical_database_mutation": false
+}

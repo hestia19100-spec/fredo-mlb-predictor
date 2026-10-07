@@ -1,0 +1,15 @@
+{
+  "schema_version": "nhl33_postgame_reconciliation_v1",
+  "stage": "NHL-33",
+  "purpose": "link_verified_official_finals_to_immutable_pregame_checkpoint",
+  "manual_seal_only": true,
+  "network_calls_allowed": false,
+  "incomplete_games_remain_pending": true,
+  "conflicting_final_captures_rejected": true,
+  "pregame_checkpoint_mutation_allowed": false,
+  "training_permitted": false,
+  "prediction_publication_permitted": false,
+  "odds_ingestion": false,
+  "mlb_database_mutation": false,
+  "nhl_historical_database_mutation": false
+}

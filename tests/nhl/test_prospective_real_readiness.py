@@ -128,14 +128,14 @@ class ProspectiveReadinessTests(unittest.TestCase):
         self.assertNotIn("odds", json.dumps(result))
         self.assertFalse(result["prediction_publication_permitted"])
 
-    def test_verified_current_season_sidecar_is_visible_but_not_joined(self) -> None:
+    def test_verified_current_season_sidecar_is_joined_descriptively(self) -> None:
         self.database.touch()
         current = history(season=2026)
         imported = CurrentSeasonImport(
             self.root / "current", 2026, "capture-current", "c" * 64,
             datetime(2026, 10, 4, tzinfo=UTC),
-            datetime(2026, 10, 5, tzinfo=UTC),
-            datetime(2026, 10, 5, tzinfo=UTC),
+            datetime(2026, 10, 5, 12, tzinfo=UTC),
+            datetime(2026, 10, 5, 12, tzinfo=UTC),
             current.away_rows + current.home_rows, 1,
         )
         with (patch("src.nhl.prospective_real_readiness.audit_schedule_capture", return_value=schedule()),
@@ -147,9 +147,17 @@ class ProspectiveReadinessTests(unittest.TestCase):
                 current_season_import_slot=self.root / "current", min_games_per_team=1,
             )
             self.assertEqual(result["games"][0]["status"],
-                             "CURRENT_SEASON_SIDECAR_READY_FOR_FORM_JOIN")
+                             "CURRENT_SEASON_FORM_DESCRIPTIVE_ONLY")
             self.assertEqual(result["games"][0]["away_current_season_imported_games"], 1)
             self.assertEqual(result["games"][0]["home_current_season_imported_games"], 1)
+            self.assertEqual(result["games"][0]["away_current_season_games"], 1)
+            self.assertEqual(result["games"][0]["home_current_season_games"], 1)
+            self.assertTrue(result["games"][0]["current_season_form_joined"])
+            self.assertEqual(result["descriptive_form_count"], 1)
+            self.assertEqual(result["games"][0]["history_effective_available_at_utc"],
+                             datetime(2026, 10, 5, 10, tzinfo=UTC).isoformat())
+            self.assertEqual(result["games"][0]["form_effective_available_at_utc"],
+                             datetime(2026, 10, 5, 12, tzinfo=UTC).isoformat())
             self.assertTrue(result["current_season_import_verified"])
             self.assertFalse(result["training_permitted"])
             late = replace(imported, effective_available_at_utc=datetime(2026, 10, 6, 20, tzinfo=UTC))

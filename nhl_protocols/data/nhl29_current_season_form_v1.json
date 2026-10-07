@@ -1,0 +1,13 @@
+{
+  "schema_version": "nhl29_current_season_form_v1",
+  "purpose": "descriptive_pregame_team_form_only",
+  "current_source": "verified_current_season_import_sidecar",
+  "availability_rule": "import_effective_at_utc<=information_cutoff_utc",
+  "source_game_rule": "regular_game_date<target_utc_date",
+  "historical_backtest_asof_proven": false,
+  "training_permitted": false,
+  "prediction_publication_permitted": false,
+  "odds_ingestion": false,
+  "mlb_database_mutation": false,
+  "nhl_historical_database_mutation": false
+}

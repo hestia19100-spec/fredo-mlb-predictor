@@ -12,6 +12,7 @@ from .contracts import require_utc
 from .current_season_import import (
     assess_current_season_before_game, verify_current_season_import,
 )
+from .current_season_form import summarize_current_season_pregame_form
 from .database import NHL_DATA_ROOT, PROJECT_ROOT
 from .pregame_team_form import summarize_pregame_team_form
 from .public_schedule_candidates import ScheduledGame
@@ -139,6 +140,14 @@ def audit_real_pregame_readiness(
                     target_date=game.start_utc.date(), window_games=window_games,
                     min_games_per_team=min_games_per_team,
                 )
+                joined = None
+                if (current_import is not None
+                        and current_assessment["current_season_import_before_cutoff"]):
+                    joined = summarize_current_season_pregame_form(
+                        history, current_import, game, window_games=window_games,
+                        min_games_per_team=min_games_per_team,
+                    )
+                    form = joined.form
                 current_away = sum(game_id // 1_000_000 == season
                                    for game_id in form.away.source_game_ids)
                 current_home = sum(game_id // 1_000_000 == season
@@ -146,8 +155,10 @@ def audit_real_pregame_readiness(
                 row.update({
                     "history_capture_id": form.capture_id,
                     "history_response_sha256": form.response_sha256,
-                    "history_effective_available_at_utc": form.effective_available_at_utc.isoformat(),
-                    "feature_sha256": form.feature_sha256,
+                    "history_effective_available_at_utc": history.effective_available_at_utc.isoformat(),
+                    "form_effective_available_at_utc": form.effective_available_at_utc.isoformat(),
+                    "feature_sha256": joined.feature_sha256 if joined else form.feature_sha256,
+                    "current_season_form_joined": joined is not None,
                     "away_complete_games": form.away.complete_games,
                     "home_complete_games": form.home.complete_games,
                     "away_current_season_games": current_away,
@@ -156,19 +167,18 @@ def audit_real_pregame_readiness(
                     "reference_coverage_complete": form.regular_coverage_complete,
                 })
                 row["status"] = (
-                    "INSUFFICIENT_HISTORICAL_SAMPLE" if not form.minimum_sample_reached
+                    ("INSUFFICIENT_DESCRIPTIVE_SAMPLE" if joined is not None
+                     else "INSUFFICIENT_HISTORICAL_SAMPLE") if not form.minimum_sample_reached
+                    else "CURRENT_SEASON_TEAM_COVERAGE_MISSING"
+                    if joined is not None and (not current_away or not current_home)
                     else "CURRENT_SEASON_HISTORY_NOT_IMPORTED"
                     if not current_away or not current_home
+                    else "CURRENT_SEASON_FORM_DESCRIPTIVE_ONLY" if joined is not None
                     else "DESCRIPTIVE_FORM_ONLY"
                 )
         if current_assessment is not None and row["status"] == "CURRENT_SEASON_HISTORY_NOT_IMPORTED":
             if not current_assessment["current_season_import_before_cutoff"]:
                 row["status"] = "CURRENT_SEASON_IMPORT_AFTER_CUTOFF"
-            elif (row["away_current_season_imported_games"] > 0
-                  and row["home_current_season_imported_games"] > 0):
-                row["status"] = "CURRENT_SEASON_SIDECAR_READY_FOR_FORM_JOIN"
-            else:
-                row["status"] = "CURRENT_SEASON_TEAM_COVERAGE_MISSING"
         games.append(row)
     return {
         "schema_version": "nhl26_prospective_readiness_v1",
@@ -185,7 +195,8 @@ def audit_real_pregame_readiness(
         "window_games": window_games,
         "min_games_per_team": min_games_per_team,
         "game_count": len(games),
-        "descriptive_form_count": sum(row["status"] == "DESCRIPTIVE_FORM_ONLY" for row in games),
+        "descriptive_form_count": sum(row["status"] in {"DESCRIPTIVE_FORM_ONLY",
+                                                  "CURRENT_SEASON_FORM_DESCRIPTIVE_ONLY"} for row in games),
         "games": games,
         "historical_backtest_asof_proven": False,
         "training_permitted": False,

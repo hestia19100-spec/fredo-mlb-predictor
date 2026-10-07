@@ -169,6 +169,85 @@ class ProspectiveReadinessTests(unittest.TestCase):
             self.assertEqual(blocked["games"][0]["status"],
                              "CURRENT_SEASON_IMPORT_AFTER_CUTOFF")
 
+    def test_multiple_imports_select_only_the_latest_pre_cutoff_capture(self) -> None:
+        self.database.touch()
+        current = history(season=2026)
+        earlier = CurrentSeasonImport(
+            self.root / "earlier", 2026, "capture-earlier", "c" * 64,
+            datetime(2026, 10, 4, tzinfo=UTC),
+            datetime(2026, 10, 5, 12, tzinfo=UTC),
+            datetime(2026, 10, 5, 12, tzinfo=UTC),
+            current.away_rows + current.home_rows, 1,
+        )
+        corrected = replace(
+            earlier, path=self.root / "corrected", source_capture_id="capture-corrected",
+            source_response_sha256="d" * 64,
+            source_observed_at_utc=datetime(2026, 10, 7, tzinfo=UTC),
+            imported_at_utc=datetime(2026, 10, 7, 12, tzinfo=UTC),
+            effective_available_at_utc=datetime(2026, 10, 7, 12, tzinfo=UTC),
+            regular_rows=tuple(replace(row, x_goals_for=Decimal("99"))
+                               for row in earlier.regular_rows),
+        )
+        imports = {earlier.path: earlier, corrected.path: corrected}
+        with (patch("src.nhl.prospective_real_readiness.audit_schedule_capture",
+                    return_value=schedule()),
+              patch("src.nhl.prospective_real_readiness.verify_history_database"),
+              patch("src.nhl.prospective_real_readiness.load_pregame_team_history",
+                    return_value=history()),
+              patch("src.nhl.prospective_real_readiness.verify_current_season_import",
+                    side_effect=lambda slot: imports[slot]) as verify):
+            report = audit_real_pregame_readiness(
+                self.slot, database_path=self.database, allowed_root=self.root,
+                current_season_import_slots=(corrected.path, earlier.path),
+                min_games_per_team=1,
+            )
+        game = report["games"][0]
+        self.assertEqual(verify.call_count, 2)
+        self.assertEqual(report["current_season_import_count"], 2)
+        self.assertEqual(game["current_season_import_selection"], "LATEST_BEFORE_CUTOFF")
+        self.assertEqual(game["current_season_import_id"], earlier.path.name)
+        self.assertTrue(game["current_season_import_before_cutoff"])
+        self.assertEqual(game["status"], "CURRENT_SEASON_FORM_DESCRIPTIVE_ONLY")
+        self.assertFalse(report["training_permitted"])
+        self.assertFalse(report["prediction_publication_permitted"])
+
+        with (patch("src.nhl.prospective_real_readiness.audit_schedule_capture",
+                    return_value=schedule()),
+              patch("src.nhl.prospective_real_readiness.verify_history_database"),
+              patch("src.nhl.prospective_real_readiness.load_pregame_team_history",
+                    return_value=history()),
+              patch("src.nhl.prospective_real_readiness.verify_current_season_import",
+                    return_value=corrected)):
+            late_only = audit_real_pregame_readiness(
+                self.slot, database_path=self.database, allowed_root=self.root,
+                current_season_import_slots=(corrected.path,), min_games_per_team=1,
+            )
+        self.assertEqual(late_only["games"][0]["current_season_import_selection"],
+                         "NO_IMPORT_BEFORE_CUTOFF")
+        self.assertNotIn("current_season_import_id", late_only["games"][0])
+        self.assertEqual(late_only["games"][0]["status"],
+                         "CURRENT_SEASON_IMPORT_AFTER_CUTOFF")
+
+    def test_multiple_import_mode_rejects_conflicts_and_duplicate_slots(self) -> None:
+        with self.assertRaisesRegex(NHLProspectiveReadinessError, "seul mode"):
+            audit_real_pregame_readiness(
+                self.slot, current_season_import_slot=self.root / "one",
+                current_season_import_slots=(self.root / "two",),
+            )
+        earlier = CurrentSeasonImport(
+            self.root / "same", 2026, "capture", "c" * 64,
+            datetime(2026, 10, 4, tzinfo=UTC), datetime(2026, 10, 5, tzinfo=UTC),
+            datetime(2026, 10, 5, tzinfo=UTC), (), 0,
+        )
+        with (patch("src.nhl.prospective_real_readiness.audit_schedule_capture",
+                    return_value=schedule()),
+              patch("src.nhl.prospective_real_readiness.verify_current_season_import",
+                    return_value=earlier)):
+            with self.assertRaisesRegex(NHLProspectiveReadinessError, "dupliqué"):
+                audit_real_pregame_readiness(
+                    self.slot, current_season_import_slots=(earlier.path, earlier.path),
+                )
+
     def test_insufficient_sample_precedes_season_status(self) -> None:
         self.database.touch()
         with (patch("src.nhl.prospective_real_readiness.audit_schedule_capture", return_value=schedule()),

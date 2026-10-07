@@ -10,7 +10,8 @@ from pathlib import Path
 
 from .contracts import require_utc
 from .current_season_import import (
-    assess_current_season_before_game, verify_current_season_import,
+    CurrentSeasonImport, assess_current_season_before_game,
+    verify_current_season_import,
 )
 from .current_season_form import summarize_current_season_pregame_form
 from .database import NHL_DATA_ROOT, PROJECT_ROOT
@@ -40,6 +41,7 @@ def _verify_protocol() -> None:
         "source_database": "data/nhl/team_history.db",
         "capture_mode": "manual_only",
         "report_mode": "read_only",
+        "multi_import_rule": "latest_verified_import_effective_at_or_before_each_game_cutoff",
         "historical_backtest_asof_proven": False,
         "training_permitted": False,
         "prediction_publication_permitted": False,
@@ -60,11 +62,34 @@ def _utc(value: str) -> datetime:
         raise NHLProspectiveReadinessError("Horodatage de capture invalide.") from error
 
 
+def _select_asof_import(
+    imports: tuple[CurrentSeasonImport, ...], *, season: int, cutoff: datetime,
+) -> CurrentSeasonImport | None:
+    """Use the newest import that genuinely existed before this game's cutoff."""
+    if any(imported.season != season for imported in imports):
+        raise NHLProspectiveReadinessError("Import saison courante incompatible.")
+    eligible = [
+        imported for imported in imports
+        if (imported.source_observed_at_utc <= cutoff
+            and imported.imported_at_utc <= cutoff
+            and imported.effective_available_at_utc <= cutoff)
+    ]
+    if not eligible:
+        return None
+    return max(eligible, key=lambda imported: (
+        imported.effective_available_at_utc,
+        imported.imported_at_utc,
+        imported.source_observed_at_utc,
+        imported.path.name,
+    ))
+
+
 def audit_real_pregame_readiness(
     schedule_slot: Path, *, lead_minutes: int = 120,
     min_games_per_team: int = 5, window_games: int = 10,
     database_path: Path = DATABASE_PATH, allowed_root: Path = NHL_DATA_ROOT,
     current_season_import_slot: Path | None = None,
+    current_season_import_slots: tuple[Path, ...] | None = None,
 ) -> dict[str, object]:
     """Audit one sealed schedule and the as-of real-source history, without I/O writes.
 
@@ -75,9 +100,18 @@ def audit_real_pregame_readiness(
     if (type(min_games_per_team) is not int or min_games_per_team < 1
             or type(window_games) is not int or window_games < min_games_per_team):
         raise NHLProspectiveReadinessError("Fenêtre ou échantillon minimal invalide.")
+    if current_season_import_slot is not None and current_season_import_slots is not None:
+        raise NHLProspectiveReadinessError("Choisir un seul mode d'import saison courante.")
+    if current_season_import_slots is not None and not isinstance(current_season_import_slots, tuple):
+        raise NHLProspectiveReadinessError("Liste d'imports invalide.")
     schedule = audit_schedule_capture(Path(schedule_slot))
     current_import = (verify_current_season_import(Path(current_season_import_slot))
                       if current_season_import_slot is not None else None)
+    verified_imports = tuple(
+        verify_current_season_import(Path(slot)) for slot in (current_season_import_slots or ())
+    )
+    if len({imported.path.resolve() for imported in verified_imports}) != len(verified_imports):
+        raise NHLProspectiveReadinessError("Import saison courante dupliqué.")
     observed = _utc(schedule["observed_at_utc"])
     database = Path(database_path)
     has_database = database.is_file()
@@ -92,6 +126,8 @@ def audit_real_pregame_readiness(
         if (type(item["season"]) is not int
                 or item["season"] % 10_000 != season + 1):
             raise NHLProspectiveReadinessError("Saison cible NHL incohérente.")
+        selected_import = (_select_asof_import(verified_imports, season=season, cutoff=cutoff)
+                           if current_season_import_slots is not None else current_import)
         row: dict[str, object] = {
             "game_id": item["game_id"],
             "away_abbr": item["away_abbr"],
@@ -101,14 +137,18 @@ def audit_real_pregame_readiness(
             "schedule_before_cutoff": observed <= cutoff,
             "current_season": season,
         }
+        if current_season_import_slots is not None:
+            row["current_season_import_selection"] = (
+                "LATEST_BEFORE_CUTOFF" if selected_import is not None else "NO_IMPORT_BEFORE_CUTOFF"
+            )
         current_assessment = None
-        if current_import is not None:
-            if current_import.season != season:
+        if selected_import is not None:
+            if selected_import.season != season:
                 raise NHLProspectiveReadinessError("Import saison courante incompatible.")
             scheduled = ScheduledGame(item["game_id"], item["season"], start,
                                       item["away_abbr"], item["home_abbr"])
             current_assessment = assess_current_season_before_game(
-                current_import, scheduled, lead_minutes=lead_minutes,
+                selected_import, scheduled, lead_minutes=lead_minutes,
             )
             row.update({
                 "current_season_import_id": current_assessment["current_season_import_id"],
@@ -141,10 +181,10 @@ def audit_real_pregame_readiness(
                     min_games_per_team=min_games_per_team,
                 )
                 joined = None
-                if (current_import is not None
+                if (selected_import is not None
                         and current_assessment["current_season_import_before_cutoff"]):
                     joined = summarize_current_season_pregame_form(
-                        history, current_import, game, window_games=window_games,
+                        history, selected_import, game, window_games=window_games,
                         min_games_per_team=min_games_per_team,
                     )
                     form = joined.form
@@ -179,6 +219,9 @@ def audit_real_pregame_readiness(
         if current_assessment is not None and row["status"] == "CURRENT_SEASON_HISTORY_NOT_IMPORTED":
             if not current_assessment["current_season_import_before_cutoff"]:
                 row["status"] = "CURRENT_SEASON_IMPORT_AFTER_CUTOFF"
+        elif (current_season_import_slots is not None and verified_imports
+              and selected_import is None and row["status"] == "CURRENT_SEASON_HISTORY_NOT_IMPORTED"):
+            row["status"] = "CURRENT_SEASON_IMPORT_AFTER_CUTOFF"
         games.append(row)
     return {
         "schema_version": "nhl26_prospective_readiness_v1",
@@ -189,8 +232,10 @@ def audit_real_pregame_readiness(
         "schedule_response_sha256": schedule["response_sha256"],
         "schedule_acquisition_mode": schedule.get("acquisition_mode", "direct_https"),
         "schedule_observed_at_utc": schedule["observed_at_utc"],
-        "current_season_import_verified": current_import is not None,
+        "current_season_import_verified": current_import is not None or bool(verified_imports),
         "current_season_import_id": current_import.path.name if current_import is not None else None,
+        "current_season_import_count": len(verified_imports) if current_season_import_slots is not None
+                                       else int(current_import is not None),
         "lead_minutes": lead_minutes,
         "window_games": window_games,
         "min_games_per_team": min_games_per_team,

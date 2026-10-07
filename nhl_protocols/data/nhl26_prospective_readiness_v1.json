@@ -8,6 +8,7 @@
   "capture_mode": "manual_only",
   "report_mode": "read_only",
   "cutoff_rule": "schedule_and_history_effective_available_at_utc<=start_utc-lead_minutes",
+  "multi_import_rule": "latest_verified_import_effective_at_or_before_each_game_cutoff",
   "current_season_rule": "report_missing_imported_current_season_rows_separately",
   "historical_backtest_asof_proven": false,
   "training_permitted": false,

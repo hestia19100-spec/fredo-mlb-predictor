@@ -1,0 +1,18 @@
+{
+  "schema_version": "nhl32_official_final_capture_v1",
+  "stage": "NHL-32",
+  "purpose": "archive_official_postgame_result_against_sealed_pregame_checkpoint",
+  "endpoint_template": "https://api-web.nhle.com/v1/gamecenter/{game_id}/landing",
+  "manual_only": true,
+  "direct_https_required": true,
+  "regular_season_only": true,
+  "final_state_required": "OFF",
+  "same_game_identity_required": true,
+  "changed_start_requires_review": true,
+  "automatic_daily_collection_allowed": false,
+  "training_permitted": false,
+  "prediction_publication_permitted": false,
+  "odds_ingestion": false,
+  "mlb_database_mutation": false,
+  "nhl_historical_database_mutation": false
+}

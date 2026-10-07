@@ -41,6 +41,7 @@ def _verify_protocol() -> None:
         "source_database": "data/nhl/team_history.db",
         "capture_mode": "manual_only",
         "report_mode": "read_only",
+        "default_lead_minutes": 60,
         "multi_import_rule": "latest_verified_import_effective_at_or_before_each_game_cutoff",
         "historical_backtest_asof_proven": False,
         "training_permitted": False,
@@ -85,7 +86,7 @@ def _select_asof_import(
 
 
 def audit_real_pregame_readiness(
-    schedule_slot: Path, *, lead_minutes: int = 120,
+    schedule_slot: Path, *, lead_minutes: int = 60,
     min_games_per_team: int = 5, window_games: int = 10,
     database_path: Path = DATABASE_PATH, allowed_root: Path = NHL_DATA_ROOT,
     current_season_import_slot: Path | None = None,

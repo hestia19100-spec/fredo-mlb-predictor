@@ -1,0 +1,15 @@
+{
+  "schema_version": "nhl31_pregame_checkpoint_v1",
+  "stage": "NHL-31",
+  "purpose": "seal_non_predictive_pregame_evidence",
+  "manual_only": true,
+  "direct_schedule_required": true,
+  "pre_cutoff_required": true,
+  "lead_minutes": 60,
+  "historical_backtest_asof_proven": false,
+  "training_permitted": false,
+  "prediction_publication_permitted": false,
+  "odds_ingestion": false,
+  "mlb_database_mutation": false,
+  "nhl_historical_database_mutation": false
+}

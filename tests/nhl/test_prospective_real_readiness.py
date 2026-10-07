@@ -54,7 +54,7 @@ def history(*, season: int = 2025) -> PregameTeamHistory:
                 _row(team, season, day, "5on5"))
     return PregameTeamHistory(
         target_game_id=2026020001,
-        information_cutoff_utc=datetime(2026, 10, 6, 19, tzinfo=UTC),
+        information_cutoff_utc=datetime(2026, 10, 6, 20, tzinfo=UTC),
         capture_id="capture-1", response_sha256="a" * 64,
         effective_available_at_utc=datetime(2026, 10, 5, 10, tzinfo=UTC),
         away_rows=rows("NYR"), home_rows=rows("BOS"),
@@ -85,7 +85,7 @@ class ProspectiveReadinessTests(unittest.TestCase):
         self.assertFalse(result["prediction_publication_permitted"])
 
     def test_schedule_after_cutoff_is_never_used(self) -> None:
-        late = schedule(observed="2026-10-06T20:00:00Z")
+        late = schedule(observed="2026-10-06T20:01:00Z")
         with patch("src.nhl.prospective_real_readiness.audit_schedule_capture", return_value=late):
             result = self.audit()
         self.assertEqual(result["games"][0]["status"], "SCHEDULE_AFTER_CUTOFF")
@@ -160,7 +160,7 @@ class ProspectiveReadinessTests(unittest.TestCase):
                              datetime(2026, 10, 5, 12, tzinfo=UTC).isoformat())
             self.assertTrue(result["current_season_import_verified"])
             self.assertFalse(result["training_permitted"])
-            late = replace(imported, effective_available_at_utc=datetime(2026, 10, 6, 20, tzinfo=UTC))
+            late = replace(imported, effective_available_at_utc=datetime(2026, 10, 6, 20, 1, tzinfo=UTC))
             with patch("src.nhl.prospective_real_readiness.verify_current_season_import", return_value=late):
                 blocked = audit_real_pregame_readiness(
                     self.slot, database_path=self.database, allowed_root=self.root,

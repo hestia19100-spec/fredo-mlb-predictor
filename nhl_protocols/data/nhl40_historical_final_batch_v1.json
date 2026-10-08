@@ -1,0 +1,15 @@
+{
+  "schema_version": "nhl40_historical_final_batch_v1",
+  "stage": "NHL-40",
+  "purpose": "manually_capture_up_to_fifty_official_historical_finals",
+  "manual_only": true,
+  "maximum_requests_per_run": 50,
+  "pilot_chunk_size": 10,
+  "minimum_seconds_between_requests": 1.0,
+  "backlog_hash_required_before_network": true,
+  "stop_on_first_error": true,
+  "automatic_retry_allowed": false,
+  "training_permitted": false,
+  "prediction_publication_permitted": false,
+  "database_mutation_allowed": false
+}

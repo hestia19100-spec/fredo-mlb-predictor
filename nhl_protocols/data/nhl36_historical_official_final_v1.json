@@ -1,0 +1,16 @@
+{
+  "schema_version": "nhl36_historical_official_final_v1",
+  "stage": "NHL-36",
+  "purpose": "capture_and_reconcile_independent_historical_finals",
+  "manual_single_game_only": true,
+  "endpoint_template": "https://api-web.nhle.com/v1/gamecenter/{game_id}/landing",
+  "regular_season_only": true,
+  "final_state_required": "OFF",
+  "same_game_identity_required": true,
+  "source_tie_requires_ot_or_so": true,
+  "historical_pregame_availability_proven": false,
+  "origin_independently_verified": false,
+  "training_permitted": false,
+  "prediction_publication_permitted": false,
+  "database_mutation_allowed": false
+}

@@ -4,7 +4,7 @@ Une capture d'aujourd'hui ne prouve jamais la disponibilité avant un match pass
 """
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from hashlib import sha256
 import json
@@ -103,7 +103,7 @@ def capture_team_history(*, explicit_manual_run: bool = False,
     observed = _utc(now())
     if observed < started:
         raise NHLTeamCaptureError("Horloge de capture incohérente.")
-    history = _parse(raw)
+    history = replace(_parse(raw), observed_at_utc=observed)
     digest = sha256(raw).hexdigest()
     receipt = {"schema_version": SCHEMA, "status": "CAPTURE_ONLY_NOT_MODEL_ELIGIBLE",
                "source_page": SOURCE_PAGE, "source_url": TEAM_GAME_DOWNLOAD,
@@ -144,7 +144,7 @@ def verify_team_capture(slot: Path, *, allowed_root: Path = DEFAULT_ROOT) -> Ver
     except (OSError, ValueError, KeyError, TypeError) as error:
         raise NHLTeamCaptureError("Preuve de capture illisible.") from error
     digest = sha256(raw).hexdigest()
-    history = _parse(raw)
+    history = replace(_parse(raw), observed_at_utc=observed)
     expected = {"schema_version": SCHEMA, "status": "CAPTURE_ONLY_NOT_MODEL_ELIGIBLE",
                 "source_page": SOURCE_PAGE, "source_url": TEAM_GAME_DOWNLOAD,
                 "attribution": ATTRIBUTION, "response_sha256": digest,

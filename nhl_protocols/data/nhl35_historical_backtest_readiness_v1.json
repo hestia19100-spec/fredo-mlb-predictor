@@ -1,0 +1,18 @@
+{
+  "schema_version": "nhl35_historical_backtest_readiness_v1",
+  "stage": "NHL-35",
+  "purpose": "audit_chronological_split_candidates_without_training",
+  "source_seasons": [2021, 2022, 2023, 2024, 2025],
+  "train_seasons": [2021, 2022, 2023],
+  "validation_seasons": [2024],
+  "holdout_seasons": [2025],
+  "same_day_history_excluded": true,
+  "tied_source_score_is_not_binary_winner": true,
+  "historical_asof_proven": false,
+  "independent_final_labels_proven": false,
+  "backtest_authorized": false,
+  "training_permitted": false,
+  "prediction_publication_permitted": false,
+  "network_calls_allowed": false,
+  "database_mutation_allowed": false
+}

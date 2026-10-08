@@ -55,6 +55,8 @@ class TeamCaptureTests(unittest.TestCase):
         capture = self._capture()
         verified = verify_team_capture(capture.path, allowed_root=self.root)
         self.assertEqual(verified.response_sha256, capture.response_sha256)
+        self.assertEqual(capture.history.observed_at_utc, capture.observed_at_utc)
+        self.assertEqual(verified.history.observed_at_utc, capture.observed_at_utc)
         self.assertEqual(len(verified.history.regular_rows), 4)
         receipt = json.loads((capture.path / "receipt.json").read_text())
         self.assertFalse(receipt["historical_asof_availability_proven"])

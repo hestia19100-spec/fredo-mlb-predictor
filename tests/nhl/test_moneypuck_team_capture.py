@@ -10,7 +10,7 @@ import unittest
 
 from src.nhl.moneypuck_team_capture import (
     NHLTeamCaptureError, assess_history_before_game, capture_team_history,
-    verify_team_capture,
+    _parse_verified_bytes, verify_team_capture,
 )
 from src.nhl.moneypuck_team_import import TEAM_GAME_DOWNLOAD, NHLMoneyPuckImportError, import_team_games
 from src.nhl.public_schedule_candidates import ScheduledGame
@@ -90,6 +90,20 @@ class TeamCaptureTests(unittest.TestCase):
             capture_team_history(explicit_manual_run=True, transport=self.transport,
                                  code_commit="short", root=self.root)
         self.assertFalse(self.root.exists())
+
+    def test_cache_rechecks_bytes_and_rejects_a_changed_archive(self) -> None:
+        capture = self._capture()
+        _parse_verified_bytes.cache_clear()
+        self.addCleanup(_parse_verified_bytes.cache_clear)
+        first = verify_team_capture(capture.path, allowed_root=self.root)
+        second = verify_team_capture(capture.path, allowed_root=self.root)
+        self.assertEqual(first.response_sha256, second.response_sha256)
+        self.assertEqual(_parse_verified_bytes.cache_info().hits, 1)
+        self.assertEqual(_parse_verified_bytes.cache_info().misses, 1)
+        (capture.path / "response.csv").write_bytes(_csv() + b"\n")
+        with self.assertRaises(NHLTeamCaptureError):
+            verify_team_capture(capture.path, allowed_root=self.root)
+        self.assertEqual(_parse_verified_bytes.cache_info().misses, 2)
 
     def test_tampering_and_incomplete_slots_fail_closed(self) -> None:
         capture = self._capture()

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
+from functools import lru_cache
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -64,6 +65,12 @@ def _parse(raw: bytes) -> FiveSeasonHistory:
             return select_five_season_history(import_team_games(path, seasons=REFERENCE_SEASONS))
     except (OSError, ValueError, UnicodeError) as error:
         raise NHLTeamCaptureError("CSV MoneyPuck rejeté.") from error
+
+@lru_cache(maxsize=1)
+def _parse_verified_bytes(raw: bytes) -> FiveSeasonHistory:
+    """Reuse immutable parsed history; the caller still hashes every source byte."""
+    return _parse(raw)
+
 
 def _coverage(history: FiveSeasonHistory) -> list[dict[str, int]]:
     return [asdict(item) for item in history.coverage]
@@ -144,7 +151,7 @@ def verify_team_capture(slot: Path, *, allowed_root: Path = DEFAULT_ROOT) -> Ver
     except (OSError, ValueError, KeyError, TypeError) as error:
         raise NHLTeamCaptureError("Preuve de capture illisible.") from error
     digest = sha256(raw).hexdigest()
-    history = replace(_parse(raw), observed_at_utc=observed)
+    history = replace(_parse_verified_bytes(raw), observed_at_utc=observed)
     expected = {"schema_version": SCHEMA, "status": "CAPTURE_ONLY_NOT_MODEL_ELIGIBLE",
                 "source_page": SOURCE_PAGE, "source_url": TEAM_GAME_DOWNLOAD,
                 "attribution": ATTRIBUTION, "response_sha256": digest,

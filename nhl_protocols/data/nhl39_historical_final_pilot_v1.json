@@ -1,0 +1,15 @@
+{
+  "schema_version": "nhl39_historical_final_pilot_v1",
+  "stage": "NHL-39",
+  "purpose": "manually_run_a_bounded_resumable_historical_final_pilot",
+  "manual_only": true,
+  "maximum_requests_per_run": 10,
+  "backlog_hash_required_before_network": true,
+  "single_game_capture_contract_required": true,
+  "automatic_retry_allowed": false,
+  "origin_independently_verified": false,
+  "historical_pregame_availability_proven": false,
+  "training_permitted": false,
+  "prediction_publication_permitted": false,
+  "database_mutation_allowed": false
+}

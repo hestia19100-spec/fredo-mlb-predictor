@@ -1,0 +1,13 @@
+{
+  "schema_version": "nhl38_historical_final_backlog_v1",
+  "stage": "NHL-38",
+  "purpose": "inspect_verified_local_finals_and_resume_one_tied_game",
+  "inventory_network_allowed": false,
+  "manual_single_game_only": true,
+  "incomplete_or_duplicate_archive_rejected": true,
+  "historical_pregame_availability_proven": false,
+  "origin_independently_verified": false,
+  "training_permitted": false,
+  "prediction_publication_permitted": false,
+  "database_mutation_allowed": false
+}

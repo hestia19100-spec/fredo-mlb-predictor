@@ -1,0 +1,14 @@
+{
+  "schema_version": "nhl34_prospective_coverage_v1",
+  "stage": "NHL-34",
+  "purpose": "audit_cumulative_sealed_pregame_and_verified_postgame_coverage",
+  "read_only": true,
+  "network_calls_allowed": false,
+  "unreconciled_games_remain_pending": true,
+  "duplicate_games_rejected": true,
+  "training_permitted": false,
+  "prediction_publication_permitted": false,
+  "odds_ingestion": false,
+  "mlb_database_mutation": false,
+  "nhl_historical_database_mutation": false
+}

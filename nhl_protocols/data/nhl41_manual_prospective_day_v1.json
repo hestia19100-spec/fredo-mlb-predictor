@@ -1,0 +1,14 @@
+{
+  "schema_version": "nhl41_manual_prospective_day_v1",
+  "stage": "NHL-41",
+  "purpose": "one_explicit_manual_capture_of_current_team_data_and_public_schedule",
+  "manual_only": true,
+  "automatic_daily_collection_allowed": false,
+  "schedule_failure_is_not_no_games": true,
+  "no_future_games_is_not_no_games_today": true,
+  "training_permitted": false,
+  "prediction_publication_permitted": false,
+  "odds_ingestion": false,
+  "mlb_database_mutation": false,
+  "nhl_historical_database_mutation": false
+}

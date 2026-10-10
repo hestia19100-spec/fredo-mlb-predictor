@@ -103,12 +103,29 @@ def reconcile_nhl_schedule_events(
         raise NHLEventReconciliationError("Identifiant fournisseur dupliqué.")
     payload = json.loads(schedule_raw)
     day = next(item for item in payload["gameWeek"] if item["date"] == target_date.isoformat())
-    by_game_id = {row["id"]: row for row in day["games"]
-                  if isinstance(row, dict) and type(row.get("id")) is int}
+    by_game_id: dict[int, dict] = {}
+    for game in games:
+        rows = [
+            row for row in day["games"]
+            if (isinstance(row, dict) and row.get("id") == game.game_id
+                and row.get("gameType") == 2 and row.get("gameState") == "FUT"
+                and row.get("gameScheduleState") == "OK"
+                and row.get("startTimeUTC") == game.start_utc.isoformat().replace("+00:00", "Z"))
+        ]
+        if len(rows) != 1:
+            raise NHLEventReconciliationError("Match officiel ambigu.")
+        by_game_id[game.game_id] = rows[0]
     by_key: dict[tuple[str, str, datetime], list[NHLEventCandidate]] = {}
     for event in events:
         key = (_key(event.away_team_name), _key(event.home_team_name), event.start_utc)
         by_key.setdefault(key, []).append(event)
+
+    official_keys: dict[tuple[str, str, datetime], list[int]] = {}
+    for game in games:
+        row = by_game_id[game.game_id]
+        away, home = _official_name(row.get("awayTeam")), _official_name(row.get("homeTeam"))
+        if away and home:
+            official_keys.setdefault((_key(away), _key(home), game.start_utc), []).append(game.game_id)
 
     matched: list[MatchedNHLEvent] = []
     unmatched: list[int] = []
@@ -122,7 +139,12 @@ def reconcile_nhl_schedule_events(
         if not away or not home or _key(away) == _key(home):
             unmatched.append(game.game_id)
             continue
-        candidates = by_key.get((_key(away), _key(home), game.start_utc), [])
+        fixture_key = (_key(away), _key(home), game.start_utc)
+        if len(official_keys.get(fixture_key, [])) > 1:
+            ambiguous.append(game.game_id)
+            unmatched.append(game.game_id)
+            continue
+        candidates = by_key.get(fixture_key, [])
         if len(candidates) > 1:
             ambiguous.append(game.game_id)
             unmatched.append(game.game_id)

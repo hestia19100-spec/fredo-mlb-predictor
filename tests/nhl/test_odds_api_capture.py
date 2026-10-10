@@ -8,6 +8,7 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
+from src.nhl.odds_api_candidates import ODDS_BOOKMAKERS
 
 from src.nhl_odds_api_capture import (
     EVENTS_URL,
@@ -72,7 +73,7 @@ class OddsCaptureTests(unittest.TestCase):
         self.assertEqual((result.event_count, result.two_way_quote_count, result.odds_quota_cost), (1, 1, 1))
         self.assertEqual([call[0] for call in self.calls], [EVENTS_URL, ODDS_URL])
         self.assertEqual([call[2:] for call in self.calls], [(30, False), (30, False)])
-        self.assertEqual(self.calls[1][1]["bookmakers"], "netbet_fr")
+        self.assertEqual(self.calls[1][1]["bookmakers"], ODDS_BOOKMAKERS)
         self.assertTrue((result.path / "COMPLETED").is_file())
         receipt_bytes = (result.path / "receipt.json").read_bytes()
         self.assertNotIn(b"super-secret-value", receipt_bytes)
@@ -82,6 +83,9 @@ class OddsCaptureTests(unittest.TestCase):
         self.assertFalse(receipt["prediction_publication_permitted"])
         self.assertFalse(receipt["training_permitted"])
         self.assertEqual(receipt["event_count"], 1)
+        self.assertEqual(receipt["schema_version"], "nhl_odds_api_capture_only_v2")
+        self.assertEqual(receipt["bookmakers_requested"], ODDS_BOOKMAKERS.split(","))
+        self.assertEqual(receipt["verified_two_way_bookmakers"], ["netbet_fr"])
         self.assertEqual(receipt["two_way_quote_count"], 1)
 
     def test_empty_bookmaker_feed_does_not_claim_empty_schedule(self):
@@ -105,6 +109,35 @@ class OddsCaptureTests(unittest.TestCase):
         receipt = json.loads((result.path / "receipt.json").read_text())
         self.assertEqual(receipt["rejected_market_count"], 1)
 
+    def test_french_market_shapes_are_visible_without_expanding_eligibility(self):
+        self.odds[0]["bookmakers"].extend([
+            {"key": "betclic_fr", "markets": [{
+                "key": "h2h", "last_update": "2026-10-09T17:00:00Z",
+                "outcomes": [
+                    {"name": "Home", "price": 2.0},
+                    {"name": "Draw", "price": 3.3},
+                    {"name": "Away", "price": 3.0},
+                ],
+            }]},
+            {"key": "unibet_fr", "markets": [{
+                "key": "h2h", "last_update": "2026-10-09T17:00:00Z",
+                "outcomes": [
+                    {"name": "Home", "price": 1.7},
+                    {"name": "Away", "price": 2.2},
+                ],
+            }]},
+        ])
+        result = self.capture()
+        self.assertEqual(result.two_way_quote_count, 1)
+        receipt = json.loads((result.path / "receipt.json").read_text())
+        self.assertEqual(receipt["rejected_market_count"], 2)
+        counts = receipt["market_shape_counts"]
+        self.assertEqual(counts["netbet_fr"]["two_team_outcomes"], 1)
+        self.assertEqual(counts["betclic_fr"]["three_way"], 1)
+        self.assertEqual(counts["unibet_fr"]["two_team_outcomes"], 1)
+        self.assertEqual(sum(counts["pmu_fr"].values()), 0)
+        raw = json.loads((result.path / "odds.json").read_text())
+        self.assertEqual(len(raw[0]["bookmakers"]), 3)
     def test_future_dated_quote_is_rejected(self):
         self.odds[0]["bookmakers"][0]["markets"][0]["last_update"] = "2026-10-10T00:00:00Z"
         with self.assertRaisesRegex(NHLOddsCaptureError, "futur"):

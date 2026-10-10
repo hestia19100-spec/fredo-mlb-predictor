@@ -1,4 +1,4 @@
-"""Audited, capture-only NHL event and two-way odds feed.
+"""Audited, capture-only NHL event and French featured-odds feed.
 
 This feed is bookmaker-listed, not the complete official NHL schedule. Its
 provider IDs must never be used as NHL game IDs or as training labels.
@@ -17,6 +17,9 @@ import requests
 
 from src.nhl.database import NHL_DATA_ROOT
 from src.nhl.odds_api_candidates import (
+    FRENCH_BOOKMAKER_KEYS,
+    ODDS_BOOKMAKERS,
+    VERIFIED_TWO_WAY_BOOKMAKERS,
     NHLOddsCandidateError,
     parse_nhl_events,
     parse_nhl_h2h_odds,
@@ -27,7 +30,7 @@ from src.odds_api import _read_api_key
 EVENTS_URL = "https://api.the-odds-api.com/v4/sports/icehockey_nhl/events"
 ODDS_URL = "https://api.the-odds-api.com/v4/sports/icehockey_nhl/odds"
 DEFAULT_ROOT = NHL_DATA_ROOT / "odds_api_capture_only"
-SCHEMA = "nhl_odds_api_capture_only_v1"
+SCHEMA = "nhl_odds_api_capture_only_v2"
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 
 
@@ -101,7 +104,7 @@ def capture_nhl_odds_candidates(
     started = _utc(now)
     events_raw, events_quota = _get(transport, EVENTS_URL, key, {})
     odds_raw, odds_quota = _get(transport, ODDS_URL, key, {
-        "bookmakers": "netbet_fr", "markets": "h2h", "oddsFormat": "decimal",
+        "bookmakers": ODDS_BOOKMAKERS, "markets": "h2h", "oddsFormat": "decimal",
     })
     observed = _utc(now)
     if observed < started:
@@ -120,14 +123,23 @@ def capture_nhl_odds_candidates(
             raise NHLOddsCaptureError("Cote datée dans le futur.")
     if events_quota["x-requests-last"] != 0 or odds_quota["x-requests-last"] > 1:
         raise NHLOddsCaptureError("Coût de requête NHL inattendu.")
+    market_shape_counts = {
+        key: {"two_team_outcomes": 0, "three_way": 0, "other": 0}
+        for key in FRENCH_BOOKMAKER_KEYS
+    }
+    for _, book_key, shape in odds.observed_market_shapes:
+        market_shape_counts[book_key][shape] += 1
+
     receipt = {
         "schema_version": SCHEMA,
         "status": "CAPTURE_ONLY_NOT_MODEL_ELIGIBLE",
         "provider": "the_odds_api",
         "source_events_url": EVENTS_URL,
         "source_odds_url": ODDS_URL,
-        "bookmaker": "netbet_fr",
-        "market": "h2h_two_outcomes_only",
+        "bookmakers_requested": list(FRENCH_BOOKMAKER_KEYS),
+        "verified_two_way_bookmakers": sorted(VERIFIED_TWO_WAY_BOOKMAKERS),
+        "market_requested": "h2h",
+        "market_scope": "mixed_raw_markets; only verified two-way quotes counted",
         "started_at_utc": _stamp(started),
         "observed_at_utc": _stamp(observed),
         "events_sha256": sha256(events_raw).hexdigest(),
@@ -135,6 +147,7 @@ def capture_nhl_odds_candidates(
         "event_count": len(events),
         "two_way_quote_count": len(odds.two_way_quotes),
         "rejected_market_count": len(odds.rejected_market_keys),
+        "market_shape_counts": market_shape_counts,
         "events_quota": events_quota,
         "odds_quota": odds_quota,
         "schedule_complete": False,

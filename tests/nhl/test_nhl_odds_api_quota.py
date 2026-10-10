@@ -8,6 +8,7 @@ from pathlib import Path
 import sqlite3
 import tempfile
 import unittest
+from src.nhl.odds_api_candidates import ODDS_BOOKMAKERS
 
 from src.nhl_odds_api_quota import (
     EVENTS_URL,
@@ -20,7 +21,7 @@ from src.nhl_odds_api_quota import (
 
 KEY = "super-secret-value"
 EVENTS = {"apiKey": KEY}
-ODDS = {"apiKey": KEY, "bookmakers": "netbet_fr", "markets": "h2h", "oddsFormat": "decimal"}
+ODDS = {"apiKey": KEY, "bookmakers": ODDS_BOOKMAKERS, "markets": "h2h", "oddsFormat": "decimal"}
 SCORES = {"apiKey": KEY, "daysFrom": "3", "dateFormat": "iso"}
 
 
@@ -120,6 +121,7 @@ class NHLQuotaTests(unittest.TestCase):
         gate = self.gate()
         for url, params in ((ODDS_URL, {**ODDS, "markets": "h2h,totals"}),
                             (SCORES_URL, {**SCORES, "daysFrom": "1"}),
+                            (ODDS_URL, {**ODDS, "bookmakers": "netbet_fr"}),
                             ("https://example.test", EVENTS)):
             with self.assertRaisesRegex(NHLQuotaError, "hors du périmètre"):
                 self.call(gate, url, params)

@@ -16,7 +16,11 @@ import json
 SPORT_KEY = "icehockey_nhl"
 # Only this bookmaker's two-way NHL h2h settlement has been checked against
 # its published ice-hockey rules. Other books currently expose three-way h2h.
-FRENCH_BOOKMAKERS = frozenset({"netbet_fr"})
+VERIFIED_TWO_WAY_BOOKMAKERS = frozenset({"netbet_fr"})
+FRENCH_BOOKMAKER_KEYS = (
+    "betclic_fr", "netbet_fr", "pmu_fr", "unibet_fr", "winamax_fr",
+)
+ODDS_BOOKMAKERS = ",".join(FRENCH_BOOKMAKER_KEYS)
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 
 
@@ -46,6 +50,7 @@ class NHLOddsCandidates:
     events: tuple[NHLEventCandidate, ...]
     two_way_quotes: tuple[NHLTwoWayQuote, ...]
     rejected_market_keys: tuple[tuple[str, str], ...]
+    observed_market_shapes: tuple[tuple[str, str, str], ...]
 
 
 def _payload(raw: bytes) -> list[object]:
@@ -115,6 +120,30 @@ def _price(value: object) -> Decimal:
     return price
 
 
+def _market_shape(bookmaker: dict, event: NHLEventCandidate) -> str:
+    """Classify response shape only, never settlement semantics."""
+    markets = bookmaker.get("markets")
+    if not isinstance(markets, list) or len(markets) != 1:
+        return "other"
+    market = markets[0]
+    if not isinstance(market, dict) or market.get("key") != "h2h":
+        return "other"
+    outcomes = market.get("outcomes")
+    if not isinstance(outcomes, list):
+        return "other"
+    names = [row.get("name") for row in outcomes if isinstance(row, dict)]
+    if len(names) != len(outcomes) or not all(isinstance(name, str) for name in names):
+        return "other"
+    if len(set(names)) != len(names):
+        return "other"
+    teams = {event.away_team_name, event.home_team_name}
+    if len(names) == 2 and set(names) == teams:
+        return "two_team_outcomes"
+    if len(names) == 3 and teams.issubset(names):
+        return "three_way"
+    return "other"
+
+
 def parse_nhl_h2h_odds(raw: bytes) -> NHLOddsCandidates:
     """Accept only two named outcomes from listed French bookmakers.
 
@@ -126,6 +155,7 @@ def parse_nhl_h2h_odds(raw: bytes) -> NHLOddsCandidates:
     events: list[NHLEventCandidate] = []
     quotes: list[NHLTwoWayQuote] = []
     rejected: list[tuple[str, str]] = []
+    shapes: list[tuple[str, str, str]] = []
     seen_ids: set[str] = set()
     for row in document:
         event = _event(row)
@@ -145,7 +175,9 @@ def parse_nhl_h2h_odds(raw: bytes) -> NHLOddsCandidates:
             if book_key in seen_books:
                 raise NHLOddsCandidateError("Bookmaker dupliqué.")
             seen_books.add(book_key)
-            if book_key not in FRENCH_BOOKMAKERS:
+            if book_key in FRENCH_BOOKMAKER_KEYS:
+                shapes.append((event.provider_event_id, book_key, _market_shape(bookmaker, event)))
+            if book_key not in VERIFIED_TWO_WAY_BOOKMAKERS:
                 rejected.append((event.provider_event_id, book_key))
                 continue
             markets = bookmaker.get("markets")
@@ -180,4 +212,5 @@ def parse_nhl_h2h_odds(raw: bytes) -> NHLOddsCandidates:
         tuple(sorted(events, key=lambda item: (item.start_utc, item.provider_event_id))),
         tuple(sorted(quotes, key=lambda item: (item.provider_event_id, item.bookmaker_key))),
         tuple(sorted(rejected)),
+        tuple(sorted(shapes)),
     )

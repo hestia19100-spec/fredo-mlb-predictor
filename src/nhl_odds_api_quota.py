@@ -14,6 +14,8 @@ from typing import Callable
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
+from src.nhl.odds_api_candidates import ODDS_BOOKMAKERS
+
 
 EVENTS_URL = "https://api.the-odds-api.com/v4/sports/icehockey_nhl/events"
 ODDS_URL = "https://api.the-odds-api.com/v4/sports/icehockey_nhl/odds"
@@ -32,7 +34,7 @@ def _kind_and_cost(url: str, params: dict[str, str]) -> tuple[str, int]:
     if url == EVENTS_URL and fields == {}:
         return "events", 0
     if url == ODDS_URL and fields == {
-        "bookmakers": "netbet_fr", "markets": "h2h", "oddsFormat": "decimal",
+        "bookmakers": ODDS_BOOKMAKERS, "markets": "h2h", "oddsFormat": "decimal",
     }:
         return "odds", 1
     if url == SCORES_URL and fields == {"daysFrom": "3", "dateFormat": "iso"}:

@@ -114,6 +114,20 @@ class OfficialEventReconciliationTests(unittest.TestCase):
         self.assertEqual(rejected.matched, ())
         self.assertEqual(rejected.late_nhl_game_ids, (2026020070,))
 
+    def test_duplicate_official_fixture_is_ambiguous(self) -> None:
+        result = reconcile_nhl_schedule_events(
+            schedule(game(), game(id=2026020071)), TARGET, SCHEDULE_AT,
+            events(event()), ODDS_AT)
+        self.assertEqual(result.matched, ())
+        self.assertEqual(result.ambiguous_nhl_game_ids, (2026020070, 2026020071))
+
+    def test_late_schedule_capture_is_not_prospective(self) -> None:
+        late = datetime(2026, 10, 10, 19, 1, tzinfo=timezone.utc)
+        result = reconcile_nhl_schedule_events(
+            schedule(game()), TARGET, late, events(event()), ODDS_AT)
+        self.assertEqual(result.matched, ())
+        self.assertEqual(result.late_nhl_game_ids, (2026020070,))
+
     def test_missing_official_full_name_fails_closed(self) -> None:
         raw = schedule(game(awayTeam={"abbrev": "MTL"}))
         result = reconcile_nhl_schedule_events(

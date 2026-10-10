@@ -48,9 +48,10 @@ def capture_nhl_daily_pregame(
     root: Path = NHL_DATA_ROOT / "odds_api_capture_only",
     transport: Callable = requests.get,
     now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+    on_reserved: Callable[[], None] | None = None,
 ) -> NHLOddsCaptureReceipt:
     """Capture bookmaker-listed events and odds, once per Paris day."""
-    gate = NHLDailyQuotaGate(ledger_path, DAILY_LIMIT, transport, now)
+    gate = NHLDailyQuotaGate(ledger_path, DAILY_LIMIT, transport, now, on_reserved)
     return capture_nhl_odds_candidates(root=root, transport=gate.get, now=now)
 
 
@@ -60,9 +61,10 @@ def capture_nhl_daily_scores(
     root: Path = DEFAULT_SCORES_ROOT,
     transport: Callable = requests.get,
     now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+    on_reserved: Callable[[], None] | None = None,
 ) -> NHLDailyScoresReceipt:
     """Archive recent provider scores; they are not official NHL labels."""
-    gate = NHLDailyQuotaGate(ledger_path, DAILY_LIMIT, transport, now)
+    gate = NHLDailyQuotaGate(ledger_path, DAILY_LIMIT, transport, now, on_reserved)
     key = _read_api_key()
     started = _utc(now)
     raw, quota = _get(gate.get, SCORES_URL, key, {"daysFrom": "3", "dateFormat": "iso"})

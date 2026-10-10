@@ -61,6 +61,7 @@ class NHLDailyQuotaGate:
         daily_limit: int,
         transport: Callable,
         now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+        on_reserved: Callable[[], None] | None = None,
     ) -> None:
         if type(daily_limit) is not int or daily_limit < 0:
             raise NHLQuotaError("Plafond quotidien NHL invalide.")
@@ -68,6 +69,7 @@ class NHLDailyQuotaGate:
         self.daily_limit = daily_limit
         self.transport = transport
         self.now = now
+        self.on_reserved = on_reserved
 
     def _connect(self) -> sqlite3.Connection:
         self.ledger_path.parent.mkdir(parents=True, exist_ok=True)
@@ -130,6 +132,13 @@ class NHLDailyQuotaGate:
         if timeout != 30 or allow_redirects is not False:
             raise NHLQuotaError("Paramètres de transport NHL inattendus.")
         token = self._reserve(_paris_day(self.now), kind, cost)
+        if self.on_reserved is not None:
+            try:
+                self.on_reserved()
+            except Exception:
+                # The reservation remains charged locally. In particular, no
+                # provider request may precede durable publication of it.
+                raise NHLQuotaError("Réservation NHL non publiée; aucun appel fournisseur effectué.") from None
         try:
             response = self.transport(
                 url, params=params, timeout=timeout, allow_redirects=allow_redirects,

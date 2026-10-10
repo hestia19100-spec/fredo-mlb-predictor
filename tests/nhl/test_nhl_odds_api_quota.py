@@ -146,6 +146,40 @@ class NHLQuotaTests(unittest.TestCase):
         self.assertEqual(sorted(results), ["blocked", "ok"])
         self.assertEqual(self.calls, [ODDS_URL])
 
+    def test_reservation_must_be_published_before_transport(self):
+        observed = []
+
+        def publish():
+            with sqlite3.connect(self.path) as connection:
+                observed.extend(connection.execute(
+                    "SELECT kind, reserved_cost FROM requests"
+                ).fetchall())
+
+        gate = NHLDailyQuotaGate(
+            self.path, 3, self.transport, now=lambda: self.now,
+            on_reserved=publish,
+        )
+        self.call(gate, ODDS_URL, ODDS)
+        self.assertEqual(observed, [("odds", 1)])
+        self.assertEqual(self.calls, [ODDS_URL])
+
+    def test_failed_publication_blocks_provider_and_retains_reservation(self):
+        def fail():
+            raise RuntimeError("secret=" + KEY)
+
+        gate = NHLDailyQuotaGate(
+            self.path, 3, self.transport, now=lambda: self.now,
+            on_reserved=fail,
+        )
+        with self.assertRaises(NHLQuotaError) as caught:
+            self.call(gate, SCORES_URL, SCORES)
+        self.assertNotIn(KEY, str(caught.exception))
+        self.assertEqual(self.calls, [])
+        with sqlite3.connect(self.path) as connection:
+            self.assertEqual(connection.execute(
+                "SELECT reserved_cost, actual_cost FROM requests"
+            ).fetchone(), (2, None))
+
     def _attempt(self, gate, url, params):
         try:
             self.call(gate, url, params)

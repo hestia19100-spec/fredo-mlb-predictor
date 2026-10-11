@@ -1,0 +1,23 @@
+{
+  "schema_version": "nhl_prospective_shadow_observation_v1",
+  "purpose": "private_prospective_observation_only",
+  "lead_minutes": 60,
+  "market": "two_way_including_overtime_and_shootout",
+  "source": "verified_frozen_research_fit_and_verified_current_season_import",
+  "training_seasons": [
+    2021,
+    2022,
+    2023
+  ],
+  "current_season_min_prior_games_per_team": 5,
+  "prior_utc_dates_only": true,
+  "source_capture_and_import_before_cutoff": true,
+  "official_tie_labels_before_cutoff": true,
+  "retrospective_asof_proven": false,
+  "production_training_permitted": false,
+  "subscriber_publication_permitted": false,
+  "betting_recommendation_permitted": false,
+  "network_calls_allowed": false,
+  "odds_api_calls_allowed": false,
+  "public_repo_observation_storage_allowed": false
+}

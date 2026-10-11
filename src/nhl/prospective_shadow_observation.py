@@ -6,7 +6,7 @@ prospective performance record.
 """
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
 from hashlib import sha256
@@ -182,16 +182,16 @@ def _current_features(imported: CurrentSeasonImport, game: ScheduledGame
     return vector, source_ids[game.away_abbr], source_ids[game.home_abbr]
 
 
-def _fit_verified_research_model(cutoff: datetime):
+def _fit_verified_research_model(available_by: datetime):
     """Fit only 2021-23 in memory, after checking every source existed by cutoff."""
     research_policy_hash()
     frozen = audit_frozen_historical_source()
     source = verify_team_capture(frozen.team_slot, allowed_root=TEAM_ROOT)
-    if source.observed_at_utc > cutoff:
+    if source.observed_at_utc > available_by:
         raise NHLProspectiveShadowError("Source d'entraînement reçue après le cutoff.")
     finals = tuple(_verify(slot, source, FINAL_ROOT) for slot in _slots(FINAL_ROOT))
     if (len(finals) != frozen.verified_official_tie_finals
-            or any(item.observed_at_utc > cutoff for item in finals)):
+            or any(item.observed_at_utc > available_by for item in finals)):
         raise NHLProspectiveShadowError("Résultats d'entraînement reçus après le cutoff.")
     examples = build_exploratory_examples(
         source.history, {item.game_id: item.winner_abbr for item in finals})
@@ -236,7 +236,7 @@ def build_prospective_shadow_observation(
             or imported.effective_available_at_utc > cutoff):
         raise NHLProspectiveShadowError("Statistiques reçues après la limite pré-match.")
     vector, away_ids, home_ids = _current_features(imported, game)
-    model, source_sha, train_sha, official_count = _fit_verified_research_model(cutoff)
+    model, source_sha, train_sha, official_count = _fit_verified_research_model(observed)
     probability = float(model.predict_proba(np.asarray([vector], dtype=float))[0, 1])
     if not isfinite(probability) or not 0 <= probability <= 1:
         raise NHLProspectiveShadowError("Probabilité exploratoire invalide.")

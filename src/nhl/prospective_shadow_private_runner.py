@@ -133,7 +133,7 @@ def run_private_shadow(
             except (OSError, ValueError, TypeError, KeyError) as error:
                 raise NHLPrivateShadowRunnerError("Observation privée invalide.") from error
             if (previous.game_id != game_id
-                    or previous.scheduled_start_utc != game["scheduled_start_utc"]
+                    or _time(previous.scheduled_start_utc) != _time(game["scheduled_start_utc"])
                     or slot.parent.name != previous.scheduled_start_utc[:10]):
                 raise NHLPrivateShadowRunnerError("Match privé reprogrammé ou ambigu.")
             eligible += 1

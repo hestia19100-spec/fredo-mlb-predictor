@@ -1,7 +1,7 @@
 """A research forecast may only be sealed in the separate private ops tree."""
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import asdict, replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import json
@@ -59,6 +59,16 @@ class PrivateShadowSealTests(unittest.TestCase):
             seal_private_shadow_observation(
                 replace(observation(), home_win_probability=0.9),
                 private_repository_root=self.private, explicit_private_seal=True)
+        invalid = asdict(observation())
+        invalid["home_win_probability"] = 1.1
+        invalid["away_win_probability"] = -0.1
+        invalid.pop("observation_sha256")
+        bad_probability = ProspectiveShadowObservation(
+            **invalid, observation_sha256=_digest(invalid))
+        with self.assertRaisesRegex(NHLPrivateShadowSealError, "incohérente"):
+            seal_private_shadow_observation(
+                bad_probability, private_repository_root=self.private,
+                explicit_private_seal=True)
         late = replace(observation(), observed_at_utc="2026-10-10T19:01:00.000000Z")
         with self.assertRaisesRegex(NHLPrivateShadowSealError, "incohérente"):
             seal_private_shadow_observation(

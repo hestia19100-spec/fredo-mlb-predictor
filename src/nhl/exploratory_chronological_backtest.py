@@ -19,6 +19,7 @@ from sklearn.metrics import accuracy_score, brier_score_loss, log_loss
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 
+from .database import PROJECT_ROOT
 from .frozen_historical_source import audit_frozen_historical_source
 from .historical_asof_coverage import classify_frozen_source_timing
 from .historical_final_backlog import _slots
@@ -36,10 +37,42 @@ FEATURES = (
 )
 SPLITS = {2021: "TRAIN", 2022: "TRAIN", 2023: "TRAIN",
           2024: "VALIDATION", 2025: "HOLDOUT"}
+POLICY_PATH = PROJECT_ROOT / "nhl_protocols/data/nhl_exploratory_chronological_backtest_v1.json"
 
 
 class NHLExploratoryBacktestError(ValueError):
     """Retrospective examples or a chronological evaluation are inconsistent."""
+
+
+def _policy_hash() -> str:
+    try:
+        raw = POLICY_PATH.read_bytes()
+        policy = json.loads(raw)
+    except (OSError, ValueError) as error:
+        raise NHLExploratoryBacktestError("Protocole exploratoire illisible.") from error
+    expected = {
+        "schema_version": "nhl_exploratory_chronological_backtest_v1",
+        "purpose": "aggregate_research_metrics_only",
+        "source": "verified_frozen_retrospective_moneypuck_capture",
+        "train_seasons": [2021, 2022, 2023],
+        "validation_seasons": [2024], "holdout_seasons": [2025],
+        "lagged_prior_game_dates_only": True,
+        "same_day_source_games_excluded": True,
+        "official_final_required_for_tied_source_scores": True,
+        "source_decisive_labels_not_independently_verified": True,
+        "historical_asof_proven": False,
+        "research_fit_permitted": True,
+        "production_training_permitted": False,
+        "model_artifact_allowed": False,
+        "per_game_predictions_allowed": False,
+        "prediction_publication_permitted": False,
+        "network_calls_allowed": False,
+        "odds_api_calls_allowed": False,
+        "database_mutation_allowed": False,
+    }
+    if not isinstance(policy, dict) or any(policy.get(k) != v for k, v in expected.items()):
+        raise NHLExploratoryBacktestError("Protocole exploratoire incompatible.")
+    return sha256(raw).hexdigest()
 
 
 @dataclass(frozen=True, slots=True)
@@ -200,12 +233,14 @@ def evaluate_exploratory_examples(
     historical_games: int, official_tie_labels: int,
 ) -> NHLExploratoryBacktest:
     """One fixed logistic fit on 2021-23; 2024/25 never fit or tune."""
+    policy_sha256 = _policy_hash()
     if (not isinstance(examples, tuple)
             or len(examples) >= historical_games
             or len(examples) < 1
             or type(historical_games) is not int
             or type(official_tie_labels) is not int
             or official_tie_labels < 0
+            or official_tie_labels > historical_games
             or not isinstance(source_capture_sha256, str)
             or len(source_capture_sha256) != 64
             or any(char not in "0123456789abcdef"
@@ -220,6 +255,8 @@ def evaluate_exploratory_examples(
                 or len(item.features) != len(FEATURES)
                 or not all(isfinite(value) for value in item.features)):
             raise NHLExploratoryBacktestError("Exemple invalide.")
+    if official_tie_labels < sum(item.label_source == "OFFICIAL_TIE" for item in examples):
+        raise NHLExploratoryBacktestError("Nombre de labels officiels insuffisant.")
     by_role = {role: tuple(sorted(
         (item for item in examples if SPLITS[item.season] == role),
         key=lambda item: item.game_id
@@ -247,6 +284,7 @@ def evaluate_exploratory_examples(
     proof = {
         "schema": "nhl_exploratory_chronological_backtest_v1",
         "source_capture_sha256": source_capture_sha256,
+        "policy_sha256": policy_sha256,
         "historical_games": historical_games,
         "official_tie_labels": official_tie_labels,
         "features": FEATURES,

@@ -54,6 +54,17 @@ class PrivateShadowSealTests(unittest.TestCase):
                 observation(), private_repository_root=self.private,
                 explicit_private_seal=True)
 
+    def test_exact_one_hour_boundary_can_be_sealed(self):
+        fields = asdict(observation())
+        fields["observed_at_utc"] = fields["information_cutoff_utc"]
+        fields.pop("observation_sha256")
+        at_cutoff = ProspectiveShadowObservation(
+            **fields, observation_sha256=_digest(fields))
+        result = seal_private_shadow_observation(
+            at_cutoff, private_repository_root=self.private,
+            explicit_private_seal=True)
+        self.assertTrue((result / "COMPLETED").is_file())
+
     def test_reject_late_or_tampered_observation(self):
         with self.assertRaisesRegex(NHLPrivateShadowSealError, "incohérente"):
             seal_private_shadow_observation(

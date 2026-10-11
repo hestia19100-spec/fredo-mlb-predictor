@@ -8,7 +8,6 @@ only audits candidate coverage; it does not fit or authorize a model.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
 from hashlib import sha256
 import json
 from pathlib import Path

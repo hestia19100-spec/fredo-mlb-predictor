@@ -8,6 +8,7 @@ from dataclasses import asdict
 from datetime import datetime
 from hashlib import sha256
 import json
+from math import isfinite
 from pathlib import Path
 
 from .database import PROJECT_ROOT
@@ -38,7 +39,11 @@ def _validate(observation: ProspectiveShadowObservation) -> dict[str, object]:
         start = datetime.fromisoformat(record["scheduled_start_utc"].replace("Z", "+00:00"))
     except (TypeError, ValueError) as error:
         raise NHLPrivateShadowSealError("Heures de l'observation invalides.") from error
+    probabilities = (record["home_win_probability"], record["away_win_probability"])
     if (type(record["game_id"]) is not int or record["game_id"] <= 0
+            or any(type(p) is not float or not isfinite(p) or not 0 <= p <= 1
+                   for p in probabilities)
+            or abs(sum(probabilities) - 1.0) > 1e-12
             or digest != expected
             or not observed < cutoff < start
             or record["status"] != "PRIVATE_RESEARCH_SHADOW_ONLY"

@@ -5,6 +5,8 @@ from dataclasses import replace
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from types import SimpleNamespace
+from pathlib import Path
+from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
 
@@ -66,6 +68,18 @@ class ExploratoryEvaluationTests(unittest.TestCase):
         self.assertEqual(first.splits[0], second.splits[0])
         self.assertNotEqual(first.splits[2].model_brier,
                             second.splits[2].model_brier)
+
+    def test_incompatible_research_protocol_blocks_fit(self) -> None:
+        with TemporaryDirectory() as temporary:
+            policy = Path(temporary) / "policy.json"
+            policy.write_text('{"schema_version":"tampered"}', encoding="utf-8")
+            with patch(
+                "src.nhl.exploratory_chronological_backtest.POLICY_PATH", policy
+            ):
+                with self.assertRaisesRegex(
+                    NHLExploratoryBacktestError, "incompatible"
+                ):
+                    self.evaluate(examples())
 
     def test_duplicate_game_and_invalid_label_fail_closed(self) -> None:
         original = examples()
@@ -137,9 +151,7 @@ class ExploratoryLabelJoinTests(unittest.TestCase):
             self.build({})
 
     def test_same_day_prior_form_fails_closed(self):
-        bad = replace(self.forms[0], last_prior_date=self.day) if hasattr(
-            self.forms[0], "__dataclass_fields__"
-        ) else SimpleNamespace(**{
+        bad = SimpleNamespace(**{
             **vars(self.forms[0]), "last_prior_date": self.day
         })
         self.forms = (bad,) + self.forms[1:]

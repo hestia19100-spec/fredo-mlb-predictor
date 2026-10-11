@@ -45,7 +45,7 @@ def _validate(observation: ProspectiveShadowObservation) -> dict[str, object]:
                    for p in probabilities)
             or abs(sum(probabilities) - 1.0) > 1e-12
             or digest != expected
-            or not observed < cutoff < start
+            or not observed <= cutoff < start
             or record["status"] != "PRIVATE_RESEARCH_SHADOW_ONLY"
             or record["production_training_permitted"] is not False
             or record["prediction_publication_permitted"] is not False

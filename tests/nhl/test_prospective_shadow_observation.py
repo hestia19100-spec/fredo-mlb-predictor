@@ -7,6 +7,7 @@ from decimal import Decimal
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -16,6 +17,7 @@ from src.nhl.current_season_import import CurrentSeasonImport
 from src.nhl.moneypuck_team_import import TeamGameRow
 from src.nhl.prospective_shadow_observation import (
     NHLProspectiveShadowError, POLICY_PATH, _current_features,
+    _fit_verified_research_model,
     build_prospective_shadow_observation,
 )
 from src.nhl.exploratory_chronological_backtest import POLICY_PATH as RESEARCH_POLICY
@@ -134,6 +136,34 @@ class ProspectiveShadowTests(unittest.TestCase):
                          (replace(_imported().regular_rows[0], game_id=GAME_ID),))
         with self.assertRaisesRegex(NHLProspectiveShadowError, "match cible"):
             _current_features(leaked, game)
+
+    def test_training_evidence_must_precede_observation_instant(self):
+        earlier = datetime(2026, 10, 9, 12, tzinfo=UTC)
+        late = datetime(2026, 10, 9, 13, tzinfo=UTC)
+        frozen = SimpleNamespace(team_slot=Path("/frozen"), verified_official_tie_finals=1)
+        source = SimpleNamespace(observed_at_utc=late)
+        with (
+            patch("src.nhl.prospective_shadow_observation.audit_frozen_historical_source",
+                  return_value=frozen),
+            patch("src.nhl.prospective_shadow_observation.verify_team_capture",
+                  return_value=source),
+        ):
+            with self.assertRaisesRegex(NHLProspectiveShadowError, "Source d'entraînement"):
+                _fit_verified_research_model(earlier)
+        source.observed_at_utc = earlier
+        final = SimpleNamespace(observed_at_utc=late)
+        with (
+            patch("src.nhl.prospective_shadow_observation.audit_frozen_historical_source",
+                  return_value=frozen),
+            patch("src.nhl.prospective_shadow_observation.verify_team_capture",
+                  return_value=source),
+            patch("src.nhl.prospective_shadow_observation._slots",
+                  return_value=(Path("/final"),)),
+            patch("src.nhl.prospective_shadow_observation._verify",
+                  return_value=final),
+        ):
+            with self.assertRaisesRegex(NHLProspectiveShadowError, "Résultats d'entraînement"):
+                _fit_verified_research_model(earlier)
 
     def test_shadow_policy_cannot_enable_subscriber_publication(self):
         policy = json.loads(POLICY_PATH.read_text(encoding="utf-8"))

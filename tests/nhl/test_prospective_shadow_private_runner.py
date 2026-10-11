@@ -1,13 +1,17 @@
 """Offline checks for the private NHL shadow scheduler."""
 from __future__ import annotations
 
+from dataclasses import asdict
 from datetime import datetime, timezone
+import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
+from src.nhl.prospective_shadow_observation import _digest
+from tests.nhl.test_prospective_shadow_seal import observation
 from src.nhl.prospective_shadow_private_runner import (
     NHLPrivateShadowRunnerError, run_private_shadow,
 )
@@ -104,6 +108,43 @@ class PrivateShadowRunnerTests(unittest.TestCase):
         self.assertIs(builder.call_args.kwargs["explicit_shadow_run"], True)
         self.assertEqual(seal.call_args.kwargs["private_repository_root"], self.private)
         self.assertIs(seal.call_args.kwargs["explicit_private_seal"], True)
+
+    def test_existing_private_receipt_is_reused_without_retraining(self):
+        self.schedule()
+        self.imported()
+        slot = (self.private / "captures" / "nhl" / "shadow"
+                / "2026-10-12" / str(GAME["game_id"]))
+        slot.mkdir(parents=True)
+        fields = asdict(observation())
+        fields.pop("observation_sha256")
+        fields["scheduled_start_utc"] = "2026-10-12T20:00:00.000000Z"
+        fields["observed_at_utc"] = "2026-10-11T11:00:00.000000Z"
+        fields["information_cutoff_utc"] = "2026-10-12T19:00:00.000000Z"
+        fields["observation_sha256"] = _digest(fields)
+        (slot / "observation.json").write_text(json.dumps(fields), encoding="utf-8")
+        (slot / "COMPLETED").touch()
+        audit = {
+            "observed_at_utc": "2026-10-11T10:00:00Z",
+            "games": [GAME],
+        }
+        current = SimpleNamespace(
+            season=2026, effective_available_at_utc=
+            datetime(2026, 10, 11, 11, tzinfo=timezone.utc))
+        with (
+            patch("src.nhl.prospective_shadow_private_runner.audit_schedule_capture",
+                  return_value=audit),
+            patch("src.nhl.prospective_shadow_private_runner.verify_current_season_import",
+                  return_value=current),
+            patch("src.nhl.prospective_shadow_private_runner.build_prospective_shadow_observation"
+                  ) as builder,
+            patch("src.nhl.prospective_shadow_private_runner.seal_private_shadow_observation"
+                  ) as seal,
+        ):
+            summary = self.run_it()
+        self.assertEqual(summary.already_sealed_games, 1)
+        self.assertEqual(summary.sealed_games, 0)
+        builder.assert_not_called()
+        seal.assert_not_called()
 
     def test_one_hour_cutoff_and_old_games_are_excluded(self):
         self.schedule()

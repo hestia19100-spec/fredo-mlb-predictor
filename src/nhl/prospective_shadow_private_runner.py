@@ -8,6 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+import json
 from typing import Callable
 
 from .current_season_import import (
@@ -16,11 +17,12 @@ from .current_season_import import (
 from .database import PROJECT_ROOT
 from .moneypuck_team_capture import DEFAULT_ROOT as TEAM_ROOT
 from .prospective_shadow_observation import (
-    NHLProspectiveShadowError, build_prospective_shadow_observation,
+    NHLProspectiveShadowError, ProspectiveShadowObservation,
+    build_prospective_shadow_observation,
 )
 from .prospective_shadow_seal import (
     NHLPrivateShadowSealError, PRIVATE_REPOSITORY_NAME,
-    seal_private_shadow_observation,
+    _validate as validate_private_observation, seal_private_shadow_observation,
 )
 from .public_schedule_capture import DEFAULT_ROOT as SCHEDULE_ROOT
 from .schedule_capture_readiness import audit_schedule_capture
@@ -114,6 +116,29 @@ def run_private_shadow(
         if selected is None:
             missing += 1
             continue
+        base = private_root / "captures" / "nhl" / "shadow"
+        existing = sorted(base.glob(f"*/{game_id}"))
+        if existing:
+            if len(existing) != 1:
+                raise NHLPrivateShadowRunnerError("Observations privées dupliquées.")
+            slot = existing[0]
+            if (slot.is_symlink() or (slot / "observation.json").is_symlink()
+                    or (slot / "COMPLETED").is_symlink()
+                    or not (slot / "COMPLETED").is_file()):
+                raise NHLPrivateShadowRunnerError("Observation privée incomplète.")
+            try:
+                record = json.loads((slot / "observation.json").read_text(encoding="utf-8"))
+                previous = ProspectiveShadowObservation(**record)
+                validate_private_observation(previous)
+            except (OSError, ValueError, TypeError, KeyError) as error:
+                raise NHLPrivateShadowRunnerError("Observation privée invalide.") from error
+            if (previous.game_id != game_id
+                    or previous.scheduled_start_utc != game["scheduled_start_utc"]
+                    or slot.parent.name != previous.scheduled_start_utc[:10]):
+                raise NHLPrivateShadowRunnerError("Match privé reprogrammé ou ambigu.")
+            eligible += 1
+            already += 1
+            continue
         try:
             observation = build_prospective_shadow_observation(
                 schedule_slot, selected[1], target_game_id=game_id,
@@ -125,13 +150,6 @@ def run_private_shadow(
                 continue
             raise
         eligible += 1
-        destination = (private_root / "captures" / "nhl" / "shadow"
-                       / observation.scheduled_start_utc[:10] / str(game_id))
-        if destination.exists() or destination.is_symlink():
-            if not (destination / "COMPLETED").is_file():
-                raise NHLPrivateShadowRunnerError("Observation privée incomplète.")
-            already += 1
-            continue
         try:
             seal_private_shadow_observation(
                 observation, private_repository_root=private_root,

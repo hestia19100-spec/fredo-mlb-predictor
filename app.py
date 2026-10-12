@@ -27,6 +27,11 @@ navigation = st.navigation(
             icon="📊",
         ),
         st.Page(
+            "pages/5_NHL.py",
+            title="NHL — suivi",
+            icon="🏒",
+        ),
+        st.Page(
             "pages/4_Sauvegardes.py",
             title="Sauvegardes",
             icon="💾",

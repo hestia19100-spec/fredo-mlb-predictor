@@ -75,10 +75,13 @@ def run_private_capture(
     *,
     transport: Callable = requests.get,
     now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+    capture_slot: str = "early",
 ) -> Path:
     """Run one capture, never a model, wager, label or publication."""
     if mode not in {"pregame", "scores"}:
         raise NHLPrivateRunnerError("Mode NHL inconnu.")
+    if mode == "scores" and capture_slot != "early":
+        raise NHLPrivateRunnerError("Les scores ne disposent pas de créneau supplémentaire.")
     publisher = PrivateGitLedger(repo)
     capture_root = publisher.repo / "captures" / "nhl" / mode
     common = {
@@ -89,7 +92,7 @@ def run_private_capture(
         "on_reserved": publisher.publish_reservation,
     }
     if mode == "pregame":
-        receipt = capture_nhl_daily_pregame(**common)
+        receipt = capture_nhl_daily_pregame(**common, capture_slot=capture_slot)
     else:
         receipt = capture_nhl_daily_scores(**common)
     publisher.publish_capture(receipt.path)
@@ -100,9 +103,10 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Collecte NHL privée, sans pronostic.")
     parser.add_argument("mode", choices=("pregame", "scores"))
     parser.add_argument("--private-repo", type=Path, required=True)
+    parser.add_argument("--slot", choices=("early", "late", "night"), default="early")
     args = parser.parse_args()
     try:
-        run_private_capture(args.private_repo, args.mode)
+        run_private_capture(args.private_repo, args.mode, capture_slot=args.slot)
     except Exception:
         # Neither request URLs nor provider exception text may reach Action logs.
         parser.exit(1, "Collecte NHL interrompue; vérifier le dépôt privé et le quota.\n")

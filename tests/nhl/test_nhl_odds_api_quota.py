@@ -64,6 +64,39 @@ class NHLQuotaTests(unittest.TestCase):
             self.assertEqual(rows, [("events", 0), ("odds", 1), ("scores", 2)])
             self.assertNotIn(KEY, str(rows))
 
+    def test_three_pregame_windows_and_one_score_call_fit_five_credits(self):
+        for slot in ("early", "late", "night"):
+            gate = NHLDailyQuotaGate(
+                self.path, 5, self.transport, now=lambda: self.now,
+                capture_slot=slot,
+            )
+            self.call(gate, EVENTS_URL, EVENTS)
+            self.call(gate, ODDS_URL, ODDS)
+        self.call(self.gate(limit=5), SCORES_URL, SCORES)
+        self.assertEqual(self.calls.count(ODDS_URL), 3)
+        self.assertEqual(self.calls.count(SCORES_URL), 1)
+        with sqlite3.connect(self.path) as connection:
+            self.assertEqual(connection.execute(
+                "SELECT SUM(COALESCE(actual_cost, reserved_cost)) FROM requests",
+            ).fetchone(), (5,))
+        with self.assertRaisesRegex(NHLQuotaError, "déjà tenté"):
+            self.call(self.gate(limit=5), ODDS_URL, ODDS)
+        self.assertEqual(self.calls.count(ODDS_URL), 3)
+
+    def test_extra_window_cannot_be_retried_or_used_for_scores(self):
+        gate = NHLDailyQuotaGate(
+            self.path, 5, self.transport, now=lambda: self.now,
+            capture_slot="late",
+        )
+        self.call(gate, ODDS_URL, ODDS)
+        with self.assertRaisesRegex(NHLQuotaError, "déjà tenté"):
+            self.call(gate, ODDS_URL, ODDS)
+        with self.assertRaisesRegex(NHLQuotaError, "scores"):
+            self.call(gate, SCORES_URL, SCORES)
+        with self.assertRaisesRegex(NHLQuotaError, "Créneau"):
+            NHLDailyQuotaGate(self.path, 5, self.transport, capture_slot="other")
+        self.assertEqual(self.calls, [ODDS_URL])
+
     def test_repeat_is_blocked_before_transport(self):
         gate = self.gate()
         self.call(gate, ODDS_URL, ODDS)

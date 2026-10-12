@@ -24,7 +24,7 @@ from src.nhl_odds_api_quota import NHLDailyQuotaGate, SCORES_URL
 from src.odds_api import _read_api_key
 
 
-DAILY_LIMIT = 3
+DAILY_LIMIT = 5
 DEFAULT_LEDGER = NHL_DATA_ROOT / "odds_api_capture_only" / "daily_quota.sqlite"
 DEFAULT_SCORES_ROOT = NHL_DATA_ROOT / "odds_api_scores_capture_only"
 SCORES_SCHEMA = "nhl_odds_api_scores_capture_only_v1"
@@ -49,9 +49,11 @@ def capture_nhl_daily_pregame(
     transport: Callable = requests.get,
     now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     on_reserved: Callable[[], None] | None = None,
+    capture_slot: str = "early",
 ) -> NHLOddsCaptureReceipt:
-    """Capture bookmaker-listed events and odds, once per Paris day."""
-    gate = NHLDailyQuotaGate(ledger_path, DAILY_LIMIT, transport, now, on_reserved)
+    """Capture bookmaker-listed events and odds, once per named Paris-day window."""
+    gate = NHLDailyQuotaGate(ledger_path, DAILY_LIMIT, transport, now, on_reserved,
+                             capture_slot=capture_slot)
     return capture_nhl_odds_candidates(root=root, transport=gate.get, now=now)
 
 

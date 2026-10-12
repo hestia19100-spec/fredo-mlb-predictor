@@ -1,4 +1,4 @@
-"""Fail-closed daily quota gate for the three approved NHL Odds API calls.
+"""Fail-closed daily quota gate for the approved NHL Odds API calls.
 
 The ledger contains no API key or response body. An uncertain request retains
 its full reservation, so a network error cannot trigger a free retry.
@@ -53,8 +53,8 @@ def _paris_day(now: Callable[[], datetime]) -> str:
 class NHLDailyQuotaGate:
     """Reserve a maximum cost atomically, then settle from provider headers.
 
-    A kind may be called at most once per Paris calendar day. Reservations
-    remain charged at their maximum cost after transport or header failure.
+    Each score call and each named pregame window may be attempted once per
+    Paris day. Reservations remain charged after transport or header failure.
     """
 
     def __init__(
@@ -64,9 +64,13 @@ class NHLDailyQuotaGate:
         transport: Callable,
         now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
         on_reserved: Callable[[], None] | None = None,
+        capture_slot: str = "early",
     ) -> None:
         if type(daily_limit) is not int or daily_limit < 0:
             raise NHLQuotaError("Plafond quotidien NHL invalide.")
+        if capture_slot not in {"early", "late", "night"}:
+            raise NHLQuotaError("Créneau NHL inconnu.")
+        self.capture_slot = capture_slot
         self.ledger_path = Path(ledger_path)
         self.daily_limit = daily_limit
         self.transport = transport
@@ -131,6 +135,10 @@ class NHLDailyQuotaGate:
     def get(self, url: str, *, params: dict[str, str], timeout: int, allow_redirects: bool):
         """A requests.get-compatible, fixed-parameter transport adapter."""
         kind, cost = _kind_and_cost(url, params)
+        if self.capture_slot != "early":
+            if kind == "scores":
+                raise NHLQuotaError("Les scores NHL ne disposent pas de créneau supplémentaire.")
+            kind = f"{kind}:{self.capture_slot}"
         if timeout != 30 or allow_redirects is not False:
             raise NHLQuotaError("Paramètres de transport NHL inattendus.")
         token = self._reserve(_paris_day(self.now), kind, cost)

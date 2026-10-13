@@ -135,6 +135,17 @@ class RemoteVisibilityTests(unittest.TestCase):
             with self.assertRaises(MLB2027RemoteError):
                 self._check()
 
+    def test_rejects_http_date_without_timezone(self) -> None:
+        response = _response(self.url, self.path, self.data)
+        response.headers["Date"] = "Wed, 20 Jan 2027 21:00:00"
+        with patch(
+            "src.mlb_2027_remote_visibility.requests.get", return_value=response,
+        ), patch(
+            "src.mlb_2027_remote_visibility._now_utc", return_value=RECEIVED,
+        ):
+            with self.assertRaises(MLB2027RemoteError):
+                self._check()
+
     def test_rejects_issued_time_mismatch_without_network(self) -> None:
         changed = datetime(2027, 1, 20, 20, 1, tzinfo=timezone.utc)
         with patch("src.mlb_2027_remote_visibility.requests.get") as get:

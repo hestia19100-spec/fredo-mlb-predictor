@@ -1,0 +1,24 @@
+{
+  "schema_version": "mlb_shadow_2027_timing_draft_v1",
+  "status": "DRAFT_NOT_REGISTERED_NOT_ACTIVE",
+  "target_season": 2027,
+  "scope": "MLB regular season prospective predictions only",
+  "earliest_start_rule": "minimum scheduled_start_utc among every game in the target day's certified schedule",
+  "minimum_local_completion_lead_minutes": 60,
+  "minimum_remote_publication_lead_minutes": 60,
+  "boundary_inclusive": true,
+  "suggested_run_start_lead_minutes": 90,
+  "clock_order": "issued_at_utc <= completed_at_utc <= remote_http_date_utc",
+  "remote_evidence": "GitHub HTTP Date attesting visibility of the immutable results commit",
+  "late_policy": "FAIL_CLOSED_NO_CERTIFICATION_NO_RETROSPECTIVE_BACKFILL",
+  "legacy_2026_protocol_unchanged": true,
+  "legacy_2026_engine_unchanged": true,
+  "activation_requirements": [
+    "new independently registered 2027 protocol before first prediction",
+    "new frozen 2027 execution manifest and verified model lineage",
+    "2027 prediction engine wired to this timing gate and tested end to end",
+    "remote certification verifies actual GitHub HTTP Date by T minus 60 minutes",
+    "scoring and final settlement exercised in dry run before first prediction"
+  ],
+  "subscriber_publication_permitted": false
+}

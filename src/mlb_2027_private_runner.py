@@ -5,6 +5,7 @@ l'archive n'est pas visible sur main du dépôt privé avant T−60.
 """
 from __future__ import annotations
 
+import argparse
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 import os
@@ -119,7 +120,6 @@ def run_private_reference_day(
     target_date: date,
     *,
     private_repo: Path,
-    github_token: str | None = None,
 ) -> PrivateRunResult:
     """Collecte, calcule, scelle et revérifie une journée sur GitHub privé.
 
@@ -129,7 +129,7 @@ def run_private_reference_day(
     _periods(target_date)
     archive_root = _check_private_checkout(private_repo, target_date)
     private_repo = private_repo.resolve(strict=True)
-    token = github_token if github_token is not None else os.environ.get("GITHUB_TOKEN")
+    token = os.environ.get("GITHUB_TOKEN")
     if type(token) is not str or not token.strip():
         raise MLB2027PrivateRunError("Accès GitHub privé indisponible.")
     observations = tuple(
@@ -159,3 +159,16 @@ def run_private_reference_day(
         target_date=target_date, archive=archive,
         completed_at_utc=completed_at, visibility=visibility,
     )
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Candidat MLB 2027, privé uniquement.")
+    parser.add_argument("--date", type=date.fromisoformat, required=True)
+    parser.add_argument("--private-repo", type=Path, required=True)
+    args = parser.parse_args()
+    result = run_private_reference_day(args.date, private_repo=args.private_repo)
+    print(f"{result.target_date.isoformat()}: {result.status}")
+
+
+if __name__ == "__main__":
+    main()

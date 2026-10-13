@@ -28,6 +28,7 @@ def finals(team_id: int, count: int, id_offset: int) -> tuple[PriorFinalGame, ..
         PriorFinalGame(
             game_id=id_offset + index,
             official_date=date(2027, 4, 1) + timedelta(days=index),
+            game_type="R",
             away_team_id=team_id,
             home_team_id=id_offset + 100 + index,
             away_score=4,
@@ -42,6 +43,7 @@ def target() -> UpcomingGame:
     return UpcomingGame(
         game_id=9000,
         official_date=DAY,
+        game_type="R",
         away_team_id=1,
         home_team_id=2,
         scheduled_start_utc=START,
@@ -92,6 +94,13 @@ class MLB2027ReferenceReadinessTests(unittest.TestCase):
             with self.subTest(official_date=official_date):
                 with self.assertRaises(MLB2027ReadinessError):
                     plan((replace(base, official_date=official_date),))
+
+    def test_spring_training_cannot_count_as_regular_history(self) -> None:
+        prior = finals(1, 1, 1000)[0]
+        with self.assertRaises(MLB2027ReadinessError):
+            plan((replace(prior, game_type="S"),))
+        with self.assertRaises(MLB2027ReadinessError):
+            plan((), (replace(target(), game_type="S"),))
 
     def test_duplicate_game_or_unfinished_game_fails_closed(self) -> None:
         prior = finals(1, 1, 1000)[0]

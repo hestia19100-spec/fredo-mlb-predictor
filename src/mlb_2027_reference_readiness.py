@@ -31,6 +31,7 @@ class MLB2027ReadinessError(ValueError):
 class UpcomingGame:
     game_id: int
     official_date: date
+    game_type: Literal["R"]
     away_team_id: int
     home_team_id: int
     scheduled_start_utc: datetime
@@ -41,6 +42,7 @@ class UpcomingGame:
 class PriorFinalGame:
     game_id: int
     official_date: date
+    game_type: Literal["R"]
     away_team_id: int
     home_team_id: int
     away_score: int
@@ -119,6 +121,7 @@ def plan_reference_readiness(
             type(game.official_date) is not date
             or game.official_date.year != 2027
             or game.official_date >= target_date
+            or game.game_type != "R"
             or game.status != "FINAL"
             or type(game.away_score) is not int
             or type(game.home_score) is not int
@@ -134,26 +137,24 @@ def plan_reference_readiness(
     for game in upcoming_games:
         if type(game) is not UpcomingGame:
             raise MLB2027ReadinessError("A target game is not an UpcomingGame.")
-    ordered = sorted(upcoming_games, key=lambda game: (
-        game.scheduled_start_utc, game.game_id
-    ))
-    for game in ordered:
-        if type(game) is not UpcomingGame:
-            raise MLB2027ReadinessError("A target game is not an UpcomingGame.")
         game_id = _positive_id(game.game_id, "target game_id")
         _teams(game.away_team_id, game.home_team_id)
         if (
             type(game.official_date) is not date
             or game.official_date != target_date
+            or game.game_type != "R"
             or game.status not in {"SCHEDULED", "PRE_GAME"}
             or game_id in seen_ids
         ):
-            raise MLB2027ReadinessError("Target games must be unique 2027 pregame decisions.")
+            raise MLB2027ReadinessError("Target games must be unique 2027 regular-season pregames.")
         seen_ids.add(game_id)
 
     window = build_lead_window(
-        target_date, (game.scheduled_start_utc for game in ordered)
+        target_date, (game.scheduled_start_utc for game in upcoming_games)
     )
+    ordered = sorted(upcoming_games, key=lambda game: (
+        game.scheduled_start_utc, game.game_id
+    ))
     decisions: list[GameReadiness] = []
     for game in ordered:
         away_count = counts[game.away_team_id]

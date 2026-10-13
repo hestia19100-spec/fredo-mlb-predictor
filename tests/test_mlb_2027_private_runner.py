@@ -124,6 +124,7 @@ class PrivateRunnerTests(unittest.TestCase):
                 response_received_at_utc=COMPLETED,
             )
             with (
+                patch.dict("os.environ", {"GITHUB_TOKEN": "test-token"}),
                 patch("src.mlb_2027_private_runner._check_private_checkout",
                       return_value=repo / "mlb_2027_candidates"),
                 patch("src.mlb_2027_private_runner.fetch_schedule_range_observed",
@@ -135,7 +136,7 @@ class PrivateRunnerTests(unittest.TestCase):
                       return_value=proof) as verify,
             ):
                 result = run_private_reference_day(
-                    TARGET, private_repo=repo, github_token="test-token",
+                    TARGET, private_repo=repo,
                 )
             fetch.assert_called_once_with(date(2027, 1, 1), TARGET, ("R",))
             commit.assert_called_once()
@@ -158,7 +159,7 @@ class PrivateRunnerTests(unittest.TestCase):
             ):
                 with self.assertRaises(MLB2027PrivateRunError):
                     run_private_reference_day(
-                        TARGET, private_repo=repo, github_token="test-token",
+                        TARGET, private_repo=repo,
                     )
             commit.assert_not_called()
             verify.assert_not_called()

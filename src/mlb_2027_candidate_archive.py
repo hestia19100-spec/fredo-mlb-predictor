@@ -36,13 +36,18 @@ def _sha(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def _encode_date(item: object) -> str:
+    if hasattr(item, "isoformat"):
+        return item.isoformat()
+    raise TypeError(f"Type JSON non pris en charge : {type(item)!r}")
+
+
 def _json_bytes(value: object) -> bytes:
     return (
         json.dumps(
             value, sort_keys=True, separators=(",", ":"),
             ensure_ascii=False, allow_nan=False,
-            default=lambda item: item.isoformat()
-            if hasattr(item, "isoformat") else TypeError(type(item)),
+            default=_encode_date,
         ).encode("utf-8") + b"\n"
     )
 
@@ -85,7 +90,7 @@ def archive_reference_candidate(
         or issued_at_utc > calculation.readiness.lead_window.latest_completion_utc
     ):
         raise MLB2027ArchiveError("Candidat émis après la limite T-60 ou avant la source.")
-    if type(root) is not Path or root.is_symlink():
+    if not isinstance(root, Path) or root.is_symlink():
         raise MLB2027ArchiveError("Racine d'archive invalide.")
     day_dir = root / source.target_date.isoformat()
     slot = day_dir / source.receipt_sha256
@@ -132,7 +137,7 @@ def verify_candidate_archive(
     path: Path, *, expected_manifest_sha256: str,
 ) -> dict[str, object]:
     """Contrôle l'intégrité locale; n'atteste jamais une visibilité GitHub."""
-    if type(path) is not Path or path.is_symlink() or not path.is_dir():
+    if not isinstance(path, Path) or path.is_symlink() or not path.is_dir():
         raise MLB2027ArchiveError("Créneau local absent ou non fiable.")
     if type(expected_manifest_sha256) is not str or len(expected_manifest_sha256) != 64:
         raise MLB2027ArchiveError("Empreinte du manifeste invalide.")

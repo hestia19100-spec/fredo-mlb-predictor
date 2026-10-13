@@ -7,15 +7,20 @@ Le moteur et les preuves Shadow V2 2026 ne sont jamais modifiés.
 """
 from __future__ import annotations
 
-from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date
-import math
+import sys
+from threading import Lock
 from pathlib import Path
 
 import numpy as np
+from sklearn import __version__ as SKLEARN_VERSION
 
-from src.calibrated_model import DEFAULT_ARTIFACT_PATH, load_calibrated_artifact
+from src.calibrated_model import (
+    CalibratedModelArtifact,
+    DEFAULT_ARTIFACT_PATH,
+    load_calibrated_artifact,
+)
 from src.mlb_2027_reference_readiness import (
     DayReadiness,
     PriorFinalGame,
@@ -25,6 +30,40 @@ from src.mlb_2027_reference_readiness import (
     plan_reference_readiness,
 )
 from src.training_dataset import FEATURE_COLUMNS
+
+
+_MODEL_LOADING_LOCK = Lock()
+
+
+def load_pinned_reference_artifact(path: Path) -> CalibratedModelArtifact:
+    """Vérifie le SHA puis charge l'ancien pickle avec son alias historique.
+
+    Le modèle 2026 a été sérialisé avec une classe située dans __main__.
+    L'alias temporaire est retiré même en cas d'erreur. On ne modifie pas
+    l'artefact, le moteur 2026 ni le module de chargement partagé.
+    """
+    main = sys.modules.get("__main__")
+    if main is None:
+        raise MLB2027PredictionError("Module principal absent.")
+    missing = object()
+    with _MODEL_LOADING_LOCK:
+        previous = vars(main).get("CalibratedModelArtifact", missing)
+        vars(main)["CalibratedModelArtifact"] = CalibratedModelArtifact
+        try:
+            artifact = load_calibrated_artifact(
+                path, expected_sha256=REFERENCE_ARTIFACT_SHA256,
+            )
+        finally:
+            if previous is missing:
+                vars(main).pop("CalibratedModelArtifact", None)
+            else:
+                vars(main)["CalibratedModelArtifact"] = previous
+    if (
+        artifact.numpy_version != np.__version__
+        or artifact.sklearn_version != SKLEARN_VERSION
+    ):
+        raise MLB2027PredictionError("Versions du runtime incompatibles.")
+    return artifact
 
 
 class MLB2027PredictionError(ValueError):
@@ -135,9 +174,7 @@ def calculate_reference_probabilities(
         raise MLB2027PredictionError("Matrice de variables invalide.")
 
     # Le chargeur vérifie SHA-256 avant la désérialisation joblib.
-    artifact = load_calibrated_artifact(
-        artifact_path, expected_sha256=REFERENCE_ARTIFACT_SHA256,
-    )
+    artifact = load_pinned_reference_artifact(artifact_path)
     if (
         artifact.calibrated_model_version != REFERENCE_MODEL_VERSION
         or tuple(artifact.feature_columns) != tuple(FEATURE_COLUMNS)

@@ -157,6 +157,25 @@ class ObservedSourceTests(unittest.TestCase):
                 remote_http_date_utc=datetime(2027, 1, 20, 21, 1, tzinfo=timezone.utc),
             )
 
+    def test_rejects_changed_source_receipt_clock(self) -> None:
+        source = verify_2027_observed_source(TARGET, (_observed(),))
+        candidate = calculate_reference_probabilities(
+            TARGET, source.upcoming_games, source.prior_final_games,
+            source_receipt_sha256=source.receipt_sha256,
+        )
+        changed = replace(
+            source, latest_received_at_utc=datetime(
+                2027, 1, 20, 17, tzinfo=timezone.utc,
+            ),
+        )
+        with self.assertRaises(MLB2027SourceError):
+            candidate_has_prospective_timing(
+                changed, candidate,
+                issued_at_utc=datetime(2027, 1, 20, 20, tzinfo=timezone.utc),
+                completed_at_utc=datetime(2027, 1, 20, 21, tzinfo=timezone.utc),
+                remote_http_date_utc=datetime(2027, 1, 20, 21, 1, tzinfo=timezone.utc),
+            )
+
     def test_rejects_capture_after_issuance(self) -> None:
         source = verify_2027_observed_source(TARGET, (_observed(),))
         candidate = calculate_reference_probabilities(

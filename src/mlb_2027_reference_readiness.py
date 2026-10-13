@@ -131,6 +131,9 @@ def plan_reference_readiness(
         counts[away] += 1
         counts[home] += 1
 
+    for game in upcoming_games:
+        if type(game) is not UpcomingGame:
+            raise MLB2027ReadinessError("A target game is not an UpcomingGame.")
     ordered = sorted(upcoming_games, key=lambda game: (
         game.scheduled_start_utc, game.game_id
     ))

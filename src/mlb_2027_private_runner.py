@@ -128,6 +128,7 @@ def run_private_reference_day(
     """
     _periods(target_date)
     archive_root = _check_private_checkout(private_repo, target_date)
+    private_repo = private_repo.resolve(strict=True)
     token = github_token if github_token is not None else os.environ.get("GITHUB_TOKEN")
     if type(token) is not str or not token.strip():
         raise MLB2027PrivateRunError("Accès GitHub privé indisponible.")

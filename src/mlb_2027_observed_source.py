@@ -37,6 +37,7 @@ class MLB2027SourceError(ValueError):
 @dataclass(frozen=True, slots=True)
 class ObservedSourceBundle:
     target_date: date
+    observations: tuple[ScheduleFetchResult, ...]
     upcoming_games: tuple[UpcomingGame, ...]
     prior_final_games: tuple[PriorFinalGame, ...]
     receipt_bytes: bytes
@@ -251,6 +252,7 @@ def verify_2027_observed_source(
     )
     return ObservedSourceBundle(
         target_date=target_date,
+        observations=tuple(ordered),
         upcoming_games=tuple(upcoming),
         prior_final_games=tuple(prior),
         receipt_bytes=receipt_bytes,
@@ -287,6 +289,10 @@ def candidate_has_prospective_timing(
     )
     if calculation != expected:
         raise MLB2027SourceError("Probabilités non liées au modèle figé.")
+    if source != verify_2027_observed_source(
+        source.target_date, source.observations,
+    ):
+        raise MLB2027SourceError("Résumé de source MLB altéré.")
     if (
         not isinstance(issued_at_utc, datetime)
         or issued_at_utc.tzinfo is None

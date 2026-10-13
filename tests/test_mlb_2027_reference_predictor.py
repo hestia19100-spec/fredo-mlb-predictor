@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timezone
-from pathlib import Path
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -16,7 +15,6 @@ from src.mlb_2027_reference_predictor import (
 from src.mlb_2027_reference_readiness import (
     PriorFinalGame,
     UpcomingGame,
-    REFERENCE_ARTIFACT_SHA256,
 )
 from src.training_dataset import FEATURE_COLUMNS
 
@@ -67,7 +65,7 @@ class FakeClassifier:
 class ReferencePredictorTests(unittest.TestCase):
     def test_abstains_without_loading_model(self) -> None:
         with patch(
-            "src.mlb_2027_reference_predictor.load_calibrated_artifact"
+            "src.mlb_2027_reference_predictor.load_pinned_reference_artifact"
         ) as load:
             result = calculate_reference_probabilities(
                 TARGET, _upcoming(), _history(9),
@@ -85,7 +83,7 @@ class ReferencePredictorTests(unittest.TestCase):
             calibrated_classifier=classifier,
         )
         with patch(
-            "src.mlb_2027_reference_predictor.load_calibrated_artifact",
+            "src.mlb_2027_reference_predictor.load_pinned_reference_artifact",
             return_value=artifact,
         ) as load:
             result = calculate_reference_probabilities(
@@ -93,10 +91,7 @@ class ReferencePredictorTests(unittest.TestCase):
                 source_receipt_sha256=RECEIPT,
             )
         load.assert_called_once()
-        self.assertEqual(
-            load.call_args.kwargs["expected_sha256"],
-            REFERENCE_ARTIFACT_SHA256,
-        )
+        self.assertEqual(load.call_count, 1)
         self.assertEqual(result.abstained_count, 0)
         prediction = result.probabilities[0]
         self.assertEqual(
@@ -114,7 +109,7 @@ class ReferencePredictorTests(unittest.TestCase):
             calibrated_classifier=FakeClassifier(((float("nan"), 0.5),)),
         )
         with patch(
-            "src.mlb_2027_reference_predictor.load_calibrated_artifact",
+            "src.mlb_2027_reference_predictor.load_pinned_reference_artifact",
             return_value=artifact,
         ):
             with self.assertRaises(MLB2027PredictionError):

@@ -143,7 +143,10 @@ def verify_private_main_visibility(
     ):
         raise MLB2027RemoteError("Candidat absent de main, redirigé ou lu trop tard.")
     try:
-        github_date = parsedate_to_datetime(response.headers["Date"]).astimezone(timezone.utc)
+        parsed_date = parsedate_to_datetime(response.headers["Date"])
+        if parsed_date.tzinfo is None or parsed_date.utcoffset() != timedelta(0):
+            raise MLB2027RemoteError("Date HTTP GitHub sans fuseau GMT.")
+        github_date = parsed_date.astimezone(timezone.utc)
         if (
             github_date.utcoffset() != timedelta(0)
             or abs(received - github_date) > timedelta(minutes=5)

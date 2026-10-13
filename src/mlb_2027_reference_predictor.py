@@ -189,7 +189,7 @@ def calculate_reference_probabilities(
         or not np.isfinite(values).all()
         or (values < 0).any()
         or (values > 1).any()
-        or not np.allclose(values.sum(axis=1), 1.0, atol=1e-12)
+        or not np.allclose(values.sum(axis=1), 1.0, atol=1e-12, rtol=0.0)
     ):
         raise MLB2027PredictionError("Probabilités invalides.")
 

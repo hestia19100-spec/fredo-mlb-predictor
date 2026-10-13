@@ -13,12 +13,16 @@ import json
 from urllib.parse import parse_qsl, urlsplit
 
 from src.mlb_api import (
+    MLBAPIError,
     MLB_SCHEDULE_URL,
     ScheduleFetchResult,
     _parse_http_date,
     _parse_schedule_payload,
 )
-from src.mlb_2027_reference_predictor import ReferenceCalculation
+from src.mlb_2027_reference_predictor import (
+    ReferenceCalculation,
+    calculate_reference_probabilities,
+)
 from src.mlb_2027_reference_readiness import (
     PriorFinalGame,
     UpcomingGame,
@@ -135,7 +139,7 @@ def _validate_observation(
         games = tuple(_parse_schedule_payload(
             payload, reject_duplicate_game_ids=True,
         ))
-    except (UnicodeError, ValueError, TypeError, KeyError) as error:
+    except (MLBAPIError, UnicodeError, ValueError, TypeError, KeyError) as error:
         raise MLB2027SourceError("Réponse MLB illisible ou ambiguë.") from error
     if games != observation.games:
         raise MLB2027SourceError("Les matchs ne correspondent pas aux octets MLB.")
@@ -222,6 +226,13 @@ def verify_2027_observed_source(
             game.status_code == "F"
             and game.status_detail.upper() in {"FINAL", "GAME OVER", "COMPLETED EARLY"}
         ):
+            if (
+                type(game.away_score) is not int
+                or type(game.home_score) is not int
+                or min(game.away_score, game.home_score) < 0
+                or game.away_score == game.home_score
+            ):
+                raise MLB2027SourceError("Score final MLB invalide.")
             prior.append(PriorFinalGame(
                 game_id=game.game_id, official_date=official, game_type="R",
                 away_team_id=game.away_team_id,
@@ -270,6 +281,12 @@ def candidate_has_prospective_timing(
         != {game.game_id for game in source.upcoming_games}
     ):
         raise MLB2027SourceError("Calcul et source MLB non liés.")
+    expected = calculate_reference_probabilities(
+        source.target_date, source.upcoming_games, source.prior_final_games,
+        source_receipt_sha256=source.receipt_sha256,
+    )
+    if calculation != expected:
+        raise MLB2027SourceError("Probabilités non liées au modèle figé.")
     if (
         not isinstance(issued_at_utc, datetime)
         or issued_at_utc.tzinfo is None

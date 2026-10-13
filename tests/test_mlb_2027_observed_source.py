@@ -17,7 +17,10 @@ from src.mlb_2027_observed_source import (
     candidate_has_prospective_timing,
     verify_2027_observed_source,
 )
-from src.mlb_2027_reference_predictor import calculate_reference_probabilities
+from src.mlb_2027_reference_predictor import (
+    ReferenceProbability,
+    calculate_reference_probabilities,
+)
 
 
 TARGET = date(2027, 1, 20)
@@ -131,6 +134,27 @@ class ObservedSourceTests(unittest.TestCase):
         with self.assertRaises(MLB2027SourceError):
             verify_2027_observed_source(
                 TARGET, (_observed(target_status="In Progress"),),
+            )
+
+    def test_rejects_forged_probability_even_with_matching_receipt(self) -> None:
+        source = verify_2027_observed_source(TARGET, (_observed(),))
+        candidate = calculate_reference_probabilities(
+            TARGET, source.upcoming_games, source.prior_final_games,
+            source_receipt_sha256=source.receipt_sha256,
+        )
+        forged = replace(candidate, probabilities=(ReferenceProbability(
+            game_id=200, away_team_id=1, home_team_id=2,
+            feature_values=(0.0,) * 8,
+            p_away_win=0.01, p_home_win=0.99,
+            model_version="logistic_team_form_v1_platt",
+            artifact_sha256="e0d4d2421ba076072c7ef8b3bc97dd9a341e26c62828a0ad9ba43f30da15ff55",
+        ),))
+        with self.assertRaises(MLB2027SourceError):
+            candidate_has_prospective_timing(
+                source, forged,
+                issued_at_utc=datetime(2027, 1, 20, 20, tzinfo=timezone.utc),
+                completed_at_utc=datetime(2027, 1, 20, 21, tzinfo=timezone.utc),
+                remote_http_date_utc=datetime(2027, 1, 20, 21, 1, tzinfo=timezone.utc),
             )
 
     def test_rejects_capture_after_issuance(self) -> None:

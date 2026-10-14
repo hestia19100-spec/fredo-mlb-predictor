@@ -98,7 +98,7 @@ def verify_private_main_visibility(
     window = calculation.readiness.lead_window
     if completed > window.latest_completion_utc:
         raise MLB2027RemoteError("Calcul terminé après T-60.")
-    verify_candidate_archive(
+    manifest = verify_candidate_archive(
         archive.path, expected_manifest_sha256=archive.manifest_sha256,
     )
     expected_path = Path(source.target_date.isoformat()) / source.receipt_sha256
@@ -116,11 +116,10 @@ def verify_private_main_visibility(
     ):
         raise MLB2027RemoteError("Candidat et horodatage local non liés.")
 
-    path = (
+    slot_path = (
         f"mlb_2027_candidates/{source.target_date.isoformat()}/"
-        f"{source.receipt_sha256}/candidate.json"
+        f"{source.receipt_sha256}"
     )
-    url = f"https://api.github.com/repos/{PRIVATE_REPOSITORY}/contents/{path}?ref=main"
     headers = {
         "Accept": "application/vnd.github+json",
         "Authorization": f"Bearer {github_token}",
@@ -128,72 +127,86 @@ def verify_private_main_visibility(
         "User-Agent": "LPF-Edge-MLB-2027-evidence",
         "Cache-Control": "no-cache",
     }
-    try:
-        response = requests.get(
-            url, headers=headers, timeout=10, allow_redirects=False,
-        )
-        received = _utc(_now_utc(), "réception GitHub")
-    except (requests.RequestException, MLB2027RemoteError) as error:
-        raise MLB2027RemoteError("Lecture GitHub impossible.") from error
-    if (
-        response.status_code != 200
-        or response.url != url
-        or response.history
-        or received > window.latest_remote_publication_utc
-    ):
-        raise MLB2027RemoteError("Candidat absent de main, redirigé ou lu trop tard.")
-    try:
-        parsed_date = parsedate_to_datetime(response.headers["Date"])
-        if parsed_date.tzinfo is None or parsed_date.utcoffset() != timedelta(0):
-            raise MLB2027RemoteError("Date HTTP GitHub sans fuseau GMT.")
-        github_date = parsed_date.astimezone(timezone.utc)
+    # The legacy probability-only candidate keeps its original one-file proof.
+    # A market candidate is accepted only when every sealed file is visible
+    # on private main with exactly the same bytes, before the deadline.
+    names = ["candidate.json"]
+    if candidate.get("market") is not None:
+        names = sorted(set(manifest["files"]) | {"manifest.json", "COMPLETED"})
+    last_github_date = issued
+    last_received = issued
+    for name in names:
+        path = f"{slot_path}/{name}"
+        url = f"https://api.github.com/repos/{PRIVATE_REPOSITORY}/contents/{path}?ref=main"
+        local_bytes = (archive.path / name).read_bytes()
+        try:
+            response = requests.get(
+                url, headers=headers, timeout=10, allow_redirects=False,
+            )
+            received = _utc(_now_utc(), "réception GitHub")
+        except (requests.RequestException, MLB2027RemoteError) as error:
+            raise MLB2027RemoteError("Lecture GitHub impossible.") from error
         if (
-            github_date.utcoffset() != timedelta(0)
-            or abs(received - github_date) > timedelta(minutes=5)
+            response.status_code != 200
+            or response.url != url
+            or response.history
+            or received > window.latest_remote_publication_utc
         ):
-            raise MLB2027RemoteError("Horloge GitHub incohérente.")
-        payload = json.loads(
-            response.content.decode("utf-8"),
-            object_pairs_hook=_object_without_duplicates,
-        )
-        if (
-            type(payload) is not dict
-            or payload.get("type") != "file"
-            or payload.get("path") != path
-            or payload.get("encoding") != "base64"
-            or type(payload.get("content")) is not str
-            or type(payload.get("size")) is not int
-            or type(payload.get("sha")) is not str
-        ):
-            raise MLB2027RemoteError("Objet GitHub inattendu.")
-        remote_bytes = base64.b64decode(
-            "".join(payload["content"].split()), validate=True,
-        )
-        git_blob_sha = hashlib.sha1(
-            f"blob {len(candidate_bytes)}\0".encode("ascii") + candidate_bytes,
-        ).hexdigest()
-        if (
-            payload["size"] != len(candidate_bytes)
-            or payload["sha"] != git_blob_sha
-            or remote_bytes != candidate_bytes
-        ):
-            raise MLB2027RemoteError("Octets distants différents du candidat local.")
-    except (KeyError, ValueError, UnicodeError, TypeError, base64.binascii.Error) as error:
-        if isinstance(error, MLB2027RemoteError):
-            raise
-        raise MLB2027RemoteError("Réponse GitHub illisible.") from error
+            raise MLB2027RemoteError("Archive absente de main, redirigée ou lue trop tard.")
+        try:
+            parsed_date = parsedate_to_datetime(response.headers["Date"])
+            if parsed_date.tzinfo is None or parsed_date.utcoffset() != timedelta(0):
+                raise MLB2027RemoteError("Date HTTP GitHub sans fuseau GMT.")
+            github_date = parsed_date.astimezone(timezone.utc)
+            if (
+                abs(received - github_date) > timedelta(minutes=5)
+                or github_date > window.latest_remote_publication_utc
+            ):
+                raise MLB2027RemoteError("Horloge GitHub incohérente ou preuve tardive.")
+            payload = json.loads(
+                response.content.decode("utf-8"),
+                object_pairs_hook=_object_without_duplicates,
+            )
+            if (
+                type(payload) is not dict
+                or payload.get("type") != "file"
+                or payload.get("path") != path
+                or payload.get("encoding") != "base64"
+                or type(payload.get("content")) is not str
+                or type(payload.get("size")) is not int
+                or type(payload.get("sha")) is not str
+            ):
+                raise MLB2027RemoteError("Objet GitHub inattendu.")
+            remote_bytes = base64.b64decode(
+                "".join(payload["content"].split()), validate=True,
+            )
+            git_blob_sha = hashlib.sha1(
+                f"blob {len(local_bytes)}\0".encode("ascii") + local_bytes,
+            ).hexdigest()
+            if (
+                payload["size"] != len(local_bytes)
+                or payload["sha"] != git_blob_sha
+                or remote_bytes != local_bytes
+            ):
+                raise MLB2027RemoteError("Octets distants différents de l'archive locale.")
+        except (KeyError, ValueError, UnicodeError, TypeError, base64.binascii.Error) as error:
+            if isinstance(error, MLB2027RemoteError):
+                raise
+            raise MLB2027RemoteError("Réponse GitHub illisible.") from error
+        last_github_date = max(last_github_date, github_date)
+        last_received = max(last_received, received)
     if not candidate_has_prospective_timing(
         source, calculation,
         issued_at_utc=issued,
         completed_at_utc=completed,
-        remote_http_date_utc=github_date,
+        remote_http_date_utc=last_github_date,
     ):
         raise MLB2027RemoteError("Publication distante après T-60.")
     return RemoteVisibility(
         repository=PRIVATE_REPOSITORY,
         branch="main",
-        path=path,
+        path=f"{slot_path}/candidate.json",
         candidate_sha256=hashlib.sha256(candidate_bytes).hexdigest(),
-        github_http_date_utc=github_date,
-        response_received_at_utc=received,
+        github_http_date_utc=last_github_date,
+        response_received_at_utc=last_received,
     )

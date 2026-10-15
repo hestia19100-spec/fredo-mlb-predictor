@@ -157,6 +157,17 @@ class PrivateShadowRunnerTests(unittest.TestCase):
                    return_value=audit):
             self.assertEqual(self.run_it().future_games, 0)
 
+    def test_reject_private_checkout_nested_inside_public_engine(self):
+        engine = self.private.parent / "public-engine"
+        nested = engine / "fredo-lpf-edge-private-ops"
+        nested.mkdir(parents=True)
+        (nested / ".git").mkdir()
+        with patch("src.nhl.prospective_shadow_private_runner.PROJECT_ROOT", engine):
+            with self.assertRaisesRegex(NHLPrivateShadowRunnerError, "distinct"):
+                run_private_shadow(
+                    private_repository_root=nested, now=lambda: NOW,
+                    schedule_root=self.schedules, import_root=self.imports)
+
     def test_reject_wrong_private_checkout(self):
         wrong = self.private.parent / "public"
         wrong.mkdir()

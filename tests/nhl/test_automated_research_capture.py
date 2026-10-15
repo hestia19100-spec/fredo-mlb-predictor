@@ -9,7 +9,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 
-from src.nhl.automatic_research_capture import (
+from nhl_operations.automatic_research_capture import (
     NHLAutomaticResearchError, prepare_automatic_research,
 )
 from src.nhl.current_season_import import (

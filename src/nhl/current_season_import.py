@@ -26,6 +26,8 @@ from .public_schedule_candidates import ScheduledGame
 from .temporal_policy import build_information_cutoff
 
 SCHEMA_VERSION = "nhl_current_season_import_v1"
+AUTOMATED_SCHEMA_VERSION = "nhl_automated_current_season_import_v1"
+AUTOMATED_POLICY_PATH = PROJECT_ROOT / "nhl_protocols/data/nhl_automated_current_import_v1.json"
 POLICY_PATH = PROJECT_ROOT / "nhl_protocols/data/nhl28_current_season_import_v1.json"
 DEFAULT_ROOT = NHL_DATA_ROOT / "current_season_imports"
 _MAX_RECEIPT_BYTES = 64 * 1024
@@ -90,6 +92,28 @@ def _policy_hash() -> str:
     }
     if not isinstance(document, dict) or any(document.get(k) != v for k, v in expected.items()):
         raise NHLCurrentSeasonImportError("Protocole saison courante incompatible.")
+    return sha256(raw).hexdigest()
+
+
+def _automated_policy_hash() -> str:
+    try:
+        raw = AUTOMATED_POLICY_PATH.read_bytes()
+        document = json.loads(raw)
+    except (OSError, ValueError) as error:
+        raise NHLCurrentSeasonImportError("Protocole automatique illisible.") from error
+    expected = {
+        "schema_version": AUTOMATED_SCHEMA_VERSION,
+        "source_capture_protocol": "nhl_moneypuck_automated_team_capture_v1",
+        "storage_mode": "append_only_local_files",
+        "availability_rule": "max(source_capture_observed_at_utc,imported_at_utc)<=information_cutoff_utc",
+        "historical_backtest_asof_proven": False,
+        "training_permitted": False,
+        "prediction_publication_permitted": False,
+        "mlb_database_mutation": False,
+        "nhl_historical_database_mutation": False,
+    }
+    if not isinstance(document, dict) or document != expected:
+        raise NHLCurrentSeasonImportError("Protocole automatique incompatible.")
     return sha256(raw).hexdigest()
 
 
@@ -169,7 +193,7 @@ def import_current_season_capture(
     """Seal verified regular-season rows without touching either database."""
     if (explicit_manual_run is True) == (explicit_automated_run is True):
         raise NHLCurrentSeasonImportError("Choisir exactement un mode d’import explicite.")
-    policy_sha = _policy_hash()
+    policy_sha = _automated_policy_hash() if explicit_automated_run else _policy_hash()
     capture = _capture(Path(source_slot), Path(capture_root))
     if explicit_automated_run and capture.acquisition_mode != "automated_https_get":
         raise NHLCurrentSeasonImportError("Import automatique sans capture automatique.")
@@ -188,7 +212,7 @@ def import_current_season_capture(
             raise NHLCurrentSeasonImportError("Import existant divergent.")
         return existing
     receipt = {
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": AUTOMATED_SCHEMA_VERSION if explicit_automated_run else SCHEMA_VERSION,
         "status": "DESCRIPTIVE_IMPORT_ONLY",
         "import_mode": "automated_research" if explicit_automated_run else "manual",
         "season": season,
@@ -251,11 +275,13 @@ def verify_current_season_import(
         imported = _parse_timestamp(receipt["imported_at_utc"])
         observed = _parse_timestamp(receipt["source_observed_at_utc"])
         mode = receipt.get("import_mode", "manual")
+        automated = receipt.get("schema_version") == AUTOMATED_SCHEMA_VERSION
         if (mode not in {"manual", "automated_research"}
-                or mode == "automated_research" and capture.acquisition_mode != "automated_https_get"):
+                or (mode == "automated_research") != automated
+                or automated and capture.acquisition_mode != "automated_https_get"):
             raise NHLCurrentSeasonImportError("Mode d’import incohérent.")
         expected = {
-            "schema_version": SCHEMA_VERSION,
+            "schema_version": AUTOMATED_SCHEMA_VERSION if automated else SCHEMA_VERSION,
             "status": "DESCRIPTIVE_IMPORT_ONLY",
             "source_capture_id": capture.path.name,
             "source_response_sha256": capture.response_sha256,
@@ -264,7 +290,7 @@ def verify_current_season_import(
             "regular_row_count": len(rows),
             "regular_game_count": len({row.game_id for row in rows}),
             "rows_sha256": sha256(rows_raw).hexdigest(),
-            "policy_sha256": _policy_hash(),
+            "policy_sha256": _automated_policy_hash() if automated else _policy_hash(),
             "historical_backtest_asof_proven": False,
             "training_permitted": False,
             "prediction_publication_permitted": False,

@@ -1,0 +1,11 @@
+{
+  "schema_version": "nhl_moneypuck_automated_team_capture_v1",
+  "source_url": "https://moneypuck.com/moneypuck/playerData/careers/gameByGame/all_teams.csv",
+  "authorization_basis": "USER_ATTESTED_PERSONAL_NONCOMMERCIAL_RESEARCH",
+  "authorization_independently_verified": false,
+  "automatic_daily_collection_allowed": true,
+  "purpose": "private_research_shadow_only",
+  "historical_asof_availability_proven": false,
+  "training_permitted": false,
+  "prediction_publication_permitted": false
+}

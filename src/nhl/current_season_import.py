@@ -162,14 +162,17 @@ def _capture(slot: Path, capture_root: Path) -> VerifiedTeamCapture:
 
 def import_current_season_capture(
     source_slot: Path, *, season: int = 2026, explicit_manual_run: bool = False,
+    explicit_automated_run: bool = False,
     root: Path = DEFAULT_ROOT, capture_root: Path = CAPTURE_ROOT,
     now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
 ) -> CurrentSeasonImport:
     """Seal verified regular-season rows without touching either database."""
-    if explicit_manual_run is not True:
-        raise NHLCurrentSeasonImportError("Import manuel explicite requis.")
+    if (explicit_manual_run is True) == (explicit_automated_run is True):
+        raise NHLCurrentSeasonImportError("Choisir exactement un mode d’import explicite.")
     policy_sha = _policy_hash()
     capture = _capture(Path(source_slot), Path(capture_root))
+    if explicit_automated_run and capture.acquisition_mode != "automated_https_get":
+        raise NHLCurrentSeasonImportError("Import automatique sans capture automatique.")
     rows = _rows(capture, season)
     imported = _utc(now())
     if imported < capture.observed_at_utc:
@@ -187,6 +190,7 @@ def import_current_season_capture(
     receipt = {
         "schema_version": SCHEMA_VERSION,
         "status": "DESCRIPTIVE_IMPORT_ONLY",
+        "import_mode": "automated_research" if explicit_automated_run else "manual",
         "season": season,
         "source_capture_relative": relative,
         "source_capture_id": capture.path.name,
@@ -246,6 +250,10 @@ def verify_current_season_import(
         rows = _rows(capture, season)
         imported = _parse_timestamp(receipt["imported_at_utc"])
         observed = _parse_timestamp(receipt["source_observed_at_utc"])
+        mode = receipt.get("import_mode", "manual")
+        if (mode not in {"manual", "automated_research"}
+                or mode == "automated_research" and capture.acquisition_mode != "automated_https_get"):
+            raise NHLCurrentSeasonImportError("Mode d’import incohérent.")
         expected = {
             "schema_version": SCHEMA_VERSION,
             "status": "DESCRIPTIVE_IMPORT_ONLY",

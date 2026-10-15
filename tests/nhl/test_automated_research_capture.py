@@ -9,6 +9,9 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 
+from src.nhl.automatic_research_capture import (
+    NHLAutomaticResearchError, prepare_automatic_research,
+)
 from src.nhl.current_season_import import (
     NHLCurrentSeasonImportError, import_current_season_capture,
     verify_current_season_import,
@@ -127,6 +130,45 @@ class AutomatedResearchCaptureTests(unittest.TestCase):
         )
         self.assertFalse(receipt["training_permitted"])
         self.assertFalse(receipt["prediction_publication_permitted"])
+
+    def test_preparation_uses_only_official_schedule_and_team_csv(self) -> None:
+        calls = []
+
+        def transport(url: str, timeout: int):
+            calls.append(url)
+            if url == BASE_URL + TARGET.isoformat():
+                return ScheduleResponse(schedule_bytes())
+            if url == TEAM_GAME_DOWNLOAD:
+                return TeamResponse(team_bytes())
+            raise AssertionError("Unexpected network source")
+
+        result = prepare_automatic_research(
+            code_commit="a" * 40, explicit_automated_run=True,
+            schedule_root=self.schedule_root,
+            team_root=self.team_root, import_root=self.import_root,
+            transport=transport, now=lambda: OBSERVED,
+        )
+        self.assertEqual(calls, [BASE_URL + TARGET.isoformat(), TEAM_GAME_DOWNLOAD])
+        self.assertEqual(result.nhl_date, TARGET)
+        self.assertEqual(result.future_games, 1)
+        self.assertEqual(result.current_regular_games, 1)
+        self.assertFalse(result.prediction_publication_permitted)
+        self.assertEqual(audit_schedule_capture(result.schedule_slot)["game_count"], 1)
+        self.assertEqual(
+            verify_current_season_import(
+                result.import_slot, root=self.import_root,
+                capture_root=self.team_root,
+            ).regular_game_count, 1,
+        )
+
+        with self.assertRaises(NHLAutomaticResearchError):
+            prepare_automatic_research(
+                code_commit="a" * 40, transport=transport,
+                schedule_root=self.schedule_root,
+                team_root=self.team_root, import_root=self.import_root,
+                now=lambda: OBSERVED,
+            )
+        self.assertEqual(len(calls), 2)
 
     def test_automatic_mode_cannot_be_spoofed_from_manual_evidence(self) -> None:
         with self.assertRaises(PublicScheduleCaptureError):

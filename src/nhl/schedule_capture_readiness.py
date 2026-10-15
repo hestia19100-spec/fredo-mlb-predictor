@@ -10,7 +10,8 @@ import json
 from pathlib import Path
 
 from .public_schedule_capture import (
-    PublicScheduleCaptureError, USER_COPY_SCHEMA_VERSION, verify_public_schedule_capture,
+    AUTOMATED_SCHEMA_VERSION, PublicScheduleCaptureError, USER_COPY_SCHEMA_VERSION,
+    verify_public_schedule_capture,
 )
 
 
@@ -77,6 +78,8 @@ def audit_schedule_capture(slot: Path) -> dict[str, object]:
             "target_date": receipt["target_date"],
             "acquisition_mode": ("user_supplied_browser_copy"
                                  if receipt["schema_version"] == USER_COPY_SCHEMA_VERSION
+                                 else "automated_https_get"
+                                 if receipt["schema_version"] == AUTOMATED_SCHEMA_VERSION
                                  else "direct_https"),
             "observed_at_utc": receipt["observed_at_utc"],
             "response_sha256": receipt["response_sha256"],

@@ -1,0 +1,11 @@
+{
+  "schema_version": "nhl_public_schedule_automated_capture_v1",
+  "authorization_basis": "USER_ATTESTED_ORAL_PERSONAL_AUTOMATED_COLLECTION_AND_MODEL_TRAINING",
+  "authorization_independently_verified": false,
+  "provider_id": "nhl_public_web_api",
+  "endpoint_template": "https://api-web.nhle.com/v1/schedule/{date}",
+  "automatic_daily_collection_allowed": true,
+  "purpose": "private_research_shadow_only",
+  "training_permitted_from_this_capture": false,
+  "prediction_publication_permitted": false
+}

@@ -19,6 +19,8 @@ from src.nhl.public_schedule_candidates import (
 POLICY_PATH = PROJECT_ROOT / "nhl_protocols" / "data" / "nhl20_schedule_capture_protocol_v1.json"
 DEFAULT_ROOT = NHL_DATA_ROOT / "public_schedule_captures"
 SCHEMA_VERSION = "nhl_public_schedule_capture_v1"
+AUTOMATED_SCHEMA_VERSION = "nhl_public_schedule_automated_capture_v1"
+AUTOMATED_POLICY_PATH = PROJECT_ROOT / "nhl_protocols" / "data" / "nhl_automated_schedule_capture_v1.json"
 USER_COPY_SCHEMA_VERSION = "nhl_public_schedule_user_copy_v1"
 USER_COPY_POLICY_PATH = PROJECT_ROOT / "nhl_protocols" / "data" / "nhl27_user_schedule_copy_v1.json"
 BASE_URL = "https://api-web.nhle.com/v1/schedule/"
@@ -74,6 +76,28 @@ def _policy_digest(path: Path) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
+def _automated_policy_digest(path: Path = AUTOMATED_POLICY_PATH) -> str:
+    try:
+        raw = Path(path).read_bytes()
+        policy = json.loads(raw)
+    except (OSError, ValueError) as error:
+        raise PublicScheduleCaptureError("Protocole automatique illisible.") from error
+    required = {
+        "schema_version": AUTOMATED_SCHEMA_VERSION,
+        "authorization_basis": "USER_ATTESTED_ORAL_PERSONAL_AUTOMATED_COLLECTION_AND_MODEL_TRAINING",
+        "authorization_independently_verified": False,
+        "provider_id": "nhl_public_web_api",
+        "endpoint_template": BASE_URL + "{date}",
+        "automatic_daily_collection_allowed": True,
+        "purpose": "private_research_shadow_only",
+        "training_permitted_from_this_capture": False,
+        "prediction_publication_permitted": False,
+    }
+    if not isinstance(policy, dict) or policy != required:
+        raise PublicScheduleCaptureError("Protocole automatique non autorisé.")
+    return hashlib.sha256(raw).hexdigest()
+
+
 def _game_record(game: ScheduledGame) -> dict[str, object]:
     return {
         "game_id": game.game_id,
@@ -88,8 +112,10 @@ def capture_public_schedule(
     target_date: date,
     *,
     explicit_manual_run: bool = False,
+    explicit_automated_run: bool = False,
     root: Path = DEFAULT_ROOT,
     policy_path: Path = POLICY_PATH,
+    automated_policy_path: Path = AUTOMATED_POLICY_PATH,
     transport: Callable | None = None,
     now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
 ) -> ScheduleCaptureReceipt:
@@ -98,13 +124,14 @@ def capture_public_schedule(
     Le résultat n'autorise ni entraînement ni publication. L'appelant doit
     explicitement choisir une capture manuelle.
     """
-    if explicit_manual_run is not True:
-        raise PublicScheduleCaptureError("Capture manuelle explicite requise.")
+    if (explicit_manual_run is True) == (explicit_automated_run is True):
+        raise PublicScheduleCaptureError("Choisir exactement un mode de capture explicite.")
     if transport is None:
         raise PublicScheduleCaptureError("Transport explicite requis.")
     if not isinstance(target_date, date) or isinstance(target_date, datetime):
         raise PublicScheduleCaptureError("Date cible invalide.")
-    policy_sha = _policy_digest(Path(policy_path))
+    policy_sha = (_automated_policy_digest(Path(automated_policy_path))
+                  if explicit_automated_run else _policy_digest(Path(policy_path)))
     url = BASE_URL + target_date.isoformat()
     started = _clock_utc(now)
     try:
@@ -127,7 +154,7 @@ def capture_public_schedule(
         raise PublicScheduleCaptureError("Calendrier NHL rejeté.") from error
     digest = hashlib.sha256(raw).hexdigest()
     receipt = {
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": AUTOMATED_SCHEMA_VERSION if explicit_automated_run else SCHEMA_VERSION,
         "status": "CAPTURE_ONLY_NOT_MODEL_ELIGIBLE",
         "provider_id": "nhl_public_web_api",
         "source_url": url,
@@ -141,6 +168,8 @@ def capture_public_schedule(
         "training_permitted": False,
         "prediction_publication_permitted": False,
     }
+    if explicit_automated_run:
+        receipt["acquisition_mode"] = "automated_https_get"
     key = observed.strftime("%Y%m%dT%H%M%S%fZ") + "-" + digest[:16]
     slot = Path(root) / target_date.isoformat() / key
     try:
@@ -249,10 +278,14 @@ def verify_public_schedule_capture(slot: Path) -> dict[str, object]:
         target = date.fromisoformat(receipt["target_date"])
         observed = datetime.fromisoformat(receipt["observed_at_utc"].replace("Z", "+00:00"))
         schema = receipt["schema_version"]
-        if schema == SCHEMA_VERSION:
+        if schema in {SCHEMA_VERSION, AUTOMATED_SCHEMA_VERSION}:
             started = datetime.fromisoformat(receipt["request_started_at_utc"].replace("Z", "+00:00"))
             provenance_valid = (receipt["provider_id"] == "nhl_public_web_api"
                                 and receipt["source_url"] == BASE_URL + target.isoformat())
+            if schema == AUTOMATED_SCHEMA_VERSION:
+                provenance_valid = (provenance_valid
+                                    and receipt.get("acquisition_mode") == "automated_https_get"
+                                    and receipt.get("policy_sha256") == _automated_policy_digest())
         elif schema == USER_COPY_SCHEMA_VERSION:
             started = datetime.fromisoformat(receipt["intake_started_at_utc"].replace("Z", "+00:00"))
             provenance_valid = (

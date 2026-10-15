@@ -26,6 +26,8 @@ from .temporal_policy import build_information_cutoff
 POLICY_PATH = PROJECT_ROOT / "nhl_protocols/data/nhl23_team_capture_v1.json"
 DEFAULT_ROOT = NHL_DATA_ROOT / "moneypuck_team_captures"
 SCHEMA = "nhl_moneypuck_team_capture_v1"
+AUTOMATED_SCHEMA = "nhl_moneypuck_automated_team_capture_v1"
+AUTOMATED_POLICY_PATH = PROJECT_ROOT / "nhl_protocols/data/nhl_automated_team_capture_v1.json"
 _COMMIT = re.compile(r"[0-9a-f]{40}\Z")
 
 class NHLTeamCaptureError(ValueError):
@@ -37,6 +39,7 @@ class VerifiedTeamCapture:
     observed_at_utc: datetime
     response_sha256: str
     history: FiveSeasonHistory
+    acquisition_mode: str = "https_get"
 
 def _utc(value: datetime) -> datetime:
     if not isinstance(value, datetime) or value.tzinfo is None or value.utcoffset() is None:
@@ -54,6 +57,28 @@ def _policy_hash() -> str:
     if not isinstance(policy, dict) or any(policy.get(k) != v for k, v in expected.items()):
         raise NHLTeamCaptureError("Protocole de capture incompatible.")
     return sha256(raw).hexdigest()
+
+def _automated_policy_hash(path: Path = AUTOMATED_POLICY_PATH) -> str:
+    try:
+        raw = Path(path).read_bytes()
+        policy = json.loads(raw)
+    except (OSError, ValueError) as error:
+        raise NHLTeamCaptureError("Protocole automatique illisible.") from error
+    expected = {
+        "schema_version": AUTOMATED_SCHEMA,
+        "source_url": TEAM_GAME_DOWNLOAD,
+        "authorization_basis": "USER_ATTESTED_PERSONAL_NONCOMMERCIAL_RESEARCH",
+        "authorization_independently_verified": False,
+        "automatic_daily_collection_allowed": True,
+        "purpose": "private_research_shadow_only",
+        "historical_asof_availability_proven": False,
+        "training_permitted": False,
+        "prediction_publication_permitted": False,
+    }
+    if not isinstance(policy, dict) or policy != expected:
+        raise NHLTeamCaptureError("Protocole automatique non autorisé.")
+    return sha256(raw).hexdigest()
+
 
 def _parse(raw: bytes) -> FiveSeasonHistory:
     if not isinstance(raw, bytes) or not raw or len(raw) > MAX_FILE_BYTES:
@@ -76,17 +101,20 @@ def _coverage(history: FiveSeasonHistory) -> list[dict[str, int]]:
     return [asdict(item) for item in history.coverage]
 
 def capture_team_history(*, explicit_manual_run: bool = False,
+                         explicit_automated_run: bool = False,
                          transport: Callable[..., Any] | None = None,
                          source_file: Path | None = None,
                          code_commit: str, root: Path = DEFAULT_ROOT,
                          now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
                          ) -> VerifiedTeamCapture:
     """GET explicite ou reprise locale, sans accès à la base ni au modèle."""
-    if explicit_manual_run is not True or (transport is None) == (source_file is None):
-        raise NHLTeamCaptureError("Choisir exactement un transport ou un fichier local.")
+    if ((explicit_manual_run is True) == (explicit_automated_run is True)
+            or (transport is None) == (source_file is None)
+            or (explicit_automated_run and source_file is not None)):
+        raise NHLTeamCaptureError("Mode de capture ou source invalide.")
     if not isinstance(code_commit, str) or not _COMMIT.fullmatch(code_commit):
         raise NHLTeamCaptureError("Commit Git complet requis.")
-    policy_hash = _policy_hash()
+    policy_hash = _automated_policy_hash() if explicit_automated_run else _policy_hash()
     started = _utc(now())
     try:
         if source_file is not None:
@@ -112,10 +140,13 @@ def capture_team_history(*, explicit_manual_run: bool = False,
         raise NHLTeamCaptureError("Horloge de capture incohérente.")
     history = replace(_parse(raw), observed_at_utc=observed)
     digest = sha256(raw).hexdigest()
-    receipt = {"schema_version": SCHEMA, "status": "CAPTURE_ONLY_NOT_MODEL_ELIGIBLE",
+    mode = ("automated_https_get" if explicit_automated_run else
+            "local_file_intake" if source_file is not None else "https_get")
+    receipt = {"schema_version": AUTOMATED_SCHEMA if explicit_automated_run else SCHEMA,
+               "status": "CAPTURE_ONLY_NOT_MODEL_ELIGIBLE",
                "source_page": SOURCE_PAGE, "source_url": TEAM_GAME_DOWNLOAD,
                "attribution": ATTRIBUTION, "request_started_at_utc": started.isoformat(),
-               "acquisition_mode": "local_file_intake" if source_file is not None else "https_get",
+               "acquisition_mode": mode,
                "network_source_independently_verified": False,
                "observed_at_utc": observed.isoformat(),
                "effective_available_at_utc": observed.isoformat(),
@@ -137,7 +168,7 @@ def capture_team_history(*, explicit_manual_run: bool = False,
         (slot / "COMPLETED").touch(exist_ok=False)
     except OSError as error:
         raise NHLTeamCaptureError("Archivage incomplet; créneau inutilisable.") from error
-    return VerifiedTeamCapture(slot, observed, digest, history)
+    return VerifiedTeamCapture(slot, observed, digest, history, mode)
 
 def verify_team_capture(slot: Path, *, allowed_root: Path = DEFAULT_ROOT) -> VerifiedTeamCapture:
     """Vérifie à nouveau les octets, le protocole et la couverture des cinq saisons."""
@@ -152,21 +183,27 @@ def verify_team_capture(slot: Path, *, allowed_root: Path = DEFAULT_ROOT) -> Ver
         raise NHLTeamCaptureError("Preuve de capture illisible.") from error
     digest = sha256(raw).hexdigest()
     history = replace(_parse_verified_bytes(raw), observed_at_utc=observed)
-    expected = {"schema_version": SCHEMA, "status": "CAPTURE_ONLY_NOT_MODEL_ELIGIBLE",
+    mode = receipt.get("acquisition_mode")
+    automated = receipt.get("schema_version") == AUTOMATED_SCHEMA
+    expected = {"schema_version": AUTOMATED_SCHEMA if automated else SCHEMA,
+                "status": "CAPTURE_ONLY_NOT_MODEL_ELIGIBLE",
                 "source_page": SOURCE_PAGE, "source_url": TEAM_GAME_DOWNLOAD,
                 "attribution": ATTRIBUTION, "response_sha256": digest,
                 "network_source_independently_verified": False,
-                "response_bytes": len(raw), "policy_sha256": _policy_hash(),
+                "response_bytes": len(raw),
+                "policy_sha256": _automated_policy_hash() if automated else _policy_hash(),
                 "effective_available_at_utc": observed.isoformat(),
                 "five_season_coverage": _coverage(history),
                 "regular_coverage_complete": history.regular_coverage_complete,
                 "historical_asof_availability_proven": False,
                 "training_permitted": False, "prediction_publication_permitted": False}
-    if not isinstance(receipt, dict) or receipt.get("acquisition_mode") not in {"https_get", "local_file_intake"} or any(receipt.get(k) != v for k, v in expected.items()):
+    if (not isinstance(receipt, dict)
+            or (mode != "automated_https_get" if automated else mode not in {"https_get", "local_file_intake"})
+            or any(receipt.get(k) != v for k, v in expected.items())):
         raise NHLTeamCaptureError("Preuve de capture incohérente ou altérée.")
     if not isinstance(receipt.get("code_commit"), str) or not _COMMIT.fullmatch(receipt["code_commit"]):
         raise NHLTeamCaptureError("Commit de capture invalide.")
-    return VerifiedTeamCapture(path, observed, digest, history)
+    return VerifiedTeamCapture(path, observed, digest, history, mode)
 
 def assess_history_before_game(capture: VerifiedTeamCapture, game: ScheduledGame,
                                *, lead_minutes: int) -> dict[str, object]:

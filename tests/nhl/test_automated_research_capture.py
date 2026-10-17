@@ -8,9 +8,11 @@ import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import patch
+from urllib.request import Request
 
 from nhl_operations.automatic_research_capture import (
-    NHLAutomaticResearchError, prepare_automatic_research,
+    NHLAutomaticResearchError, _default_transport, prepare_automatic_research,
 )
 from src.nhl.current_season_import import (
     NHLCurrentSeasonImportError, import_current_season_capture,
@@ -85,6 +87,20 @@ class AutomatedResearchCaptureTests(unittest.TestCase):
         self.schedule_root = self.root / "schedule"
         self.team_root = self.root / "team"
         self.import_root = self.root / "import"
+
+    def test_default_transport_identifies_only_official_schedule(self) -> None:
+        schedule_url = BASE_URL + TARGET.isoformat()
+        with patch("nhl_operations.automatic_research_capture.urlopen") as opener:
+            _default_transport(schedule_url, timeout=15)
+            request = opener.call_args.args[0]
+            self.assertIsInstance(request, Request)
+            self.assertEqual(request.full_url, schedule_url)
+            self.assertEqual(request.get_header("Accept"), "application/json")
+            self.assertIn("LPF-Edge-Research", request.get_header("User-agent"))
+            self.assertEqual(opener.call_args.kwargs, {"timeout": 15})
+            _default_transport(TEAM_GAME_DOWNLOAD, timeout=45)
+            self.assertEqual(opener.call_args.args, (TEAM_GAME_DOWNLOAD,))
+            self.assertEqual(opener.call_args.kwargs, {"timeout": 45})
 
     def test_schedule_is_proven_automatic_but_not_publishable(self) -> None:
         ticks = iter((OBSERVED, OBSERVED + timedelta(seconds=1)))

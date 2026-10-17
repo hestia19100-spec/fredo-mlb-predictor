@@ -12,7 +12,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 import re
 from typing import Callable
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
 from src.nhl.current_season_import import (
@@ -22,6 +22,7 @@ from src.nhl.moneypuck_team_capture import (
     DEFAULT_ROOT as TEAM_ROOT, capture_team_history,
 )
 from src.nhl.public_schedule_capture import (
+    BASE_URL as NHL_SCHEDULE_BASE_URL,
     DEFAULT_ROOT as SCHEDULE_ROOT, capture_public_schedule,
 )
 
@@ -44,12 +45,23 @@ class AutomaticResearchCapture:
     prediction_publication_permitted: bool = False
 
 
+def _default_transport(url: str, *, timeout: int):
+    """Identify the official JSON request; leave the CSV source unchanged."""
+    if url.startswith(NHL_SCHEDULE_BASE_URL):
+        request = Request(url, headers={
+            "User-Agent": "Mozilla/5.0 (compatible; LPF-Edge-Research/1.0)",
+            "Accept": "application/json",
+        })
+        return urlopen(request, timeout=timeout)
+    return urlopen(url, timeout=timeout)
+
+
 def prepare_automatic_research(
     *, code_commit: str, explicit_automated_run: bool = False,
     schedule_root: Path = SCHEDULE_ROOT,
     team_root: Path = TEAM_ROOT,
     import_root: Path = IMPORT_ROOT,
-    transport: Callable = urlopen,
+    transport: Callable = _default_transport,
     now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
 ) -> AutomaticResearchCapture:
     """One official-date schedule GET, then one CSV GET only if games are future."""

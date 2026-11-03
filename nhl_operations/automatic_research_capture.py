@@ -64,7 +64,7 @@ def prepare_automatic_research(
     transport: Callable = _default_transport,
     now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
 ) -> AutomaticResearchCapture:
-    """One official-date schedule GET, then one CSV GET only if games are future."""
+    """Fetch the official schedule, then team CSV with bounded transfer retries."""
     observed = now()
     if (explicit_automated_run is not True
             or not isinstance(observed, datetime)

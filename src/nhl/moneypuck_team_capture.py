@@ -14,6 +14,8 @@ import re
 from tempfile import TemporaryDirectory
 from typing import Any, Callable
 
+from nhl_operations.moneypuck_transfer import MoneyPuckTransferError, _download_team_csv
+
 from .database import NHL_DATA_ROOT, PROJECT_ROOT
 from .moneypuck_five_season import REFERENCE_SEASONS, FiveSeasonHistory, select_five_season_history
 from .moneypuck_team_import import (
@@ -124,13 +126,9 @@ def capture_team_history(*, explicit_manual_run: bool = False,
             raw = candidate.read_bytes()
         else:
             assert transport is not None
-            with transport(TEAM_GAME_DOWNLOAD, timeout=45) as response:
-                if response.status != 200 or response.geturl() != TEAM_GAME_DOWNLOAD:
-                    raise NHLTeamCaptureError("Réponse redirigée ou non réussie.")
-                content_type = response.headers.get("Content-Type", "").split(";", 1)[0].lower()
-                if content_type not in {"text/csv", "text/plain", "application/octet-stream"}:
-                    raise NHLTeamCaptureError("Type de réponse inattendu.")
-                raw = response.read(MAX_FILE_BYTES + 1)
+            raw = _download_team_csv(transport)
+    except MoneyPuckTransferError as error:
+        raise NHLTeamCaptureError(str(error)) from error
     except NHLTeamCaptureError:
         raise
     except (OSError, ValueError) as error:

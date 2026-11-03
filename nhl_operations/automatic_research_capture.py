@@ -21,6 +21,7 @@ from src.nhl.current_season_import import (
 from src.nhl.moneypuck_team_capture import (
     DEFAULT_ROOT as TEAM_ROOT, capture_team_history,
 )
+from src.nhl.moneypuck_team_import import TEAM_GAME_DOWNLOAD
 from src.nhl.public_schedule_capture import (
     BASE_URL as NHL_SCHEDULE_BASE_URL,
     DEFAULT_ROOT as SCHEDULE_ROOT, capture_public_schedule,
@@ -46,13 +47,19 @@ class AutomaticResearchCapture:
 
 
 def _default_transport(url: str, *, timeout: int):
-    """Identify the official JSON request; leave the CSV source unchanged."""
+    """Request compressed CSV bytes from the same official download URL."""
     if url.startswith(NHL_SCHEDULE_BASE_URL):
         request = Request(url, headers={
             "User-Agent": "Mozilla/5.0 (compatible; LPF-Edge-Research/1.0)",
             "Accept": "application/json",
         })
         return urlopen(request, timeout=timeout)
+    if url == TEAM_GAME_DOWNLOAD:
+        return urlopen(Request(url, headers={
+            "User-Agent": "LPF-Edge-Research/1.0",
+            "Accept": "text/csv",
+            "Accept-Encoding": "gzip",
+        }), timeout=timeout)
     return urlopen(url, timeout=timeout)
 
 

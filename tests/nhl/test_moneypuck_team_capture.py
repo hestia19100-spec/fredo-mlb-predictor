@@ -56,7 +56,7 @@ class TeamCaptureTests(unittest.TestCase):
 
     def test_interrupted_read_restarts_and_archives_only_complete_response(self):
         broken = Response(b"partial")
-        broken.read = Mock(side_effect=IncompleteRead(b"partial"))
+        broken.read1 = Mock(side_effect=IncompleteRead(b"partial"))
         self.transport = Mock(side_effect=[broken, Response(_csv())])
         with patch("nhl_operations.moneypuck_transfer.sleep") as pause:
             capture = self._capture()

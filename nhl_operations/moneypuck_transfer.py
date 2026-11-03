@@ -20,7 +20,7 @@ class MoneyPuckTransferError(ValueError):
 _LOGGER = logging.getLogger(__name__)
 _DOWNLOAD_ATTEMPTS = 3
 _ATTEMPT_SECONDS = 120
-_IO_TIMEOUT_SECONDS = 15
+_IO_TIMEOUT_SECONDS = 90
 _CHUNK_BYTES = 64 * 1024
 
 

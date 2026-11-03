@@ -69,6 +69,7 @@ def prepare_automatic_research(
     team_root: Path = TEAM_ROOT,
     import_root: Path = IMPORT_ROOT,
     transport: Callable = _default_transport,
+    cached_team_only: bool = False,
     now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
 ) -> AutomaticResearchCapture:
     """Fetch the official schedule, then team CSV with bounded transfer retries."""
@@ -87,10 +88,14 @@ def prepare_automatic_research(
     )
     if not schedule.game_count:
         return AutomaticResearchCapture(target, 0, 0, schedule.path, None, None)
-    team = capture_team_history(
-        explicit_automated_run=True, transport=transport,
-        code_commit=code_commit, root=team_root, now=now,
-    )
+    if cached_team_only:
+        from nhl_operations.team_data_cache import require_fresh_team_capture
+        team = require_fresh_team_capture(team_root, observed=now())
+    else:
+        team = capture_team_history(
+            explicit_automated_run=True, transport=transport,
+            code_commit=code_commit, root=team_root, now=now,
+        )
     season = target.year if target.month >= 7 else target.year - 1
     imported = import_current_season_capture(
         team.path, season=season, explicit_automated_run=True,
@@ -107,9 +112,11 @@ def main() -> int:
         description="Capture NHL automatique pour recherche privée uniquement"
     )
     parser.add_argument("--code-commit", required=True)
+    parser.add_argument("--cached-team-only", action="store_true")
     args = parser.parse_args()
     result = prepare_automatic_research(
         code_commit=args.code_commit, explicit_automated_run=True,
+        cached_team_only=args.cached_team_only,
     )
     print(
         f"NHL_RESEARCH_CAPTURE nhl_date={result.nhl_date} "

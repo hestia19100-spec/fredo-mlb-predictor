@@ -107,6 +107,8 @@ def capture_team_history(*, explicit_manual_run: bool = False,
                          transport: Callable[..., Any] | None = None,
                          source_file: Path | None = None,
                          code_commit: str, root: Path = DEFAULT_ROOT,
+                         download_attempt_seconds: float | None = None,
+                         download_max_attempts: int | None = None,
                          now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
                          ) -> VerifiedTeamCapture:
     """GET explicite ou reprise locale, sans accès à la base ni au modèle."""
@@ -126,7 +128,8 @@ def capture_team_history(*, explicit_manual_run: bool = False,
             raw = candidate.read_bytes()
         else:
             assert transport is not None
-            raw = _download_team_csv(transport)
+            raw = _download_team_csv(transport, attempt_seconds=download_attempt_seconds,
+                                     max_attempts=download_max_attempts)
     except MoneyPuckTransferError as error:
         raise NHLTeamCaptureError(str(error)) from error
     except NHLTeamCaptureError:

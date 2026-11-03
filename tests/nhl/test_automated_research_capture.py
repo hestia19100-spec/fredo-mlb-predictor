@@ -88,7 +88,7 @@ class AutomatedResearchCaptureTests(unittest.TestCase):
         self.team_root = self.root / "team"
         self.import_root = self.root / "import"
 
-    def test_default_transport_identifies_only_official_schedule(self) -> None:
+    def test_default_transport_requests_official_schedule_and_compressed_csv(self) -> None:
         schedule_url = BASE_URL + TARGET.isoformat()
         with patch("nhl_operations.automatic_research_capture.urlopen") as opener:
             _default_transport(schedule_url, timeout=15)
@@ -99,7 +99,10 @@ class AutomatedResearchCaptureTests(unittest.TestCase):
             self.assertIn("LPF-Edge-Research", request.get_header("User-agent"))
             self.assertEqual(opener.call_args.kwargs, {"timeout": 15})
             _default_transport(TEAM_GAME_DOWNLOAD, timeout=45)
-            self.assertEqual(opener.call_args.args, (TEAM_GAME_DOWNLOAD,))
+            request = opener.call_args.args[0]
+            self.assertIsInstance(request, Request)
+            self.assertEqual(request.full_url, TEAM_GAME_DOWNLOAD)
+            self.assertEqual(request.get_header("Accept-encoding"), "gzip")
             self.assertEqual(opener.call_args.kwargs, {"timeout": 45})
 
     def test_schedule_is_proven_automatic_but_not_publishable(self) -> None:

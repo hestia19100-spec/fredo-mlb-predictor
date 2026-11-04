@@ -30,7 +30,7 @@ class TransferTests(unittest.TestCase):
         with patch.object(transfer.sys, 'stderr') as output:
             self.assertEqual(transfer._download_team_csv(opener), raw)
         self.assertIn('wire_bytes=', str(output.write.call_args_list))
-        opener.assert_called_once_with(TEAM_GAME_DOWNLOAD, timeout=15)
+        opener.assert_called_once_with(TEAM_GAME_DOWNLOAD, timeout=90)
 
     def test_chunk_reader_is_used_instead_of_a_full_blocking_read(self):
         response = Response(b'a,b\n1,2\n')

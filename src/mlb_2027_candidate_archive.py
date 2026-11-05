@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
+from decimal import Decimal
 import hashlib
 import json
 from pathlib import Path
@@ -20,6 +21,8 @@ from src.mlb_2027_reference_predictor import (
     ReferenceCalculation,
     calculate_reference_probabilities,
 )
+from src.mlb_2027_market_match import MatchedMarketDay, match_mlb_2027_market
+from src.odds_api import OddsFetchResult
 
 
 class MLB2027ArchiveError(ValueError):
@@ -37,6 +40,8 @@ def _sha(data: bytes) -> str:
 
 
 def _encode_date(item: object) -> str:
+    if isinstance(item, Decimal):
+        return format(item, "f")
     if hasattr(item, "isoformat"):
         return item.isoformat()
     raise TypeError(f"Type JSON non pris en charge : {type(item)!r}")
@@ -68,6 +73,8 @@ def archive_reference_candidate(
     calculation: ReferenceCalculation,
     *,
     issued_at_utc: datetime,
+    market: MatchedMarketDay | None = None,
+    odds: OddsFetchResult | None = None,
 ) -> CandidateArchive:
     """Scelle les octets sources et le calcul en local, une seule fois.
 
@@ -84,6 +91,15 @@ def archive_reference_candidate(
     )
     if calculation != expected:
         raise MLB2027ArchiveError("Calcul non conforme au modèle figé.")
+    if (market is None) != (odds is None):
+        raise MLB2027ArchiveError("Cotes et rapprochement doivent être fournis ensemble.")
+    if market is not None:
+        if (
+            type(market) is not MatchedMarketDay
+            or type(odds) is not OddsFetchResult
+            or market != match_mlb_2027_market(source, odds)
+        ):
+            raise MLB2027ArchiveError("Le marché ne correspond pas aux octets reçus.")
     issued = _utc(issued_at_utc)
     if (
         source.latest_received_at_utc > issued_at_utc
@@ -100,7 +116,7 @@ def archive_reference_candidate(
     files: dict[str, bytes] = {"source-receipt.json": source.receipt_bytes}
     for index, observation in enumerate(source.observations, start=1):
         files[f"mlb-response-{index:03d}.json"] = observation.raw_content
-    files["candidate.json"] = _json_bytes({
+    candidate = {
         "schema_version": 1,
         "status": "LOCAL_ONLY_UNPUBLISHED",
         "target_date": source.target_date,
@@ -110,7 +126,17 @@ def archive_reference_candidate(
         "readiness": [asdict(game) for game in calculation.readiness.games],
         "probabilities": [asdict(row) for row in calculation.probabilities],
         "abstained_count": calculation.abstained_count,
-    })
+    }
+    if market is not None and odds is not None:
+        files["odds-response.json"] = odds.raw_content
+        files["market.json"] = _json_bytes(asdict(market))
+        candidate["market"] = {
+            "status": "PRIVATE_OBSERVED_ONLY",
+            "odds_response_sha256": market.odds_response_sha256,
+            "market_sha256": _sha(files["market.json"]),
+            "matched_game_count": sum(row.status == "MATCHED" for row in market.games),
+        }
+    files["candidate.json"] = _json_bytes(candidate)
     manifest = _json_bytes({
         "schema_version": 1,
         "status": "LOCAL_ONLY_UNPUBLISHED",
@@ -180,6 +206,30 @@ def verify_candidate_archive(
             or candidate.get("target_date") != manifest["target_date"]
         ):
             raise MLB2027ArchiveError("Candidat incohérent.")
+        market_claim = candidate.get("market")
+        if market_claim is None:
+            if "market.json" in files or "odds-response.json" in files:
+                raise MLB2027ArchiveError("Marché présent sans lien au candidat.")
+        else:
+            if (
+                type(market_claim) is not dict
+                or market_claim.get("status") != "PRIVATE_OBSERVED_ONLY"
+                or market_claim.get("market_sha256") != files.get("market.json")
+                or market_claim.get("odds_response_sha256") != files.get("odds-response.json")
+                or type(market_claim.get("matched_game_count")) is not int
+            ):
+                raise MLB2027ArchiveError("Lien aux cotes invalide.")
+            market_payload = json.loads((path / "market.json").read_bytes())
+            if (
+                type(market_payload) is not dict
+                or market_payload.get("target_date") != manifest["target_date"]
+                or market_payload.get("source_receipt_sha256") != manifest["source_receipt_sha256"]
+                or market_payload.get("odds_response_sha256") != files["odds-response.json"]
+                or type(market_payload.get("games")) is not list
+                or sum(row.get("status") == "MATCHED" for row in market_payload["games"])
+                   != market_claim["matched_game_count"]
+            ):
+                raise MLB2027ArchiveError("Marché archivé incohérent.")
     except (OSError, ValueError, TypeError, AttributeError) as error:
         if isinstance(error, MLB2027ArchiveError):
             raise

@@ -19,6 +19,8 @@ from src.mlb_2027_remote_visibility import (
     verify_private_main_visibility,
 )
 from tests.test_mlb_2027_candidate_archive import _candidate
+from tests.test_mlb_2027_market_archive import _odds
+from src.mlb_2027_market_match import match_mlb_2027_market
 
 
 ISSUED = datetime(2027, 1, 20, 20, tzinfo=timezone.utc)
@@ -87,6 +89,63 @@ class RemoteVisibilityTests(unittest.TestCase):
         self.assertEqual(kwargs["headers"]["Authorization"], "Bearer test-only-token")
         self.assertFalse(kwargs["allow_redirects"])
         self.assertEqual(kwargs["timeout"], 10)
+
+    def _market_archive(self):
+        odds = _odds()
+        return archive_reference_candidate(
+            Path(self.folder.name) / "with-market",
+            self.source, self.calculation, issued_at_utc=ISSUED,
+            market=match_mlb_2027_market(self.source, odds), odds=odds,
+        )
+
+    def test_market_candidate_requires_every_sealed_file_on_private_main(self) -> None:
+        archive = self._market_archive()
+        names = sorted(item.name for item in archive.path.iterdir())
+        requested = []
+
+        def reply(url, **kwargs):
+            name = url.split("/contents/")[1].split("?ref=main")[0].split("/")[-1]
+            requested.append(name)
+            path = f"mlb_2027_candidates/2027-01-20/{self.source.receipt_sha256}/{name}"
+            return _response(url, path, (archive.path / name).read_bytes())
+
+        with patch(
+            "src.mlb_2027_remote_visibility.requests.get", side_effect=reply,
+        ), patch(
+            "src.mlb_2027_remote_visibility._now_utc", return_value=RECEIVED,
+        ):
+            result = verify_private_main_visibility(
+                archive, self.source, self.calculation,
+                issued_at_utc=ISSUED, completed_at_utc=COMPLETED,
+                github_token="test-only-token",
+            )
+        self.assertEqual(sorted(requested), names)
+        self.assertEqual(result.path, self.path)
+        self.assertIn("odds-response.json", requested)
+        self.assertIn("market.json", requested)
+
+    def test_market_candidate_rejects_changed_remote_odds(self) -> None:
+        archive = self._market_archive()
+
+        def reply(url, **kwargs):
+            name = url.split("/contents/")[1].split("?ref=main")[0].split("/")[-1]
+            path = f"mlb_2027_candidates/2027-01-20/{self.source.receipt_sha256}/{name}"
+            data = (archive.path / name).read_bytes()
+            if name == "odds-response.json":
+                data = b"[]"
+            return _response(url, path, data)
+
+        with patch(
+            "src.mlb_2027_remote_visibility.requests.get", side_effect=reply,
+        ), patch(
+            "src.mlb_2027_remote_visibility._now_utc", return_value=RECEIVED,
+        ):
+            with self.assertRaises(MLB2027RemoteError):
+                verify_private_main_visibility(
+                    archive, self.source, self.calculation,
+                    issued_at_utc=ISSUED, completed_at_utc=COMPLETED,
+                    github_token="test-only-token",
+                )
 
     def test_rejects_different_bytes_even_when_github_sha_matches_them(self) -> None:
         response = _response(self.url, self.path, b"{}\n")

@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 import numpy as np
 
+from src.calibrated_model import DEFAULT_ARTIFACT_PATH
 from src.mlb_2027_reference_predictor import (
     MLB2027PredictionError,
     calculate_reference_probabilities,
@@ -118,6 +119,10 @@ class ReferencePredictorTests(unittest.TestCase):
                     source_receipt_sha256=RECEIPT,
                 )
 
+    @unittest.skipUnless(
+        DEFAULT_ARTIFACT_PATH.is_file(),
+        "Artefact privé absent du dépôt public; contrôle exécuté dans le workflow privé.",
+    )
     def test_verified_real_artifact_runs_without_fitting(self) -> None:
         result = calculate_reference_probabilities(
             TARGET, _upcoming(), _history(),
